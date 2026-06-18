@@ -23,8 +23,8 @@ export function calculateMLFee(salePrice: number, feeType: 'classic' | 'premium'
   
   let fee = (salePrice * percent) / 100;
 
-  // Se o valor do produto for menor que R$ 79, adiciona o custo de taxa fixa de R$ 6.00
-  if (salePrice < ML_FIXED_FEE_LIMIT) {
+  // Se o valor do produto for menor que R$ 79, adiciona o custo de taxa fixa de R$ 6.00 apenas para anúncios classic ou premium do ML
+  if (salePrice < ML_FIXED_FEE_LIMIT && (feeType === 'classic' || feeType === 'premium')) {
     fee += ML_FIXED_FEE_AMOUNT;
   }
 

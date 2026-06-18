@@ -269,13 +269,49 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                     <p className="text-[10px] text-emerald-400 font-bold uppercase">Ganho Líquido Real</p>
                     <p className="text-sm font-black text-emerald-400 mt-0.5">
                       {formatCurrency(
-                        (customSalePrice - selectedProduct.purchasePrice - calculateMLFee(customSalePrice, selectedProduct.mlFeeType)) * quantity - 
+                        (customSalePrice - selectedProduct.purchasePrice - calculateMLFee(customSalePrice, selectedProduct.mlFeeType, selectedProduct.customFeePercent)) * quantity - 
                         (shippingCostType === 'unit' ? customShipping * quantity : customShipping) -
                         discount
                       )}
                     </p>
                   </div>
                 </div>
+
+                {/* Explicação Detalhada do Cálculo de Taxas para Transparência */}
+                {selectedProduct.mlFeeType !== 'none' && (
+                  <div className="mt-3 pt-2.5 border-t border-white/5 space-y-1 text-[11px] text-white/50">
+                    <div className="flex justify-between">
+                      <span>Anúncio do Produto:</span>
+                      <span className="font-bold text-[#FFE600] capitalize">
+                        {selectedProduct.mlFeeType === 'classic' ? 'Clássico (12%)' : selectedProduct.mlFeeType === 'premium' ? 'Premium (17%)' : selectedProduct.mlFeeType === 'custom' ? `Personalizado (${selectedProduct.customFeePercent}%)` : 'Sem taxa'}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span>Comissão Percentual ML ({quantity}x):</span>
+                      <span className="font-semibold text-white/80 font-mono">
+                        {(() => {
+                          const percent = selectedProduct.mlFeeType === 'custom' 
+                            ? (selectedProduct.customFeePercent || 0) 
+                            : (selectedProduct.mlFeeType === 'classic' ? 12 : (selectedProduct.mlFeeType === 'premium' ? 17 : 0));
+                          return formatCurrency(((customSalePrice * percent) / 100) * quantity);
+                        })()}
+                      </span>
+                    </div>
+                    {customSalePrice < 79 && (selectedProduct.mlFeeType === 'classic' || selectedProduct.mlFeeType === 'premium') && (
+                      <div className="space-y-1 mt-1 font-sans">
+                        <div className="flex justify-between text-yellow-400/80">
+                          <span>Taxa Fixa ML (venda &lt; R$ 79):</span>
+                          <span className="font-semibold font-mono">
+                            {formatCurrency(6.00 * quantity)}
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-[#FFE600]/70 leading-relaxed bg-white/5 p-2 rounded-lg border border-white/5">
+                          💡 <strong>Por que a Taxa Fixa?</strong> O Mercado Livre cobra obrigatoriamente uma taxa fixa de R$ 6,00 por unidade vendida de produtos abaixo de R$ 79,00 nos anúncios Clássico e Premium.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 

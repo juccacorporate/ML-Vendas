@@ -549,30 +549,70 @@ export default function StockControl({
               </div>
 
               {/* Pré-visualizador de retorno do Mercado Livre */}
-              {salePrice > 0 && (
-                <div className="bg-[#FFE600]/10 border border-[#FFE600]/30 rounded-xl p-3 text-xs mt-2 text-white">
-                  <p className="font-bold text-[#FFE600] mb-1.5 flex items-center gap-1">
-                    <Activity className="w-3.5 h-3.5" />
-                    Simulação Prática de Comissão ML
-                  </p>
-                  <div className="grid grid-cols-2 gap-y-1 font-medium text-white/80">
-                    <span>Taxa ML ({mlFeeType === 'custom' ? `${customFeePercent}%` : mlFeeType}):</span>
-                    <span className="text-right text-red-400 font-bold font-mono">
-                      -{formatCurrency(calculateMLFee(salePrice, mlFeeType, customFeePercent))}
-                    </span>
-                    {shippingCost > 0 && (
-                      <>
-                        <span>Frete do Vendedor:</span>
-                        <span className="text-right text-red-400 font-bold font-mono">-{formatCurrency(shippingCost)}</span>
-                      </>
-                    )}
-                    <span className="border-t border-white/10 pt-1 mt-1 font-bold text-white/90">Retorno Líquido Previsto:</span>
-                    <span className="border-t border-white/10 pt-1 mt-1 text-right text-emerald-450 text-emerald-400 font-black font-mono">
-                      {formatCurrency(salePrice - calculateMLFee(salePrice, mlFeeType, customFeePercent) - shippingCost - purchasePrice)}
-                    </span>
+              {salePrice > 0 && (() => {
+                const percent = mlFeeType === 'custom' 
+                  ? customFeePercent 
+                  : (mlFeeType === 'classic' ? 12 : (mlFeeType === 'premium' ? 17 : 0));
+                
+                const comissaoValor = (salePrice * percent) / 100;
+                const isTaxaFixaAplicavel = salePrice > 0 && salePrice < 79 && (mlFeeType === 'classic' || mlFeeType === 'premium');
+                const taxaFixaValor = isTaxaFixaAplicavel ? 6.00 : 0;
+                const totalMLFee = mlFeeType === 'none' ? 0 : (comissaoValor + taxaFixaValor);
+                const retornoLiquido = salePrice - totalMLFee - shippingCost - purchasePrice;
+
+                return (
+                  <div className="bg-[#FFE600]/10 border border-[#FFE600]/30 rounded-xl p-3.5 text-xs mt-3 text-white space-y-2">
+                    <p className="font-bold text-[#FFE600] flex items-center gap-1.5 border-b border-[#FFE600]/20 pb-1.5">
+                      <Activity className="w-3.5 h-3.5" />
+                      <span>Simulação Detalhada de Comissão e Taxas</span>
+                    </p>
+                    <div className="space-y-1.5 text-white/80">
+                      <div className="flex justify-between">
+                        <span>Anúncio Selecionado:</span>
+                        <span className="font-bold text-[#FFE600]">
+                          {mlFeeType === 'classic' ? 'Clássico' : mlFeeType === 'premium' ? 'Premium' : mlFeeType === 'custom' ? 'Personalizado' : 'Nenhum'}
+                        </span>
+                      </div>
+                      
+                      {mlFeeType !== 'none' && (
+                        <>
+                          <div className="flex justify-between font-mono">
+                            <span>Comissão de Venda ({percent}%):</span>
+                            <span className="text-red-400 font-bold">-{formatCurrency(comissaoValor)}</span>
+                          </div>
+                          {isTaxaFixaAplicavel && (
+                            <div className="flex justify-between font-mono text-white/60">
+                              <span className="flex items-center gap-1">
+                                Taxa Fixa por Venda (produto &lt; R$ 79):
+                                <span className="text-[10px] bg-red-400/25 text-red-200 px-1 rounded font-bold" title="Taxa fixa obrigatória do Mercado Livre">ML</span>
+                              </span>
+                              <span className="text-red-400 font-bold">-{formatCurrency(taxaFixaValor)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between border-t border-white/5 pt-1.5 font-bold font-mono text-[#FFE600]">
+                            <span>Soma de Taxas ML:</span>
+                            <span className="text-red-400 font-extrabold">-{formatCurrency(totalMLFee)}</span>
+                          </div>
+                        </>
+                      )}
+
+                      {shippingCost > 0 && (
+                        <div className="flex justify-between font-mono text-white/75">
+                          <span>Frete pago pelo Vendedor:</span>
+                          <span className="text-red-400 font-bold">-{formatCurrency(shippingCost)}</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between border-t border-[#FFE600]/20 pt-2 font-bold text-white">
+                        <span>Lucro Líquido Unitário Previsto:</span>
+                        <span className={`font-black font-mono text-sm ${retornoLiquido >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {formatCurrency(retornoLiquido)}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               <div className="flex justify-end gap-2.5 pt-4">
                 <button
@@ -744,6 +784,72 @@ export default function StockControl({
                   />
                 </div>
               </div>
+
+              {/* Pré-visualizador de retorno do Mercado Livre */}
+              {salePrice > 0 && (() => {
+                const percent = mlFeeType === 'custom' 
+                  ? customFeePercent 
+                  : (mlFeeType === 'classic' ? 12 : (mlFeeType === 'premium' ? 17 : 0));
+                
+                const comissaoValor = (salePrice * percent) / 100;
+                const isTaxaFixaAplicavel = salePrice > 0 && salePrice < 79 && (mlFeeType === 'classic' || mlFeeType === 'premium');
+                const taxaFixaValor = isTaxaFixaAplicavel ? 6.00 : 0;
+                const totalMLFee = mlFeeType === 'none' ? 0 : (comissaoValor + taxaFixaValor);
+                const retornoLiquido = salePrice - totalMLFee - shippingCost - purchasePrice;
+
+                return (
+                  <div className="bg-[#FFE600]/10 border border-[#FFE600]/30 rounded-xl p-3.5 text-xs mt-3 text-white space-y-2">
+                    <p className="font-bold text-[#FFE600] flex items-center gap-1.5 border-b border-[#FFE600]/20 pb-1.5">
+                      <Activity className="w-3.5 h-3.5" />
+                      <span>Simulação Detalhada de Comissão e Taxas</span>
+                    </p>
+                    <div className="space-y-1.5 text-white/80">
+                      <div className="flex justify-between">
+                        <span>Anúncio Selecionado:</span>
+                        <span className="font-bold text-[#FFE600]">
+                          {mlFeeType === 'classic' ? 'Clássico' : mlFeeType === 'premium' ? 'Premium' : mlFeeType === 'custom' ? 'Personalizado' : 'Nenhum'}
+                        </span>
+                      </div>
+                      
+                      {mlFeeType !== 'none' && (
+                        <>
+                          <div className="flex justify-between font-mono">
+                            <span>Comissão de Venda ({percent}%):</span>
+                            <span className="text-red-400 font-bold">-{formatCurrency(comissaoValor)}</span>
+                          </div>
+                          {isTaxaFixaAplicavel && (
+                            <div className="flex justify-between font-mono text-white/60">
+                              <span className="flex items-center gap-1">
+                                Taxa Fixa por Venda (produto &lt; R$ 79):
+                                <span className="text-[10px] bg-red-400/25 text-red-200 px-1 rounded font-bold" title="Taxa fixa obrigatória do Mercado Livre">ML</span>
+                              </span>
+                              <span className="text-red-400 font-bold">-{formatCurrency(taxaFixaValor)}</span>
+                            </div>
+                          )}
+                          <div className="flex justify-between border-t border-white/5 pt-1.5 font-bold font-mono text-[#FFE600]">
+                            <span>Soma de Taxas ML:</span>
+                            <span className="text-red-400 font-extrabold">-{formatCurrency(totalMLFee)}</span>
+                          </div>
+                        </>
+                      )}
+
+                      {shippingCost > 0 && (
+                        <div className="flex justify-between font-mono text-white/75">
+                          <span>Frete pago pelo Vendedor:</span>
+                          <span className="text-red-400 font-bold">-{formatCurrency(shippingCost)}</span>
+                        </div>
+                      )}
+
+                      <div className="flex justify-between border-t border-[#FFE600]/20 pt-2 font-bold text-white">
+                        <span>Lucro Líquido Unitário Previsto:</span>
+                        <span className={`font-black font-mono text-sm ${retornoLiquido >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {formatCurrency(retornoLiquido)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="flex justify-end gap-2.5 pt-4">
                 <button
