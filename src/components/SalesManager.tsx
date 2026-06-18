@@ -1,0 +1,631 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState } from 'react';
+import { Product, Sale } from '../types';
+import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease } from '../utils';
+import { ShoppingCart, Plus, Search, Calendar, Landmark, Info, Trash2, ArrowRightCircle, AlertCircle, TrendingUp, Clock } from 'lucide-react';
+
+interface SalesManagerProps {
+  products: Product[];
+  sales: Sale[];
+  onAddSale: (sale: Omit<Sale, 'id' | 'grossProfit' | 'netProfit'>) => void;
+  onCancelSale: (saleId: string) => void;
+  onCompleteSale?: (saleId: string) => void;
+  onClearDatabase: () => void;
+}
+
+export default function SalesManager({ products, sales, onAddSale, onCancelSale, onCompleteSale, onClearDatabase }: SalesManagerProps) {
+  // Controle do Formulário
+  const [selectedProductId, setSelectedProductId] = useState('');
+  const [quantity, setQuantity] = useState(1);
+  const [customSalePrice, setCustomSalePrice] = useState<number>(0);
+  const [customShipping, setCustomShipping] = useState<number>(0);
+  const [shippingCostType, setShippingCostType] = useState<'unit' | 'total'>('unit');
+  const [saleDate, setSaleDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [discount, setDiscount] = useState<number>(0);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [cancellingSaleId, setCancellingSaleId] = useState<string | null>(null);
+
+  // Estados para o Modal de Excluir Tudo por Senha
+  const [isClearOpen, setIsClearOpen] = useState(false);
+  const [clearPassword, setClearPassword] = useState('');
+  const [clearError, setClearError] = useState<string | null>(null);
+
+  // Pesquisa
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Produto selecionado no dropdown
+  const selectedProduct = products.find(p => p.id === selectedProductId);
+
+  // Manipular alteração do produto
+  const handleProductChange = (id: string) => {
+    setSelectedProductId(id);
+    const prod = products.find(p => p.id === id);
+    if (prod) {
+      setCustomSalePrice(prod.salePrice);
+      setCustomShipping(prod.shippingCost);
+      setQuantity(1);
+      setDiscount(0);
+      setFormError(null);
+    }
+  };
+
+  // Enviar Venda
+  const handleRecordSale = (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+    if (!selectedProduct || quantity <= 0) return;
+
+    if (selectedProduct.stock < quantity) {
+      setFormError(`Quantidade indisponível em estoque! Estoque atual: ${selectedProduct.stock} unidades.`);
+      return;
+    }
+
+    onAddSale({
+      productId: selectedProduct.id,
+      productName: selectedProduct.name,
+      quantity,
+      salePrice: Number(customSalePrice),
+      date: saleDate,
+      mlFee: calculateMLFee(Number(customSalePrice), selectedProduct.mlFeeType) * quantity,
+      shippingCost: shippingCostType === 'unit' ? Number(customShipping) * quantity : Number(customShipping),
+      purchasePrice: selectedProduct.purchasePrice,
+      discount: Number(discount)
+    });
+
+    // Reset form
+    setSelectedProductId('');
+    setQuantity(1);
+    setCustomSalePrice(0);
+    setCustomShipping(0);
+    setDiscount(0);
+    setFormError(null);
+  };
+
+  // Filtragem de vendas
+  const filteredSales = sales.filter(s => 
+    s.productName.toLowerCase().includes(searchTerm.toLowerCase())
+  ).sort((a,b) => b.date.localeCompare(a.date));
+
+  // Simulando resumo rápido do período de Vendas (separados por status), desconsiderando estornos
+  const periodTotalRevenue = filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
+  const periodTotalNetProfit = filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + s.netProfit, 0);
+  const periodPendingProfit = filteredSales.filter(s => s.status === 'pending').reduce((acc, s) => acc + s.netProfit, 0);
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+
+      {/* Grid: Registro de Vendas e Resumo Rápido */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* Painel de Registro de Nova Venda (Formulário) */}
+        <div className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md lg:col-span-2">
+          {formError && (
+            <div className="mb-4 bg-red-400/10 border border-red-400/20 text-red-400 p-3 rounded-xl text-xs font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              <span>{formError}</span>
+            </div>
+          )}
+
+          <h3 className="text-base font-light text-white mb-4 flex items-center gap-2">
+            <ShoppingCart className="w-5 h-5 text-[#FFE600]" />
+            Registrar Nova Venda de Saída
+          </h3>
+
+          <form onSubmit={handleRecordSale} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {/* Seleção do Produto */}
+              <div className="sm:col-span-2">
+                <label className="text-xs font-bold text-white/70 block mb-1">Selecione o Produto Vendido *</label>
+                <select
+                  required
+                  value={selectedProductId}
+                  onChange={(e) => handleProductChange(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 cursor-pointer"
+                >
+                  <option value="" className="bg-[#121212] text-white">-- Escolha um produto do estoque --</option>
+                  {products.map(p => (
+                    <option key={p.id} value={p.id} disabled={p.stock === 0} className="bg-[#121212] text-white">
+                      {p.name} (SKU: {p.sku}) — Estoque: {p.stock} un. {p.stock === 0 ? '[ESGOTADO]' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Quantidade */}
+              {selectedProduct && (
+                <>
+                  <div>
+                    <label className="text-xs font-bold text-white/70 block mb-1">Quantidade Vendida *</label>
+                    <input
+                      type="number"
+                      required
+                      min="1"
+                      max={selectedProduct.stock}
+                      value={quantity}
+                      onChange={(e) => setQuantity(Math.min(Number(e.target.value), selectedProduct.stock))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                    />
+                    <p className="text-[10px] text-white/40 mt-1 font-medium">Limite disponível: {selectedProduct.stock} un.</p>
+                  </div>
+
+                  {/* Preço de Venda Praticado */}
+                  <div>
+                    <label className="text-xs font-bold text-white/70 block mb-1">Preço Unitário de Venda R$ *</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      required
+                      value={customSalePrice || ''}
+                      onChange={(e) => setCustomSalePrice(Number(e.target.value))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                    />
+                  </div>
+
+                  {/* Frete Cobrado com Tipo Selecionável */}
+                  <div className="space-y-2">
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-xs font-bold text-white/70">
+                        {shippingCostType === 'unit' ? 'Frete Unitário (Por Peça)' : 'Frete Fixo (Venda Inteira)'} R$
+                      </label>
+                      <div className="flex bg-white/5 p-0.5 rounded-lg border border-white/10 text-[10px]">
+                        <button
+                          type="button"
+                          onClick={() => setShippingCostType('unit')}
+                          className={`px-2 py-0.5 rounded-md transition-colors font-bold cursor-pointer ${shippingCostType === 'unit' ? 'bg-[#FFE600] text-black' : 'text-white/60 hover:text-white'}`}
+                        >
+                          Unitário
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShippingCostType('total')}
+                          className={`px-2 py-0.5 rounded-md transition-colors font-bold cursor-pointer ${shippingCostType === 'total' ? 'bg-[#FFE600] text-black' : 'text-white/60 hover:text-white'}`}
+                        >
+                          Total Venda
+                        </button>
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={customShipping || ''}
+                      onChange={(e) => setCustomShipping(Number(e.target.value))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                      placeholder="0,00"
+                    />
+                  </div>
+
+                  {/* Data da Venda */}
+                  <div>
+                    <label className="text-xs font-bold text-white/70 block mb-1">Data da Venda *</label>
+                    <input
+                      type="date"
+                      required
+                      value={saleDate}
+                      onChange={(e) => setSaleDate(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 cursor-pointer"
+                    />
+                  </div>
+
+                  {/* Desconto Aplicado */}
+                  <div>
+                    <label className="text-xs font-bold text-white/70 block mb-1">Desconto Aplicado R$ (Opcional)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={discount || ''}
+                      onChange={(e) => setDiscount(Math.max(0, Number(e.target.value)))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                      placeholder="0,05"
+                    />
+                  </div>
+
+                  {/* Tempo de Conclusão / Gatilho Simulador */}
+                  <div className="md:col-span-2 bg-[#FFE600]/5 border border-[#FFE600]/20 rounded-xl p-3 flex gap-2.5 items-start">
+                    <Clock className="w-4 h-4 text-[#FFE600] shrink-0 mt-0.5 animate-pulse" />
+                    <div>
+                      <p className="text-[11px] font-bold text-[#FFE600] uppercase tracking-wider">Ciclo de Liberação: 30 dias</p>
+                      <p className="text-[10.5px] text-white/60 mt-0.5 leading-relaxed font-medium">
+                        O Mercado Livre impõe uma retenção de segurança de 30 dias para liberação do saldo.
+                        Durante este período, o dinheiro constará no painel como <strong className="text-[#FFE600] font-bold">Congelado ⏳</strong>, sendo integralmente integrado ao fluxo gerencial após os 30 dias ou caso você realize a liberação manual na tabela abaixo.
+                      </p>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            {/* Simulação em Tempo Real da Venda que está sendo Registrada */}
+            {selectedProduct && quantity > 0 && (
+              <div className="bg-[#FFE600]/10 border border-[#FFE600]/30 rounded-2xl p-4 mt-2">
+                <p className="font-bold text-[#FFE600] mb-2 text-xs flex items-center gap-1.5">
+                  <Info className="w-4 h-4" />
+                  Divisão de Ganhos Desta Transação ({quantity}x)
+                </p>
+                
+                {/* Visualizador de Ganhos */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="bg-[#1a1a1a] p-3 rounded-xl border border-white/5">
+                    <p className="text-[10px] text-white/50 font-bold uppercase">Faturamento Bruto</p>
+                    <p className="text-sm font-extrabold text-white mt-0.5">
+                      {formatCurrency(customSalePrice * quantity)}
+                    </p>
+                  </div>
+
+                  <div className="bg-[#1a1a1a] p-3 rounded-xl border border-white/5">
+                    <p className="text-[10px] text-white/50 font-bold uppercase">Encargos Totais ML</p>
+                    <p className="text-sm font-extrabold text-red-400 mt-0.5">
+                      {formatCurrency(
+                        calculateMLFee(customSalePrice, selectedProduct.mlFeeType) * quantity + 
+                        (shippingCostType === 'unit' ? customShipping * quantity : customShipping)
+                      )}
+                    </p>
+                  </div>
+
+                  <div className="bg-emerald-950/20 p-3 rounded-xl border border-emerald-500/10">
+                    <p className="text-[10px] text-emerald-400 font-bold uppercase">Ganho Líquido Real</p>
+                    <p className="text-sm font-black text-emerald-400 mt-0.5">
+                      {formatCurrency(
+                        (customSalePrice - selectedProduct.purchasePrice - calculateMLFee(customSalePrice, selectedProduct.mlFeeType)) * quantity - 
+                        (shippingCostType === 'unit' ? customShipping * quantity : customShipping) -
+                        discount
+                      )}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {selectedProduct ? (
+              <button
+                type="submit"
+                className="w-full bg-[#FFE600] text-black font-extrabold text-xs py-3 px-6 rounded-xl transition-all shadow-[0_0_15px_rgba(255,230,0,0.25)] hover:bg-[#FFE600]/85 cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Confirmar e Registrar Venda de Saída 🛒</span>
+              </button>
+            ) : (
+              <div className="p-4 bg-white/5 rounded-xl text-center text-xs text-white/40 border border-dashed border-white/10 font-medium">
+                Selecione um produto comercializável acima para liberar o registro e estimativas da venda.
+              </div>
+            )}
+          </form>
+        </div>
+
+        {/* Resumo Dinâmico Lateral do Período */}
+        <div className="bg-[#0d0d0d] border border-white/10 p-6 rounded-2xl text-white flex flex-col justify-between">
+          <div>
+            <span className="bg-[#FFE600]/10 text-[#FFE600] px-3 py-1 rounded-full text-[10px] font-extrabold uppercase border border-[#FFE600]/20">
+              📊 Desempenho do Canal
+            </span>
+            <h4 className="text-base font-light mt-3 text-white">Consolidado em Histórico</h4>
+            <p className="text-xs text-white/50 mt-0.5">Visão rápida das saídas registradas até o momento.</p>
+
+            <div className="mt-6 space-y-4">
+              <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                <span className="text-[10px] text-white/40 font-bold block uppercase tracking-wider font-mono">Faturamento Recebido</span>
+                <span className="text-xl font-black text-white mt- block">{formatCurrency(periodTotalRevenue)}</span>
+              </div>
+
+              <div className="bg-white/5 p-4 rounded-xl border border-white/5">
+                <span className="text-[10px] text-white/40 font-bold block uppercase tracking-wider font-mono">Ganho Líquido Recebido</span>
+                <span className="text-xl font-black text-emerald-450 mt-1 block text-emerald-400">{formatCurrency(periodTotalNetProfit)}</span>
+              </div>
+
+              {periodPendingProfit > 0 && (
+                <div className="bg-amber-500/5 p-4 rounded-xl border border-amber-500/20 shadow-inner flex flex-col">
+                  <span className="text-[10px] text-amber-400 font-black block uppercase tracking-widest flex items-center gap-1.5">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
+                    </span>
+                    Retido em Andamento
+                  </span>
+                  <span className="text-xl font-black text-amber-400 mt-1 block">{formatCurrency(periodPendingProfit)}</span>
+                  <p className="text-[9px] text-[#FFE600]/60 mt-1 leading-relaxed font-bold">
+                    Aguardando o prazo de 30 dias do repasse de segurança ou liberação manual na tabela.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-8 pt-4 border-t border-white/5 flex items-center gap-2 text-xs text-white/40">
+            <Landmark className="w-4 h-4 text-white/40 shrink-0" />
+            <span>Valores livres de comissão e do frete cobrados pelo Mercado Livre.</span>
+          </div>
+        </div>
+
+      </div>
+
+      {/* Histórico Consolidado de Transações */}
+      <div className="bg-[#141414] rounded-2xl border border-white/5 shadow-md overflow-hidden">
+        <div className="p-5 border-b border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-base font-light text-white">Histórico de Transações de Venda</h3>
+            <p className="text-xs text-white/50 mt-0.5">Lista consolidada de todas as saídas integradas ao Mercado Livre.</p>
+          </div>
+
+          <div className="flex items-center gap-2.5 w-full md:w-auto">
+            <div className="relative w-full md:w-64">
+              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-white/40 w-4 h-4" />
+              <input
+                type="text"
+                placeholder="Pesquisar por produto..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 text-xs bg-white/5 border border-white/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 text-white font-medium"
+              />
+            </div>
+
+            {/* Apagar Tudo */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsClearOpen(true);
+                setClearPassword('');
+                setClearError(null);
+              }}
+              className="bg-red-600/20 hover:bg-red-600 border border-red-500/30 text-red-100 hover:text-white font-extrabold text-xs px-4 py-2 rounded-lg transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+              id="clear-all-sales-btn"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Apagar Tudo ⚠️</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="bg-white/5 text-white/40 text-[11px] font-bold uppercase tracking-wider border-b border-white/10">
+                <th className="py-4 px-5">Data</th>
+                <th className="py-4 px-4">Produto</th>
+                <th className="py-4 px-4 text-center">Quantidade</th>
+                <th className="py-4 px-4 text-center">Unitário</th>
+                <th className="py-4 px-4 text-center">Total Bruto</th>
+                <th className="py-4 px-4 text-center">Comissão + Frete</th>
+                <th className="py-4 px-4 text-center">Lucro Líquido</th>
+                <th className="py-4 px-4 text-center">Status</th>
+                <th className="py-4 px-5 text-right font-medium">Ação</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5 text-white/95 text-xs font-semibold">
+              {filteredSales.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-white/40 text-xs bg-white/5">
+                    Nenhuma venda registrada no histórico científico do canal.
+                  </td>
+                </tr>
+              ) : (
+                filteredSales.map((sale) => {
+                  const totalSaleValue = sale.salePrice * sale.quantity;
+                  const totalFees = sale.mlFee + sale.shippingCost;
+                  const isPending = sale.status === 'pending';
+
+                  return (
+                    <tr key={sale.id} className="hover:bg-white/5 transition-colors">
+                      {/* Data */}
+                      <td className="py-4 px-5">
+                        <div className="flex items-center gap-2">
+                          <Calendar className="w-3.5 h-3.5 text-white/40" />
+                          <span className="text-white font-bold">{formatDate(sale.date)}</span>
+                        </div>
+                      </td>
+
+                      {/* Produto */}
+                      <td className="py-4 px-4">
+                        <div className="flex items-center gap-2">
+                          <div>
+                            <p className="text-white/90 font-bold">{sale.productName}</p>
+                          </div>
+                        </div>
+                      </td>
+
+                      {/* Quantidade */}
+                      <td className="py-4 px-4 text-center">
+                        <span className="bg-white/5 border border-white/10 text-white font-mono font-bold px-2.5 py-1 rounded">
+                          {sale.quantity}x
+                        </span>
+                      </td>
+
+                      {/* Unitario */}
+                      <td className="py-4 px-4 text-center text-white/60">
+                        {formatCurrency(sale.salePrice)}
+                      </td>
+
+                      {/* Total Bruto */}
+                      <td className="py-4 px-4 text-center text-white font-bold">
+                        {formatCurrency(totalSaleValue)}
+                      </td>
+
+                      {/* Comissão */}
+                      <td className="py-4 px-4 text-center text-red-400 font-mono">
+                        -{formatCurrency(totalFees)}
+                      </td>
+
+                      {/* Lucro Liquido */}
+                      <td className="py-4 px-4 text-center">
+                        {sale.status === 'refunded' ? (
+                          <span className="text-red-500/50 italic line-through font-bold block animate-pulse">
+                            {formatCurrency(0)}
+                          </span>
+                        ) : (
+                          <span className={`text-emerald-400 font-black block ${isPending ? 'text-white/30 italic line-through' : ''}`}>
+                            {formatCurrency(sale.netProfit)}
+                          </span>
+                        )}
+                        
+                        {sale.status === 'completed' ? (
+                          <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 animate-bounce">
+                            +{(sale.netProfit / totalSaleValue * 100).toFixed(0)}% real
+                          </span>
+                        ) : sale.status === 'refunded' ? (
+                          <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
+                            Cancelado
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 animate-pulse font-extrabold">
+                            Retido ⏳
+                          </span>
+                        )}
+                      </td>
+
+                      {/* Status */}
+                      <td className="py-4 px-4 text-center">
+                        {sale.status === 'pending' ? (
+                          <div className="flex flex-col items-center justify-center gap-1">
+                            <span className="bg-amber-500/10 text-amber-400 font-bold px-2.5 py-1 rounded border border-amber-500/20 text-[9px] uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
+                              <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-ping"></span>
+                              Venda Recém-Efetuada
+                            </span>
+                            <span className="text-[10px] text-white/50 font-mono font-bold bg-white/5 px-1.5 py-0.5 rounded" title="Mercado Livre retém o valor por 30 dias de segurança">
+                              Libera em {(() => {
+                                const d = new Date(sale.date + 'T12:00:00');
+                                d.setDate(d.getDate() + 30);
+                                return d.toLocaleDateString('pt-BR');
+                              })()} ({getDaysRemainingForRelease(sale.date, sale.status)} dias restando)
+                            </span>
+                          </div>
+                        ) : sale.status === 'refunded' ? (
+                          <div className="flex flex-col items-center justify-center gap-0.5">
+                            <span className="bg-red-500/15 text-red-500 font-black px-2.5 py-1 rounded border border-red-500/25 text-[9px] uppercase tracking-wider">
+                              Estornada / Cancelada ✖
+                            </span>
+                            <span className="text-[9px] text-red-500/60 font-semibold font-sans">
+                              Estoque devolvido e valores zerados
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex flex-col items-center justify-center gap-0.5">
+                            <span className="bg-[#FFE600]/15 text-[#FFE600] font-black px-2.5 py-1 rounded border border-[#FFE600]/25 text-[9px] uppercase tracking-wider">
+                              Concluída / Liberada ✅
+                            </span>
+                            <span className="text-[9px] text-[#FFE600]/60 font-semibold font-sans">
+                              Dinheiro incorporado ao Caixa
+                            </span>
+                          </div>
+                        )}
+                      </td>
+
+                      {/* Deletar / Estornar com Confirmação Inline */}
+                      <td className="py-4 px-5 text-right font-medium">
+                        <div className="flex items-center justify-end gap-2">
+                          {isPending && onCompleteSale && (
+                            <button
+                              onClick={() => onCompleteSale(sale.id)}
+                              className="bg-emerald-550/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+                              title="Concluir Venda Manualmente 🚀"
+                            >
+                              <ArrowRightCircle className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          
+                          {cancellingSaleId === sale.id ? (
+                            <div className="flex items-center gap-1">
+                              <button
+                                onClick={() => {
+                                  onCancelSale(sale.id);
+                                  setCancellingSaleId(null);
+                                }}
+                                className="bg-red-600 hover:bg-red-700 text-white font-extrabold text-[10px] px-2 py-1 rounded cursor-pointer animate-pulse"
+                              >
+                                Confirmar Estorno
+                              </button>
+                              <button
+                                onClick={() => setCancellingSaleId(null)}
+                                className="bg-white/10 hover:bg-white/20 text-white text-[10px] px-2 py-1 rounded cursor-pointer"
+                              >
+                                Voltar
+                              </button>
+                            </div>
+                          ) : (
+                            sale.status !== 'refunded' && (
+                              <button
+                                onClick={() => setCancellingSaleId(sale.id)}
+                                className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+                                title="Estornar Venda"
+                                id={`cancel-sale-btn-${sale.id}`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Modal de confirmação por senha para Apagar Tudo */}
+      {isClearOpen && (
+        <div className="fixed inset-0 bg-[#000000]/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-[#141414] rounded-2xl border border-red-500/30 max-w-md w-full p-6 shadow-2xl relative">
+            <h3 className="text-lg font-bold text-red-500 mb-2 flex items-center gap-2">
+              <Trash2 className="w-5 h-5" />
+              <span>Aviso de Segurança Crítica</span>
+            </h3>
+            <p className="text-xs text-white/70 mb-5 leading-relaxed">
+              Você está prestes a apagar <strong>todos os produtos cadastrados e registros de vendas</strong> do sistema. Esta ação é irreversível e esvaziará a sua base de dados local e sincronizada.
+            </p>
+
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              if (clearPassword === '123') {
+                onClearDatabase();
+                setIsClearOpen(false);
+                setClearPassword('');
+                setClearError(null);
+              } else {
+                setClearError('Senha de confirmação incorreta!');
+              }
+            }} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-white/70 block mb-1">Digite a senha de confirmação</label>
+                <input
+                  type="password"
+                  required
+                  value={clearPassword}
+                  onChange={(e) => {
+                    setClearPassword(e.target.value);
+                    setClearError(null);
+                  }}
+                  placeholder="Senha"
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-red-500/30 font-bold font-mono tracking-wider"
+                />
+                {clearError && (
+                  <p className="text-red-500 text-[11px] font-bold mt-1.5">{clearError}</p>
+                )}
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setIsClearOpen(false)}
+                  className="bg-white/10 hover:bg-white/15 text-white text-xs font-bold py-2.5 px-4 rounded-xl cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold py-2.5 px-5 rounded-xl cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.25)]"
+                >
+                  Apagar Tudo Definitivamente
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}

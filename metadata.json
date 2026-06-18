@@ -1,0 +1,6 @@
+{
+  "name": "Controle de Vendas Mercado Livre",
+  "description": "Dashboard para controle e gestão administrativa de estoque, vendas, lucro líquido e previsibilidade no Mercado Livre, integrado estruturalmente com planilha Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
