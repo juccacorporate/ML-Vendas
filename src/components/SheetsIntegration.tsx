@@ -30,6 +30,7 @@ interface SheetsIntegrationProps {
   onUpdateSpreadsheetUrl: (url: string) => void;
   webAppUrl: string;
   onUpdateWebAppUrl: (url: string) => void;
+  onPullFromCloud: () => Promise<{ status: 'success' | 'error'; message: string }>;
 }
 
 const APPS_SCRIPT_CODE = `function doPost(e) {
@@ -118,12 +119,10 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     }
     
     return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas 'Produtos' e 'Vendas' atualizadas." }))
-      .setMimeType(ContentService.MimeType.JSON)
-      .setHeader("Access-Control-Allow-Origin", "*");
+      .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
-      .setMimeType(ContentService.MimeType.JSON)
-      .setHeader("Access-Control-Allow-Origin", "*");
+      .setMimeType(ContentService.MimeType.JSON);
   }
 }
 
@@ -252,13 +251,11 @@ function doGet(e) {
       products: products,
       sales: sales
     }))
-    .setMimeType(ContentService.MimeType.JSON)
-    .setHeader("Access-Control-Allow-Origin", "*");
+    .setMimeType(ContentService.MimeType.JSON);
     
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
-      .setMimeType(ContentService.MimeType.JSON)
-      .setHeader("Access-Control-Allow-Origin", "*");
+      .setMimeType(ContentService.MimeType.JSON);
   }
 }`;
 
@@ -268,12 +265,14 @@ export default function SheetsIntegration({
   spreadsheetUrl,
   onUpdateSpreadsheetUrl,
   webAppUrl,
-  onUpdateWebAppUrl
+  onUpdateWebAppUrl,
+  onPullFromCloud
 }: SheetsIntegrationProps) {
   const [copied, setCopied] = useState<'headers' | 'script' | null>(null);
   const [inputUrl, setInputUrl] = useState(spreadsheetUrl);
   
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
   const [syncResult, setSyncResult] = useState<{ status: 'success' | 'error' | null; message: string }>({
     status: null,
     message: ''
@@ -350,6 +349,28 @@ export default function SheetsIntegration({
       });
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  // Ler / Importar dados da planilha para o aplicativo
+  const handlePullFromWebApp = async () => {
+    if (!webAppUrl) return;
+    setIsPulling(true);
+    setSyncResult({ status: null, message: '' });
+    try {
+      const result = await onPullFromCloud();
+      setSyncResult({
+        status: result.status,
+        message: result.message
+      });
+    } catch (error: any) {
+      console.error('Erro ao ler dados da planilha:', error);
+      setSyncResult({
+        status: 'error',
+        message: `Falha na importação de dados: ${error.message || error}`
+      });
+    } finally {
+      setIsPulling(false);
     }
   };
 
@@ -455,7 +476,7 @@ export default function SheetsIntegration({
                 </h3>
                 <span className="text-[10px] text-emerald-400 font-bold">Gravação Direta</span>
               </div>
-              <p className="text-xs text-white/50 mb-4">Insira o link do <strong>Web App gerado no Passo 3 (Painel Direito)</strong> para que o botão de sincronização possa realizar a gravação instantânea dos dados.</p>
+              <p className="text-xs text-white/50 mb-4">Insira o link do <strong>Web App gerado no Passo 3 (Painel Direito)</strong> para que você possa ler (Importar) ou escrever (Exportar) dados em tempo real de forma 100% segura.</p>
               
               <div className="space-y-3">
                 <input
@@ -467,23 +488,47 @@ export default function SheetsIntegration({
                 />
                 
                 {webAppUrl && (
-                  <button
-                    onClick={handleSyncWithWebApp}
-                    disabled={isSyncing}
-                    className="w-full bg-[#FFE600] hover:bg-[#FFE600]/85 text-black font-extrabold text-xs py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(255,230,0,0.25)] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-                  >
-                    {isSyncing ? (
-                      <>
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>Sincronizando de Forma Ativa...</span>
-                      </>
-                    ) : (
-                      <>
-                        <RefreshCw className="w-4 h-4" />
-                        <span>Sincronizar Dados Agora 🚀</span>
-                      </>
-                    )}
-                  </button>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <button
+                      onClick={handlePullFromWebApp}
+                      disabled={isPulling || isSyncing}
+                      className="bg-white/5 hover:bg-white/10 border border-white/10 text-white font-extrabold text-xs py-3 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      id="btn-pull-sheets"
+                      title="Lê e importa todo o banco de dados atual da sua planilha para o aplicativo"
+                    >
+                      {isPulling ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin text-[#FFE600]" />
+                          <span>Importando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Download className="w-4 h-4 text-emerald-400" />
+                          <span>Importar da Planilha 📥</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={handleSyncWithWebApp}
+                      disabled={isSyncing || isPulling}
+                      className="bg-[#FFE600] hover:bg-[#FFE600]/85 text-black font-extrabold text-xs py-3 rounded-xl transition-all shadow-[0_0_15px_rgba(255,230,0,0.15)] flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                      id="btn-push-sheets"
+                      title="Envia e grava os dados locais atuais do aplicativo na sua planilha"
+                    >
+                      {isSyncing ? (
+                        <>
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                          <span>Exportando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <RefreshCw className="w-4 h-4" />
+                          <span>Exportar p/ Planilha 🚀</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 )}
 
                 {/* Exibição de Resultados da Sincronização */}

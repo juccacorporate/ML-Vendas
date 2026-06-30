@@ -57,6 +57,15 @@ export default async function handler(req, res) {
     try {
       responseData = JSON.parse(responseText);
     } catch (err) {
+      if (req.method === 'GET') {
+        console.error('Falha ao decodificar JSON retornado pelo Apps Script:', responseText.substring(0, 500));
+        res.status(502).json({
+          status: 'error',
+          message: 'A resposta do Google Sheets Apps Script não é um JSON válido. Verifique se o script foi implantado corretamente como Web App.'
+        });
+        return;
+      }
+      // Se for POST e a resposta não for JSON puro, tratamos texto bruto como mensagem de sucesso
       responseData = { 
         status: 'success', 
         message: responseText || 'Planilha integrada e gravada com sucesso.' 

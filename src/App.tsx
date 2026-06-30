@@ -16,6 +16,13 @@ import SalesManager from './components/SalesManager';
 import SheetsIntegration from './components/SheetsIntegration';
 
 export default function App() {
+  // Migração automática do Web App URL para o novo fornecido pelo usuário
+  const defaultNewUrl = 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
+  const storedUrl = localStorage.getItem('ml_webapp_url');
+  if (!storedUrl || storedUrl.includes('AKfycbyesx-83QVMrWKiaFOtfaVesZP4uWIXn2BSL-QBo2q5JNjZun5k8Vc4DTOaMohLLmdG')) {
+    localStorage.setItem('ml_webapp_url', defaultNewUrl);
+  }
+
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
     return localStorage.getItem('is_ml_authenticated') === 'true';
   });
@@ -35,6 +42,10 @@ export default function App() {
         console.error('Erro ao ler produtos do localStorage', e);
       }
     }
+    const url = localStorage.getItem('ml_webapp_url') || 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
+    if (url) {
+      return []; // Começa vazio para evitar que dados estéticos fictícios sobreponham a planilha real
+    }
     return INITIAL_PRODUCTS;
   });
 
@@ -47,6 +58,10 @@ export default function App() {
         console.error('Erro ao ler vendas do localStorage', e);
       }
     }
+    const url = localStorage.getItem('ml_webapp_url') || 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
+    if (url) {
+      return []; // Começa vazio para carregar da planilha de forma limpa
+    }
     return INITIAL_SALES;
   });
 
@@ -55,7 +70,7 @@ export default function App() {
   });
 
   const [webAppUrl, setWebAppUrl] = useState<string>(() => {
-    return localStorage.getItem('ml_webapp_url') || '';
+    return localStorage.getItem('ml_webapp_url') || 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
   });
 
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
@@ -64,6 +79,10 @@ export default function App() {
   // Controle de sincronização de múltiplos dispositivos
   const [hasFetchedFromCloud, setHasFetchedFromCloud] = useState<boolean>(false);
   const [isFetchingFromCloud, setIsFetchingFromCloud] = useState<boolean>(false);
+  
+  // Flag para indicar se há alterações locais novas feitas pelo usuário pendentes de gravação na nuvem.
+  // Isso impede que o app faça qualquer escrita na planilha antes de ler o conteúdo atual dela, ou que escreva dados fictícios/antigos!
+  const [hasPendingWrite, setHasPendingWrite] = useState<boolean>(false);
 
   const [initialCapital, setInitialCapital] = useState<number>(() => {
     const saved = localStorage.getItem('ml_initial_capital');
@@ -112,28 +131,59 @@ export default function App() {
         }
         const result = await response.json();
         if (result.status === 'success') {
-          // Só atualiza os estados se houver dados retornados da planilha
-          if (result.products && result.products.length > 0) {
-            setProducts(result.products);
-          }
-          if (result.sales && result.sales.length > 0) {
-            setSales(result.sales);
-          }
+          // Sincroniza os estados locais diretamente com o conteúdo atual da planilha do usuário
+          setProducts(result.products || []);
+          setSales(result.sales || []);
           console.log('Dados em tempo real obtidos com sucesso do Google Sheets!');
+          setHasFetchedFromCloud(true); // Habilita o auto-sync somente após download com sucesso total
         } else if (result.status === 'error') {
           throw new Error(result.message || 'Erro ao carregar dados do Apps Script.');
         }
       } catch (err: any) {
         console.error('Erro ao recuperar dados iniciais da nuvem:', err);
         setCloudSyncError('Não foi possível sincronizar com o banco de dados em tempo real. Exibindo dados locais offline.');
+        // Se falhar o carregamento, marcamos como fetched para o app carregar (modo offline) sem travar na tela de loading
+        setHasFetchedFromCloud(true);
       } finally {
         setIsFetchingFromCloud(false);
-        setHasFetchedFromCloud(true);
       }
     };
 
     fetchInitialData();
   }, [webAppUrl, hasFetchedFromCloud]);
+
+  // Forçar recarregamento/importação manual do banco de dados na planilha do Sheets
+  const handlePullFromCloud = async (): Promise<{ status: 'success' | 'error'; message: string }> => {
+    if (!webAppUrl) return { status: 'error' as const, message: 'Por favor, insira a URL do Web App primeiro.' };
+    setIsFetchingFromCloud(true);
+    setCloudSyncError(null);
+    try {
+      console.log('Forçando leitura/puxada de dados do Google Sheets...', webAppUrl);
+      const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      const result = await response.json();
+      if (result.status === 'success') {
+        setProducts(result.products || []);
+        setSales(result.sales || []);
+        console.log('Dados importados com sucesso do Google Sheets!');
+        setHasFetchedFromCloud(true);
+        setHasPendingWrite(false); // Como acabamos de ler, não temos alterações locais novas a gravar
+        return { status: 'success', message: `Leitura concluída com sucesso! ${result.products?.length || 0} produtos e ${result.sales?.length || 0} vendas importados da sua planilha.` };
+      } else {
+        throw new Error(result.message || 'Erro do Google Apps Script');
+      }
+    } catch (err: any) {
+      console.error('Erro ao ler dados manuais da nuvem:', err);
+      const errorMsg = err.message || String(err);
+      setCloudSyncError(errorMsg);
+      return { status: 'error', message: `Erro ao importar dados da planilha: ${errorMsg}. Certifique-se de que o Apps Script foi implantado corretamente como Web App (Qualquer pessoa) e que removeu o "setHeader" dele se estiver usando o modelo antigo.` };
+    } finally {
+      setIsFetchingFromCloud(false);
+    }
+  };
 
   // Intervalo de atualização periódica para manter múltiplos dispositivos sincronizados em tempo real (20 segundos)
   useEffect(() => {
@@ -142,6 +192,9 @@ export default function App() {
     const interval = setInterval(async () => {
       // Apenas atualiza se o documento estiver visível para evitar chamadas de API desnecessárias em background
       if (document.hidden) return;
+
+      // Se temos alterações locais pendentes de gravação, não buscamos da nuvem para evitar sobrescrever dados locais
+      if (hasPendingWrite) return;
 
       try {
         const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
@@ -164,14 +217,14 @@ export default function App() {
     }, 20000); // 20s de intervalo para tempo real sem sobrecarregar a cota do Apps Script
 
     return () => clearInterval(interval);
-  }, [webAppUrl, hasFetchedFromCloud, products, sales]);
+  }, [webAppUrl, hasFetchedFromCloud, products, sales, hasPendingWrite]);
 
   // Sincronização automática em background sempre que 'products' ou 'sales' mudarem!
   useEffect(() => {
     if (!webAppUrl) return;
     
-    // Se ainda estamos buscando dados do cloud ou se o fetch inicial não rodou, evite sobrescrever a nuvem com estados antigos!
-    if (isFetchingFromCloud || !hasFetchedFromCloud) return;
+    // Se ainda estamos buscando dados do cloud, se o fetch inicial não rodou, ou se não há alterações locais novas, evite escrever!
+    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite) return;
 
     const syncTimeout = setTimeout(async () => {
       setIsCloudSyncing(true);
@@ -195,6 +248,7 @@ export default function App() {
           throw new Error(result.message || 'Erro no Apps Script');
         }
         console.log('Sincronização em tempo real realizada com sucesso!');
+        setHasPendingWrite(false); // Reseta a flag de alterações pendentes após sucesso
       } catch (err: any) {
         console.error('Erro na sincronização em tempo real:', err);
         setCloudSyncError(err.message || String(err));
@@ -204,7 +258,7 @@ export default function App() {
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud]);
+  }, [products, sales, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
 
   // Loop de atualização das vendas pendentes (conclusão automática por período de 30 dias)
   useEffect(() => {
@@ -234,8 +288,11 @@ export default function App() {
 
     if (changed) {
       setSales(updatedSales);
+      if (hasFetchedFromCloud) {
+        setHasPendingWrite(true);
+      }
     }
-  }, [sales]);
+  }, [sales, hasFetchedFromCloud]);
 
   // Função para concluir venda pendente manualmente
   const handleCompleteSale = (saleId: string) => {
@@ -248,6 +305,7 @@ export default function App() {
       }
       return s;
     }));
+    setHasPendingWrite(true);
   };
 
   // Contar produtos com estoque crítico (abaixo do nível de segurança)
@@ -260,14 +318,17 @@ export default function App() {
       id: `prod_${Date.now()}`
     };
     setProducts(prev => [freshProduct, ...prev]);
+    setHasPendingWrite(true);
   };
 
   const handleEditProduct = (updatedProd: Product) => {
     setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+    setHasPendingWrite(true);
   };
 
   const handleDeleteProduct = (id: string) => {
     setProducts(prev => prev.filter(p => p.id !== id));
+    setHasPendingWrite(true);
   };
 
   const handleAddSale = (newSale: Omit<Sale, 'id' | 'grossProfit' | 'netProfit'>) => {
@@ -309,6 +370,7 @@ export default function App() {
     }));
 
     setSales(prev => [freshSale, ...prev]);
+    setHasPendingWrite(true);
   };
 
   const handleCancelSale = (saleId: string) => {
@@ -338,11 +400,13 @@ export default function App() {
       }
       return s;
     }));
+    setHasPendingWrite(true);
   };
 
   const handleClearDatabase = () => {
     setProducts([]);
     setSales([]);
+    setHasPendingWrite(true);
   };
 
   if (!isAuthenticated) {
@@ -424,6 +488,38 @@ export default function App() {
     );
   }
 
+  // Se estiver carregando o banco de dados pela primeira vez na inicialização após o login
+  if (!hasFetchedFromCloud && isFetchingFromCloud) {
+    return (
+      <div className="min-h-screen bg-[#070707] text-white flex flex-col items-center justify-center p-4 font-sans">
+        <div className="flex flex-col items-center max-w-sm text-center space-y-6">
+          <div className="relative">
+            {/* Um círculo pulsante em volta do logo do Mercado Livre */}
+            <div className="absolute inset-0 bg-[#FFE600]/20 rounded-full blur-xl animate-pulse"></div>
+            <div className="bg-[#FFE600] text-black p-5 rounded-full shadow-[0_0_30px_rgba(255,230,0,0.3)] relative">
+              <svg className="w-10 h-10 animate-spin text-black" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+            </div>
+          </div>
+          
+          <div className="space-y-2">
+            <span className="text-[10px] font-black tracking-widest bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/20 px-3 py-1 rounded-full uppercase">
+              SINCRONIZANDO EM REALTIME 🔄
+            </span>
+            <h2 className="text-xl font-light tracking-tight pt-2">
+              Buscando Banco de Dados
+            </h2>
+            <p className="text-xs text-white/50 leading-relaxed">
+              Carregando estoque, faturamento e vendas sincronizadas do Google Sheets. Por favor, aguarde...
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white flex flex-col font-sans selection:bg-[#FFE600] selection:text-black">
       
@@ -489,6 +585,7 @@ export default function App() {
             onUpdateSpreadsheetUrl={setSpreadsheetUrl}
             webAppUrl={webAppUrl}
             onUpdateWebAppUrl={setWebAppUrl}
+            onPullFromCloud={handlePullFromCloud}
           />
         )}
 

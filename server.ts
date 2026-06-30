@@ -38,10 +38,11 @@ async function startServer() {
       try {
         responseData = JSON.parse(responseText);
       } catch (err) {
-        responseData = { 
-          status: 'success', 
-          message: responseText 
-        };
+        console.error('Falha ao decodificar JSON retornado pelo Apps Script:', responseText.substring(0, 500));
+        return res.status(502).json({
+          status: 'error',
+          message: 'A resposta do Google Sheets Apps Script não é um JSON válido. Verifique se o script foi implantado corretamente como Web App.'
+        });
       }
 
       return res.json(responseData);
