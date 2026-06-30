@@ -40,15 +40,48 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     // 1. Sincronizar Produtos
     var productSheet = ss.getSheetByName("Produtos") || ss.insertSheet("Produtos");
     productSheet.clear();
-    var prodHeaders = ["ID Produto", "Nome Produto", "SKU", "Preço de Compra", "Preço de Venda", "Diferença", "Tipo Anuncio ML", "Taxa ML", "Frete Estimado", "Estoque", "Dias Parados"];
+    var prodHeaders = [
+      "ID Produto", "Nome Produto", "SKU", "Preço de Compra", "Preço de Venda", 
+      "Estoque", "Estoque Mínimo", "Data de Entrada", "Categoria", "Tipo Anuncio ML", 
+      "Comissão Customizada %", "Frete Padrão", "Diferença", "Taxa ML", "Dias Parados"
+    ];
     productSheet.appendRow(prodHeaders);
     
     if (payload.products && payload.products.length > 0) {
       var prodRows = payload.products.map(function(p) {
         var diff = p.salePrice - p.purchasePrice;
-        var mlFee = p.salePrice * (p.mlFeeType === 'premium' ? 0.17 : p.mlFeeType === 'classic' ? 0.12 : 0);
-        var days = Math.round((new Date().getTime() - new Date(p.addedDate).getTime()) / (1000 * 3600 * 24));
-        return [p.id, p.name, p.sku, p.purchasePrice, p.salePrice, diff, p.mlFeeType, mlFee, p.shippingCost, p.stock, days];
+        
+        // Calcular Taxa ML aproximada para visualização estética no Sheets
+        var percent = p.mlFeeType === 'custom' ? (p.customFeePercent || 0) : (p.mlFeeType === 'premium' ? 17 : p.mlFeeType === 'classic' ? 12 : 0);
+        var mlFee = (p.salePrice * percent) / 100;
+        if (p.salePrice > 0 && p.salePrice < 79 && (p.mlFeeType === 'classic' || p.mlFeeType === 'premium')) {
+          mlFee += 6.00;
+        }
+        
+        var days = 0;
+        if (p.addedDate) {
+          try {
+            days = Math.round((new Date().getTime() - new Date(p.addedDate).getTime()) / (1000 * 3600 * 24));
+          } catch(err) {}
+        }
+        
+        return [
+          p.id, 
+          p.name, 
+          p.sku, 
+          p.purchasePrice, 
+          p.salePrice, 
+          p.stock, 
+          p.minimalStock || 0, 
+          p.addedDate, 
+          p.category || "Geral", 
+          p.mlFeeType, 
+          p.customFeePercent || 0, 
+          p.shippingCost || 0,
+          diff, 
+          mlFee, 
+          days
+        ];
       });
       productSheet.getRange(2, 1, prodRows.length, prodHeaders.length).setValues(prodRows);
     }
@@ -56,12 +89,30 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     // 2. Sincronizar Vendas
     var salesSheet = ss.getSheetByName("Vendas") || ss.insertSheet("Vendas");
     salesSheet.clear();
-    var salesHeaders = ["ID Venda", "Nome Produto", "Quantidade", "Preço Venda", "Data", "Taxa ML", "Custo Frete", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Status"];
+    var salesHeaders = [
+      "ID Venda", "ID Produto", "Nome Produto", "Quantidade", "Preço Venda", "Data", 
+      "Taxa ML", "Custo Frete", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Desconto", "Status", "Tempo Conclusão"
+    ];
     salesSheet.appendRow(salesHeaders);
     
     if (payload.sales && payload.sales.length > 0) {
       var salesRows = payload.sales.map(function(s) {
-        return [s.id, s.productName, s.quantity, s.salePrice, s.date, s.mlFee, s.shippingCost, s.purchasePrice, s.grossProfit, s.netProfit, s.status];
+        return [
+          s.id, 
+          s.productId || "", 
+          s.productName, 
+          s.quantity, 
+          s.salePrice, 
+          s.date, 
+          s.mlFee, 
+          s.shippingCost, 
+          s.purchasePrice, 
+          s.grossProfit, 
+          s.netProfit,
+          s.discount || 0,
+          s.status || "pending",
+          s.completionTime || 0
+        ];
       });
       salesSheet.getRange(2, 1, salesRows.length, salesHeaders.length).setValues(salesRows);
     }
@@ -77,9 +128,138 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
 }
 
 function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ status: "active", message: "Disparador de Integração ML PRO Ativo!" }))
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // 1. Ler Produtos
+    var products = [];
+    var productSheet = ss.getSheetByName("Produtos");
+    if (productSheet) {
+      var prodData = productSheet.getDataRange().getValues();
+      if (prodData.length > 1) {
+        var headers = prodData[0];
+        var idxId = headers.indexOf("ID Produto");
+        var idxName = headers.indexOf("Nome Produto");
+        var idxSku = headers.indexOf("SKU");
+        var idxPurchase = headers.indexOf("Preço de Compra");
+        var idxSale = headers.indexOf("Preço de Venda");
+        var idxStock = headers.indexOf("Estoque");
+        var idxMinStock = headers.indexOf("Estoque Mínimo");
+        var idxAddedDate = headers.indexOf("Data de Entrada");
+        var idxCategory = headers.indexOf("Categoria");
+        var idxFeeType = headers.indexOf("Tipo Anuncio ML");
+        var idxCustomFee = headers.indexOf("Comissão Customizada %");
+        var idxShipping = headers.indexOf("Frete Padrão");
+        
+        for (var i = 1; i < prodData.length; i++) {
+          var row = prodData[i];
+          if (!row[idxId]) continue;
+          
+          var addedDateStr = "";
+          if (row[idxAddedDate]) {
+            try {
+              var d = new Date(row[idxAddedDate]);
+              if (!isNaN(d.getTime())) {
+                addedDateStr = d.toISOString().split('T')[0];
+              } else {
+                addedDateStr = String(row[idxAddedDate]);
+              }
+            } catch(err) {
+              addedDateStr = String(row[idxAddedDate]);
+            }
+          }
+          
+          products.push({
+            id: String(row[idxId]),
+            name: String(row[idxName]),
+            sku: String(row[idxSku]),
+            purchasePrice: Number(row[idxPurchase]) || 0,
+            salePrice: Number(row[idxSale]) || 0,
+            stock: Number(row[idxStock]) || 0,
+            minimalStock: idxMinStock !== -1 ? (Number(row[idxMinStock]) || 0) : 0,
+            addedDate: addedDateStr || new Date().toISOString().split('T')[0],
+            category: idxCategory !== -1 ? String(row[idxCategory]) : "Geral",
+            mlFeeType: idxFeeType !== -1 ? String(row[idxFeeType]) : "none",
+            customFeePercent: idxCustomFee !== -1 ? (Number(row[idxCustomFee]) || undefined) : undefined,
+            shippingCost: idxShipping !== -1 ? (Number(row[idxShipping]) || 0) : 0
+          });
+        }
+      }
+    }
+    
+    // 2. Ler Vendas
+    var sales = [];
+    var salesSheet = ss.getSheetByName("Vendas");
+    if (salesSheet) {
+      var salesData = salesSheet.getDataRange().getValues();
+      if (salesData.length > 1) {
+        var headers = salesData[0];
+        var idxSaleId = headers.indexOf("ID Venda");
+        var idxProdId = headers.indexOf("ID Produto");
+        var idxProdName = headers.indexOf("Nome Produto");
+        var idxQty = headers.indexOf("Quantidade");
+        var idxPrice = headers.indexOf("Preço Venda");
+        var idxDate = headers.indexOf("Data");
+        var idxFee = headers.indexOf("Taxa ML");
+        var idxShip = headers.indexOf("Custo Frete");
+        var idxPur = headers.indexOf("Preço Compra");
+        var idxGross = headers.indexOf("Lucro Bruto");
+        var idxNet = headers.indexOf("Lucro Líquido");
+        var idxDisc = headers.indexOf("Desconto");
+        var idxStatus = headers.indexOf("Status");
+        var idxComp = headers.indexOf("Tempo Conclusão");
+        
+        for (var i = 1; i < salesData.length; i++) {
+          var row = salesData[i];
+          if (!row[idxSaleId]) continue;
+          
+          var dateStr = "";
+          if (row[idxDate]) {
+            try {
+              var d = new Date(row[idxDate]);
+              if (!isNaN(d.getTime())) {
+                dateStr = d.toISOString().split('T')[0];
+              } else {
+                dateStr = String(row[idxDate]);
+              }
+            } catch(err) {
+              dateStr = String(row[idxDate]);
+            }
+          }
+          
+          sales.push({
+            id: String(row[idxSaleId]),
+            productId: idxProdId !== -1 ? String(row[idxProdId]) : "unknown",
+            productName: String(row[idxProdName]),
+            quantity: Number(row[idxQty]) || 1,
+            salePrice: Number(row[idxPrice]) || 0,
+            date: dateStr || new Date().toISOString().split('T')[0],
+            mlFee: Number(row[idxFee]) || 0,
+            shippingCost: Number(row[idxShip]) || 0,
+            purchasePrice: Number(row[idxPur]) || 0,
+            grossProfit: Number(row[idxGross]) || 0,
+            netProfit: Number(row[idxNet]) || 0,
+            discount: idxDisc !== -1 ? (Number(row[idxDisc]) || 0) : 0,
+            status: idxStatus !== -1 ? String(row[idxStatus]) : "completed",
+            completionTime: idxComp !== -1 ? (Number(row[idxComp]) || undefined) : undefined
+          });
+        }
+      }
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "success",
+      products: products,
+      sales: sales
+    }))
     .setMimeType(ContentService.MimeType.JSON)
     .setHeader("Access-Control-Allow-Origin", "*");
+    
+  } catch (error) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
+      .setMimeType(ContentService.MimeType.JSON)
+      .setHeader("Access-Control-Allow-Origin", "*");
+  }
 }`;
 
 export default function SheetsIntegration({

@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  if (req.method !== 'POST') {
+  if (req.method !== 'POST' && req.method !== 'GET') {
     res.status(405).json({
       status: 'error',
       message: 'Método não permitido.'
@@ -22,7 +22,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { webAppUrl, products, sales } = req.body || {};
+  const webAppUrl = req.method === 'GET' ? req.query.webAppUrl : (req.body || {}).webAppUrl;
 
   if (!webAppUrl) {
     res.status(400).json({ 
@@ -33,13 +33,20 @@ export default async function handler(req, res) {
   }
 
   try {
-    const response = await fetch(webAppUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'text/plain;charset=utf-8'
-      },
-      body: JSON.stringify({ products, sales })
-    });
+    let response;
+    if (req.method === 'GET') {
+      console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
+      response = await fetch(webAppUrl);
+    } else {
+      const { products, sales } = req.body || {};
+      response = await fetch(webAppUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'text/plain;charset=utf-8'
+        },
+        body: JSON.stringify({ products, sales })
+      });
+    }
 
     if (!response.ok) {
       throw new Error(`Google Sheets API retornou status HTTP ${response.status}`);

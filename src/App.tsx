@@ -60,6 +60,10 @@ export default function App() {
 
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  
+  // Controle de sincronização de múltiplos dispositivos
+  const [hasFetchedFromCloud, setHasFetchedFromCloud] = useState<boolean>(false);
+  const [isFetchingFromCloud, setIsFetchingFromCloud] = useState<boolean>(false);
 
   const [initialCapital, setInitialCapital] = useState<number>(() => {
     const saved = localStorage.getItem('ml_initial_capital');
@@ -87,9 +91,87 @@ export default function App() {
     localStorage.setItem('ml_initial_capital', String(initialCapital));
   }, [initialCapital]);
 
+  // Resetar o estado de busca quando a URL do Apps Script mudar (ex: o usuário trocou de planilha)
+  useEffect(() => {
+    setHasFetchedFromCloud(false);
+  }, [webAppUrl]);
+
+  // Buscar dados da planilha na inicialização do aplicativo para manter sincronizado com múltiplos dispositivos
+  useEffect(() => {
+    if (!webAppUrl || hasFetchedFromCloud) return;
+
+    const fetchInitialData = async () => {
+      setIsFetchingFromCloud(true);
+      setCloudSyncError(null);
+      try {
+        console.log('Buscando dados em tempo real da planilha do Google Sheets...', webAppUrl);
+        const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const result = await response.json();
+        if (result.status === 'success') {
+          // Só atualiza os estados se houver dados retornados da planilha
+          if (result.products && result.products.length > 0) {
+            setProducts(result.products);
+          }
+          if (result.sales && result.sales.length > 0) {
+            setSales(result.sales);
+          }
+          console.log('Dados em tempo real obtidos com sucesso do Google Sheets!');
+        } else if (result.status === 'error') {
+          throw new Error(result.message || 'Erro ao carregar dados do Apps Script.');
+        }
+      } catch (err: any) {
+        console.error('Erro ao recuperar dados iniciais da nuvem:', err);
+        setCloudSyncError('Não foi possível sincronizar com o banco de dados em tempo real. Exibindo dados locais offline.');
+      } finally {
+        setIsFetchingFromCloud(false);
+        setHasFetchedFromCloud(true);
+      }
+    };
+
+    fetchInitialData();
+  }, [webAppUrl, hasFetchedFromCloud]);
+
+  // Intervalo de atualização periódica para manter múltiplos dispositivos sincronizados em tempo real (20 segundos)
+  useEffect(() => {
+    if (!webAppUrl || !hasFetchedFromCloud) return;
+
+    const interval = setInterval(async () => {
+      // Apenas atualiza se o documento estiver visível para evitar chamadas de API desnecessárias em background
+      if (document.hidden) return;
+
+      try {
+        const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
+        const response = await fetch(url);
+        if (response.ok) {
+          const result = await response.json();
+          if (result.status === 'success') {
+            // Apenas atualiza se houver dados e forem diferentes dos atuais para evitar re-renderizações e ciclos infinitos
+            if (result.products && JSON.stringify(result.products) !== JSON.stringify(products)) {
+              setProducts(result.products);
+            }
+            if (result.sales && JSON.stringify(result.sales) !== JSON.stringify(sales)) {
+              setSales(result.sales);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('Erro ao atualizar dados em background:', err);
+      }
+    }, 20000); // 20s de intervalo para tempo real sem sobrecarregar a cota do Apps Script
+
+    return () => clearInterval(interval);
+  }, [webAppUrl, hasFetchedFromCloud, products, sales]);
+
   // Sincronização automática em background sempre que 'products' ou 'sales' mudarem!
   useEffect(() => {
     if (!webAppUrl) return;
+    
+    // Se ainda estamos buscando dados do cloud ou se o fetch inicial não rodou, evite sobrescrever a nuvem com estados antigos!
+    if (isFetchingFromCloud || !hasFetchedFromCloud) return;
 
     const syncTimeout = setTimeout(async () => {
       setIsCloudSyncing(true);
@@ -122,7 +204,7 @@ export default function App() {
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, webAppUrl]);
+  }, [products, sales, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud]);
 
   // Loop de atualização das vendas pendentes (conclusão automática por período de 30 dias)
   useEffect(() => {
@@ -353,6 +435,7 @@ export default function App() {
         isSheetsConnected={!!webAppUrl || !!spreadsheetUrl}
         onOpenTutorial={() => {}}
         isCloudSyncing={isCloudSyncing}
+        isFetchingFromCloud={isFetchingFromCloud}
         cloudSyncError={cloudSyncError}
         onLogout={() => {
           setIsAuthenticated(false);

@@ -12,6 +12,7 @@ interface HeaderProps {
   isSheetsConnected: boolean;
   onOpenTutorial: () => void;
   isCloudSyncing?: boolean;
+  isFetchingFromCloud?: boolean;
   cloudSyncError?: string | null;
   onLogout?: () => void;
 }
@@ -23,6 +24,7 @@ export default function Header({
   isSheetsConnected,
   onOpenTutorial,
   isCloudSyncing = false,
+  isFetchingFromCloud = false,
   cloudSyncError = null,
   onLogout
 }: HeaderProps) {
@@ -59,7 +61,12 @@ export default function Header({
 
           {/* Integration Status & Real-time Auto-Sync Info */}
           <div className="flex flex-col sm:flex-row items-center gap-2.5 w-full md:w-auto justify-end">
-            {isCloudSyncing ? (
+            {isFetchingFromCloud ? (
+              <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/25 rounded-xl px-3.5 py-2 text-xs text-emerald-400 font-extrabold animate-pulse">
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Buscando dados em Realtime...</span>
+              </div>
+            ) : isCloudSyncing ? (
               <div className="flex items-center gap-1.5 bg-[#FFE600]/10 border border-[#FFE600]/25 rounded-xl px-3.5 py-2 text-xs text-[#FFE600] font-extrabold animate-pulse">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                 <span>Enviando alteração...</span>

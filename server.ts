@@ -14,7 +14,47 @@ async function startServer() {
   // Middleware para JSON com limite maior para sincronização de grandes volumes se houver
   app.use(express.json({ limit: '20mb' }));
 
-  // API Proxy para Sincronização do Google Sheets - IGNORA CORS NO CLIENTE/IFRAME
+  // API Proxy para Sincronização do Google Sheets - GET para buscar dados em realtime
+  app.get('/api/sync-sheets', async (req, res) => {
+    const webAppUrl = req.query.webAppUrl as string;
+
+    if (!webAppUrl) {
+      return res.status(400).json({ 
+        status: 'error', 
+        message: 'A URL do Web App do Google Sheets está ausente.' 
+      });
+    }
+
+    try {
+      console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
+      const response = await fetch(webAppUrl);
+
+      if (!response.ok) {
+        throw new Error(`Google Sheets API retornou status HTTP ${response.status}`);
+      }
+
+      const responseText = await response.text();
+      let responseData;
+      try {
+        responseData = JSON.parse(responseText);
+      } catch (err) {
+        responseData = { 
+          status: 'success', 
+          message: responseText 
+        };
+      }
+
+      return res.json(responseData);
+    } catch (error: any) {
+      console.error('Erro de Sincronização no Servidor Proxy (GET):', error);
+      return res.status(500).json({
+        status: 'error',
+        message: `Ocorreu um erro ao buscar os dados na sua planilha: ${error.message || error}`
+      });
+    }
+  });
+
+  // API Proxy para Sincronização do Google Sheets - POST para gravar dados
   app.post('/api/sync-sheets', async (req, res) => {
     const { webAppUrl, products, sales } = req.body;
 
