@@ -31,6 +31,7 @@ interface SheetsIntegrationProps {
   webAppUrl: string;
   onUpdateWebAppUrl: (url: string) => void;
   onPullFromCloud: () => Promise<{ status: 'success' | 'error'; message: string }>;
+  initialCapital: number;
 }
 
 const APPS_SCRIPT_CODE = `function doPost(e) {
@@ -117,8 +118,15 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
       });
       salesSheet.getRange(2, 1, salesRows.length, salesHeaders.length).setValues(salesRows);
     }
+
+    // 3. Sincronizar Configurações (Aporte / Capital Inicial)
+    var configSheet = ss.getSheetByName("Config") || ss.insertSheet("Config");
+    configSheet.clear();
+    configSheet.appendRow(["Chave", "Valor"]);
+    var capital = payload.initialCapital !== undefined ? payload.initialCapital : 500;
+    configSheet.appendRow(["Aporte", capital]);
     
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas 'Produtos' e 'Vendas' atualizadas." }))
+    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas 'Produtos', 'Vendas' e 'Config' atualizadas." }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
@@ -130,6 +138,18 @@ function doGet(e) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
+    // Função para sanitizar números e reverter datas formatadas por engano na planilha
+    function sanitizeNumber(val) {
+      if (val && Object.prototype.toString.call(val) === '[object Date]') {
+        try {
+          // No Google Sheets, datas começam em 30/12/1899. Converte milissegundos JavaScript de volta para número do Sheets
+          var sheetsNum = (val.getTime() - new Date(1899, 11, 30).getTime()) / (24 * 60 * 60 * 1000);
+          return sheetsNum;
+        } catch(err) {}
+      }
+      return Number(val) || 0;
+    }
+
     // 1. Ler Produtos
     var products = [];
     var productSheet = ss.getSheetByName("Produtos");
@@ -172,15 +192,15 @@ function doGet(e) {
             id: String(row[idxId]),
             name: String(row[idxName]),
             sku: String(row[idxSku]),
-            purchasePrice: Number(row[idxPurchase]) || 0,
-            salePrice: Number(row[idxSale]) || 0,
-            stock: Number(row[idxStock]) || 0,
-            minimalStock: idxMinStock !== -1 ? (Number(row[idxMinStock]) || 0) : 0,
+            purchasePrice: sanitizeNumber(row[idxPurchase]),
+            salePrice: sanitizeNumber(row[idxSale]),
+            stock: sanitizeNumber(row[idxStock]),
+            minimalStock: idxMinStock !== -1 ? sanitizeNumber(row[idxMinStock]) : 0,
             addedDate: addedDateStr || new Date().toISOString().split('T')[0],
             category: idxCategory !== -1 ? String(row[idxCategory]) : "Geral",
             mlFeeType: idxFeeType !== -1 ? String(row[idxFeeType]) : "none",
-            customFeePercent: idxCustomFee !== -1 ? (Number(row[idxCustomFee]) || undefined) : undefined,
-            shippingCost: idxShipping !== -1 ? (Number(row[idxShipping]) || 0) : 0
+            customFeePercent: idxCustomFee !== -1 ? (row[idxCustomFee] !== "" ? sanitizeNumber(row[idxCustomFee]) : undefined) : undefined,
+            shippingCost: idxShipping !== -1 ? sanitizeNumber(row[idxShipping]) : 0
           });
         }
       }
@@ -230,18 +250,31 @@ function doGet(e) {
             id: String(row[idxSaleId]),
             productId: idxProdId !== -1 ? String(row[idxProdId]) : "unknown",
             productName: String(row[idxProdName]),
-            quantity: Number(row[idxQty]) || 1,
-            salePrice: Number(row[idxPrice]) || 0,
+            quantity: sanitizeNumber(row[idxQty]) || 1,
+            salePrice: sanitizeNumber(row[idxPrice]),
             date: dateStr || new Date().toISOString().split('T')[0],
-            mlFee: Number(row[idxFee]) || 0,
-            shippingCost: Number(row[idxShip]) || 0,
-            purchasePrice: Number(row[idxPur]) || 0,
-            grossProfit: Number(row[idxGross]) || 0,
-            netProfit: Number(row[idxNet]) || 0,
-            discount: idxDisc !== -1 ? (Number(row[idxDisc]) || 0) : 0,
+            mlFee: idxFee !== -1 ? sanitizeNumber(row[idxFee]) : 0,
+            shippingCost: idxShip !== -1 ? sanitizeNumber(row[idxShip]) : 0,
+            purchasePrice: idxPur !== -1 ? sanitizeNumber(row[idxPur]) : 0,
+            grossProfit: idxGross !== -1 ? sanitizeNumber(row[idxGross]) : 0,
+            netProfit: idxNet !== -1 ? sanitizeNumber(row[idxNet]) : 0,
+            discount: idxDisc !== -1 ? sanitizeNumber(row[idxDisc]) : 0,
             status: idxStatus !== -1 ? String(row[idxStatus]) : "completed",
-            completionTime: idxComp !== -1 ? (Number(row[idxComp]) || undefined) : undefined
+            completionTime: idxComp !== -1 ? (row[idxComp] !== "" ? sanitizeNumber(row[idxComp]) : undefined) : undefined
           });
+        }
+      }
+    }
+
+    // 3. Ler Configurações (Aporte / Capital Inicial)
+    var initialCapital = 500;
+    var configSheet = ss.getSheetByName("Config");
+    if (configSheet) {
+      var configData = configSheet.getDataRange().getValues();
+      for (var i = 1; i < configData.length; i++) {
+        if (configData[i][0] === "Aporte") {
+          initialCapital = sanitizeNumber(configData[i][1]) || 500;
+          break;
         }
       }
     }
@@ -249,7 +282,8 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
       products: products,
-      sales: sales
+      sales: sales,
+      initialCapital: initialCapital
     }))
     .setMimeType(ContentService.MimeType.JSON);
     
@@ -266,7 +300,8 @@ export default function SheetsIntegration({
   onUpdateSpreadsheetUrl,
   webAppUrl,
   onUpdateWebAppUrl,
-  onPullFromCloud
+  onPullFromCloud,
+  initialCapital
 }: SheetsIntegrationProps) {
   const [copied, setCopied] = useState<'headers' | 'script' | null>(null);
   const [inputUrl, setInputUrl] = useState(spreadsheetUrl);
@@ -321,7 +356,7 @@ export default function SheetsIntegration({
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ webAppUrl, products, sales })
+        body: JSON.stringify({ webAppUrl, products, sales, initialCapital })
       });
 
       if (!response.ok) {

@@ -70,10 +70,14 @@ export default function DashboardOverview({
 
   // Valores Liberados (Realizados)
   const totalSalesRevenue = filteredCompletedSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
-  const totalMLFees = filteredCompletedSales.reduce((acc, s) => acc + s.mlFee, 0);
-  const totalShipping = filteredCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
+  const totalCompletedMLFees = filteredCompletedSales.reduce((acc, s) => acc + s.mlFee, 0);
+  const totalCompletedShipping = filteredCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
   const totalCostOfGoodsSold = filteredCompletedSales.reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
-  const totalNetProfit = totalSalesRevenue - totalCostOfGoodsSold - totalMLFees - totalShipping;
+  const totalNetProfit = totalSalesRevenue - totalCostOfGoodsSold - totalCompletedMLFees - totalCompletedShipping;
+
+  // Custos totais operacionais de todas as vendas do período (concluídas e pendentes) para exibição no card de custos
+  const totalMLFees = filteredAllSales.reduce((acc, s) => acc + s.mlFee, 0);
+  const totalShipping = filteredAllSales.reduce((acc, s) => acc + s.shippingCost, 0);
 
   // Valores Congelados (Retidos - vendas dentro de 30 dias que ainda não estão concluídas)
   const totalFrozenRevenue = filteredPendingSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
@@ -98,6 +102,28 @@ export default function DashboardOverview({
 
   // Caixa Disponível Atual (Apenas recursos de vendas concluídas/liberadas)
   const liquidCash = initialCapital - totalStockInvestment + (allSalesRevenue - allMLFees - allShipping);
+
+  // Função auxiliar interna para simular o preço líquido unitário do produto (descontadas as taxas ML e frete)
+  const calculateProductNetPrice = (p: Product) => {
+    const percent = p.mlFeeType === 'custom' 
+      ? (p.customFeePercent || 0) 
+      : (p.mlFeeType === 'premium' 
+        ? 17 
+        : p.mlFeeType === 'classic' 
+          ? 12 
+          : 0);
+    
+    let mlFee = (p.salePrice * percent) / 100;
+    // Adiciona taxa fixa de R$6.00 do Mercado Livre se o produto custar menos que R$79
+    if (p.salePrice > 0 && p.salePrice < 79 && (p.mlFeeType === 'classic' || p.mlFeeType === 'premium')) {
+      mlFee += 6;
+    }
+    const shipping = p.shippingCost || 0;
+    const netPrice = p.salePrice - mlFee - shipping;
+    return Math.max(0, netPrice);
+  };
+
+  const totalPotentialNetSaleValue = products.reduce((acc, p) => acc + (calculateProductNetPrice(p) * p.stock), 0);
 
   // Acumulado de Dinheiro Congelado (Líquido a receber de Mercado Pago - vendas pendentes)
   const allPendingSales = sales.filter(s => s.status === 'pending');
@@ -159,11 +185,31 @@ export default function DashboardOverview({
 
   const maxChartValue = Math.max(...chartData.map(d => Math.max(d.faturamento, d.lucroLiquido)), 100);
 
+  // Preparar os dados de evolução patrimonial correspondendo exatamente às datas do chartData
+  // De forma que o patrimônio acompanhe os mesmos dias do gráfico de saídas.
+  const equityChartData = chartData.map((d, index) => {
+    // Reconstruir a data ISO YYYY-MM-DD da chave correspondente
+    const dateEntry = Object.keys(salesByDate).sort((a,b) => a.localeCompare(b))[index];
+    
+    // Lucro acumulado de todas as vendas (não reembolsadas) na base até esta data
+    const cumulativeProfit = sales
+      .filter(s => s.status !== 'refunded' && s.date <= dateEntry)
+      .reduce((acc, s) => acc + s.netProfit, 0);
+
+    return {
+      date: d.date,
+      patrimonio: initialCapital + cumulativeProfit
+    };
+  });
+
+  const maxEquityValue = Math.max(...equityChartData.map(e => e.patrimonio), initialCapital + 100);
+  const minEquityValue = Math.min(...equityChartData.map(e => e.patrimonio), initialCapital - 100);
+
   return (
     <div className="space-y-6 animate-fade-in">
       
       {/* Controles de Período & Boas-vindas */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-md">
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-md">
         <div>
           <h2 className="text-xl font-light text-white flex items-center gap-2">
             <Zap className="w-5 h-5 text-[#FFE600] animate-pulse" />
@@ -173,8 +219,50 @@ export default function DashboardOverview({
             Métricas de desempenho financeiro e fluxo de saída ajustado para comissões e fretes do Mercado Livre.
           </p>
         </div>
+
+        {/* Caixa de Aporte do Negócio Sucinta e Independente */}
+        <div className="bg-white/5 border border-white/10 rounded-xl p-3 flex items-center gap-4 shadow-sm self-start md:self-auto min-w-[210px]">
+          <div>
+            <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest font-sans">Aporte de Capital</p>
+            {isEditingCapital ? (
+              <div className="flex items-center gap-1.5 mt-1">
+                <input
+                  type="number"
+                  value={capitalInput}
+                  onChange={(e) => setCapitalInput(e.target.value)}
+                  className="bg-[#0f0f0f] border border-[#FFE600]/30 text-white font-mono text-xs px-2 py-1 rounded w-20 focus:outline-none focus:ring-1 focus:ring-[#FFE600]"
+                />
+                <button
+                  onClick={() => {
+                    const val = Number(capitalInput);
+                    if (!isNaN(val) && val >= 0) {
+                      onUpdateCapital(val);
+                      setIsEditingCapital(false);
+                    }
+                  }}
+                  className="bg-[#FFE600] hover:bg-[#FFE600]/85 text-black text-[10px] font-bold px-2 py-1 rounded cursor-pointer transition-colors"
+                >
+                  Salvar
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2.5 mt-1">
+                <span className="text-sm font-black text-[#FFE600] font-mono">{formatCurrency(initialCapital)}</span>
+                <button
+                  onClick={() => {
+                    setCapitalInput(String(initialCapital));
+                    setIsEditingCapital(true);
+                  }}
+                  className="text-white/40 hover:text-[#FFE600] hover:underline text-[10px] font-bold cursor-pointer transition-colors"
+                >
+                  Alterar
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
         
-        <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/10">
+        <div className="flex items-center bg-white/5 p-1 rounded-xl border border-white/10 self-start md:self-auto">
           <button
             onClick={() => setSelectedTimeframe('all')}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
@@ -260,61 +348,105 @@ export default function DashboardOverview({
       )}
 
       {/* Grid de KPIs Financeiros */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
-        {/* Faturamento */}
-        <div className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
+        {/* Faturamento Previsto */}
+        <div id="kpi-faturamento" className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
           <div>
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-xs font-bold text-white/40 uppercase tracking-wider">Faturamento Liberado</p>
-                <h3 className="text-xl font-black text-white mt-1.5">{formatCurrency(totalSalesRevenue)}</h3>
+                <p className="text-xs font-bold text-white/40 uppercase tracking-wider">Faturamento Previsto</p>
+                <h3 className="text-xl font-black text-white mt-1.5">{formatCurrency(totalFrozenNetProfit)}</h3>
               </div>
               <div className="bg-[#FFE600]/10 p-2 rounded-xl border border-[#FFE600]/20 text-[#FFE600]">
                 <TrendingUp className="w-4 h-4" />
               </div>
             </div>
-            {totalFrozenRevenue > 0 && (
-              <p className="text-[10px] text-amber-400 font-bold mt-2 flex items-center gap-1">
-                <Clock className="w-3 h-3 animate-pulse" />
-                + {formatCurrency(totalFrozenRevenue)} Congelado (30 dias)
-              </p>
+
+            {filteredPendingSales.length > 0 ? (
+              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
+                <p className="text-[9px] font-bold text-[#FFE600] uppercase tracking-wider">Vendas em Andamento (Líquido):</p>
+                <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                  {filteredPendingSales.map(s => {
+                    return (
+                      <div key={s.id} className="flex justify-between text-[10.5px] font-medium leading-relaxed">
+                        <span className="truncate max-w-[120px] text-white/50" title={`${s.quantity}x ${s.productName}`}>{s.quantity}x {s.productName}</span>
+                        <span className="font-mono text-[#FFE600] font-bold">{formatCurrency(s.netProfit)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-1.5 mt-1 text-white/50 bg-white/5 px-2 py-1 rounded">
+                  <span>Líquido Previsto (Soma):</span>
+                  <span className="text-[#FFE600] font-mono font-bold">{formatCurrency(totalFrozenNetProfit)}</span>
+                </div>
+                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-2 mt-1 text-white/40">
+                  <span>Faturamento Bruto Pendente:</span>
+                  <span className="text-white/60 font-mono font-bold">{formatCurrency(totalFrozenRevenue)}</span>
+                </div>
+                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-2 mt-1 text-white/40">
+                  <span>Liberado Separado:</span>
+                  <span className="text-emerald-400 font-mono font-bold">{formatCurrency(totalSalesRevenue)}</span>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-3 text-[10px] text-white/40 flex justify-between items-center border-t border-white/5 pt-2.5">
+                <span>Liberado Separado:</span>
+                <span className="text-emerald-400 font-mono font-bold">{formatCurrency(totalSalesRevenue)}</span>
+              </div>
             )}
           </div>
-          <p className="text-xs text-white/60 mt-4 flex items-center gap-1">
-            <span className="text-emerald-400 font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded flex items-center gap-0.5 text-[10px]">
-              <ArrowUpRight className="w-3 h-3" />
-              {totalUnitsSold} uni.
-            </span>
-            vendidas total
-          </p>
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-[#FFE600]" />
         </div>
 
         {/* Custo Total de Taxas ML & Fretes */}
-        <div className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
-          <div className="flex justify-between items-start">
-            <div>
-              <p className="text-xs font-bold text-white/40 uppercase tracking-wider">Custos ML & Frete</p>
-              <h3 className="text-xl font-black text-amber-500 mt-1.5">{formatCurrency(totalMLFees + totalShipping)}</h3>
+        <div id="kpi-custos" className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
+          <div>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-xs font-bold text-white/40 uppercase tracking-wider">Custos ML & Frete</p>
+                <h3 className="text-xl font-black text-amber-500 mt-1.5">{formatCurrency(totalMLFees + totalShipping)}</h3>
+              </div>
+              <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 text-amber-400">
+                <Percent className="w-4 h-4" />
+              </div>
             </div>
-            <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 text-amber-400">
-              <Percent className="w-4 h-4" />
-            </div>
+
+            {filteredAllSales.length > 0 ? (
+              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
+                <p className="text-[9px] font-bold text-amber-500 uppercase tracking-wider">Detalhamento dos Custos:</p>
+                <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                  <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
+                    <span className="text-white/50">Taxa do Mercado Livre:</span>
+                    <span className="font-mono text-red-400 font-bold">-{formatCurrency(totalMLFees)}</span>
+                  </div>
+                  <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
+                    <span className="text-white/50">Custo de Frete:</span>
+                    <span className="font-mono text-red-400 font-bold">-{formatCurrency(totalShipping)}</span>
+                  </div>
+                </div>
+                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-1.5 mt-1 text-white/50 bg-white/5 px-2 py-1 rounded">
+                  <span>Custos Totais (Soma):</span>
+                  <span className="text-amber-500 font-mono font-bold">{formatCurrency(totalMLFees + totalShipping)}</span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-white/40 mt-4">Sem custos operacionais registrados no período.</p>
+            )}
           </div>
           <p className="text-[11px] text-white/50 mt-4 flex justify-between">
-            <span>Tarifas: {formatCurrency(totalMLFees)}</span>
-            <span>Envios: {formatCurrency(totalShipping)}</span>
+            <span>Diferença bruta:</span>
+            <span className="font-mono text-white/70">{formatCurrency(totalSalesRevenue - totalCostOfGoodsSold)}</span>
           </p>
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-amber-500" />
         </div>
 
         {/* Ganho Líquido */}
-        <div className="bg-[#141414] p-5 rounded-2xl border border-emerald-500/20 shadow-sm relative overflow-hidden transition-all hover:border-emerald-500/30 bg-gradient-to-b from-[#141414] to-emerald-950/15 flex flex-col justify-between min-h-[148px]">
+        <div id="kpi-lucro" className="bg-[#141414] p-5 rounded-2xl border border-emerald-500/20 shadow-sm relative overflow-hidden transition-all hover:border-emerald-500/30 bg-gradient-to-b from-[#141414] to-emerald-950/15 flex flex-col justify-between min-h-[148px]">
           <div>
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Lucro Realizado</p>
+                <p className="text-xs font-bold text-emerald-400 uppercase tracking-wider">Lucro Líquido Realizado</p>
                 <h3 className="text-xl font-black text-emerald-400 mt-1.5">{formatCurrency(totalNetProfit)}</h3>
               </div>
               <div className="bg-emerald-500 text-black p-2 rounded-xl shadow-sm font-bold">
@@ -336,84 +468,28 @@ export default function DashboardOverview({
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-emerald-400" />
         </div>
 
-        {/* Carteira Mercado Pago 💳 */}
-        <div className="bg-[#141414] p-5 rounded-2xl border border-sky-500/20 shadow-sm relative overflow-hidden transition-all hover:border-sky-500/30 bg-gradient-to-b from-[#141414] to-sky-950/10 flex flex-col justify-between min-h-[148px]">
-          <div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-sky-400 uppercase tracking-wider block">Conta Mercado Pago</span>
-              <span className="text-white/30 text-[10px] bg-white/5 px-1.5 py-0.5 rounded font-mono border border-white/5">SALDO</span>
-            </div>
-            <div className="mt-2.5">
-              <div className="flex items-center gap-1.5">
-                <Unlock className="w-3 h-3 text-emerald-400" />
-                <span className="text-[10px] font-bold text-white/40 uppercase">Livre:</span>
-                <span className="font-mono text-xs text-white/60 ml-auto">{formatCurrency(liquidCash)}</span>
-              </div>
-              <div className="flex items-center gap-1.5 mt-1 border-t border-white/5 pt-1">
-                <Lock className="w-3 h-3 text-amber-400" />
-                <span className="text-[10px] font-bold text-amber-400 uppercase">Congelado ⏳:</span>
-                <span className="font-mono text-xs text-amber-400 font-bold ml-auto">{formatCurrency(cumulativeFrozenNetValue)}</span>
-              </div>
-            </div>
-          </div>
-          <div className="mt-3 text-[11px] text-white/50 flex justify-between border-t border-white/5 pt-1.5">
-            <span>Total em MP:</span>
-            <span className="font-bold font-mono text-white">{formatCurrency(liquidCash + cumulativeFrozenNetValue)}</span>
-          </div>
-          <span className="absolute bottom-0 left-0 right-0 h-1 bg-sky-400" />
-        </div>
-
-        {/* Patrimônio Líquido */}
-        <div className="bg-[#141414] p-5 rounded-2xl border border-[#FFE600]/20 shadow-sm relative overflow-hidden transition-all hover:bg-white/5 bg-gradient-to-b from-[#141414] to-yellow-950/10 flex flex-col justify-between min-h-[148px]">
+        {/* Patrimônio (Estoque Líquido de Venda) */}
+        <div id="kpi-patrimonio" className="bg-[#141414] p-5 rounded-2xl border border-[#FFE600]/20 shadow-sm relative overflow-hidden transition-all hover:bg-white/5 bg-gradient-to-b from-[#141414] to-yellow-950/10 flex flex-col justify-between min-h-[148px]">
           <div>
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-xs font-bold text-[#FFE600] uppercase tracking-wider font-sans">Patrimônio Líquido</p>
-                <h3 className="text-xl font-black text-white mt-1.5">{formatCurrency(totalBusinessEquity)}</h3>
+                <p className="text-xs font-bold text-[#FFE600] uppercase tracking-wider font-sans">Estoque Líquido de Venda</p>
+                <h3 className="text-xl font-black text-white mt-1.5" title="Valor do estoque ativo com as comissões e fretes do ML já descontados">{formatCurrency(totalPotentialNetSaleValue)}</h3>
               </div>
               <div className="bg-[#FFE600]/15 p-2 rounded-xl border border-[#FFE600]/25 text-[#FFE600]">
                 <PackageCheck className="w-4 h-4" />
               </div>
             </div>
-            <p className="text-[10px] text-white/40 mt-1">Estoque ativo: <strong className="text-white/70">{formatCurrency(totalStockCost)}</strong></p>
+            <p className="text-[10px] text-white/40 mt-1">
+              Patrimônio Negócio: <strong className="text-white/70" title="Caixa Livre + Congelado + Estoque a Custo">{formatCurrency(totalBusinessEquity)}</strong>
+            </p>
           </div>
           
-          {isEditingCapital ? (
-            <div className="flex items-center gap-1.5 mt-2">
-              <input
-                type="number"
-                value={capitalInput}
-                onChange={(e) => setCapitalInput(e.target.value)}
-                className="bg-white/5 border border-white/20 text-white font-mono text-[11px] px-1.5 py-0.5 rounded w-16 focus:outline-none focus:ring-1 focus:ring-[#FFE600]"
-              />
-              <button
-                onClick={() => {
-                  const val = Number(capitalInput);
-                  if (!isNaN(val) && val >= 0) {
-                    onUpdateCapital(val);
-                    setIsEditingCapital(false);
-                  }
-                }}
-                className="bg-[#FFE600] hover:bg-[#FFE600]/80 text-black text-[10px] font-black px-2 py-0.5 rounded cursor-pointer"
-              >
-                Salvar
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center justify-between text-[11px] text-white/50 mt-2 border-t border-white/5 pt-1.5">
-              <span>Aporte: <strong className="font-mono text-white/80">{formatCurrency(initialCapital)}</strong></span>
-              <button
-                onClick={() => {
-                  setCapitalInput(String(initialCapital));
-                  setIsEditingCapital(true);
-                }}
-                className="text-[#FFE600] opacity-80 hover:opacity-100 transition-opacity text-[10px] underline font-bold cursor-pointer"
-              >
-                Alterar aporte
-              </button>
-            </div>
-          )}
-          <span className="absolute bottom-0 left-0 right-0 h-1 bg-yellow-400" />
+            <p className="text-[10.5px] text-white/40 mt-3 border-t border-white/5 pt-2 flex justify-between">
+              <span>Custo total de estoque:</span>
+              <strong className="text-white/70 font-mono font-bold">{formatCurrency(totalStockCost)}</strong>
+            </p>
+          <span className="absolute bottom-0 left-0 right-0 h-1 bg-[#FFE600]" />
         </div>
 
       </div>
@@ -426,7 +502,7 @@ export default function DashboardOverview({
               <span>📦 Valores Investidos em Estoque Ativo</span>
             </h4>
             <p className="text-xs text-white/50 mt-1">
-              Análise de patrimônio estocado para controle patrimonial. Os valores contemplam o estoque ativo atual multiplicado pelos custos de compra e de venda de cada produto.
+              Análise de patrimônio estocado para controle patrimonial. Os valores contemplam o estoque ativo atual multiplicado pelos custos de compra e pelos preços líquidos estimados de venda (deduzidas tarifas de anúncios e fretes do Mercado Livre).
             </p>
           </div>
           <div className="mt-4 flex gap-2 border-t border-white/5 pt-3">
@@ -446,24 +522,24 @@ export default function DashboardOverview({
             </p>
           </div>
 
-          {/* Card: Patrimônio em Venda */}
+          {/* Card: Patrimônio em Venda Líquida */}
           <div className="bg-white/5 p-4 rounded-xl border border-white/5 hover:border-[#FFE600]/20 transition-all flex flex-col justify-between">
             <div>
-              <p className="text-[11px] font-bold text-[#FFE600]/80 uppercase tracking-wide">Patrimônio (Preço de Venda)</p>
-              <h3 className="text-lg font-black text-white mt-1">{formatCurrency(totalPotentialSaleValue)}</h3>
+              <p className="text-[11px] font-bold text-[#FFE600]/80 uppercase tracking-wide">Patrimônio (Venda Líquida)</p>
+              <h3 className="text-lg font-black text-white mt-1">{formatCurrency(totalPotentialNetSaleValue)}</h3>
             </div>
             <p className="text-[10px] text-white/40 mt-3 leading-relaxed">
-              Previsão de entrada bruta líquida em caixa caso todo o estoque atual seja escoado pelos valores atuais anunciados.
+              Previsão de entrada real líquida em caixa após descontar as tarifas e fretes se todo o estoque for vendido.
             </p>
           </div>
         </div>
       </div>
 
-      {/* Gráfico de Saídas Customizado e Previsões (Duas Colunas) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* Gráficos de Desempenho e Evolução (Duas Colunas) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
-        {/* Gráfico de Vendas (2 Colunas no lg) */}
-        <div className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md lg:col-span-2 flex flex-col justify-between">
+        {/* Gráfico de Vendas */}
+        <div id="grafico-saidas" className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between">
           <div className="flex items-center justify-between mb-6">
             <div>
               <h3 className="text-base font-light text-white flex items-center gap-2">
@@ -475,11 +551,11 @@ export default function DashboardOverview({
             <div className="flex items-center gap-3 text-xs">
               <div className="flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded-sm bg-[#FFE600] block"></span>
-                <span className="text-white/60 font-medium">Faturamento</span>
+                <span className="text-white/60 font-medium text-[11px]">Faturamento</span>
               </div>
               <div className="flex items-center gap-1.5">
                 <span className="w-3 h-3 rounded-sm bg-emerald-400 block"></span>
-                <span className="text-white/60 font-medium">Lucro Líquido</span>
+                <span className="text-white/60 font-medium text-[11px]">Lucro Líquido</span>
               </div>
             </div>
           </div>
@@ -545,124 +621,264 @@ export default function DashboardOverview({
           </div>
         </div>
 
-        {/* Bloco de Previsibilidade & Estimativa (1 Coluna) */}
-        <div className="bg-[#0d0d0d] text-white p-6 rounded-2xl border border-white/10 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="bg-[#FFE600]/10 text-[#FFE600] px-3 py-1 rounded-full text-xs font-bold w-fit mb-4 border border-[#FFE600]/20">
-              ⚡ Previsibilidade & Projeção
+        {/* Novo Gráfico de Evolução Patrimonial (Linha & Bolinhas) */}
+        <div id="grafico-patrimonio" className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between relative">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-base font-light text-white flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-[#10B981]" />
+                Gráfico de Evolução Patrimonial
+              </h3>
+              <p className="text-xs text-white/50 mt-0.5">Evolução do Patrimônio Líquido total (Capital + Lucros Acumulados) ao longo do tempo</p>
             </div>
-            <h3 className="text-base font-light text-white">Próximos 30 Dias Estimados</h3>
-            <p className="text-xs text-white/50 mt-1">Estimativa de fluxo com base no ritmo acrobat de vendas de {unitsSoldPerDay.toFixed(1)} unidades/dia.</p>
+            <div className="flex items-center gap-1.5 text-xs">
+              <span className="w-3 h-3 rounded-full border border-[#10B981] bg-[#141414] flex items-center justify-center">
+                <span className="w-1 h-1 rounded-full bg-[#FFE600]"></span>
+              </span>
+              <span className="text-white/60 font-medium text-[11px]">Patrimônio Líquido</span>
+            </div>
+          </div>
 
-            <div className="mt-6 space-y-4">
-              <div className="bg-white/5 p-3.5 rounded-xl border border-white/5">
-                <p className="text-[11px] font-bold text-white/40 uppercase tracking-widest">Ritmo de Saída Estimado</p>
+          {/* Gráfico SVG de Linhas e Bolinhas Interativo */}
+          <div className="h-64 flex items-end justify-between pt-10 px-2 relative border-b border-l border-white/10">
+            {/* Linhas de fundo para escala */}
+            <div className="absolute top-10 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
+            <div className="absolute top-28 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
+            <div className="absolute top-46 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
+
+            {/* Renderização do SVG */}
+            {(() => {
+              const svgWidth = 500;
+              const svgHeight = 220;
+              const paddingY = 25;
+              const usableHeight = svgHeight - (paddingY * 2);
+
+              const yMin = Math.max(0, minEquityValue * 0.95);
+              const yMax = maxEquityValue * 1.05;
+              const yRange = yMax - yMin || 100;
+
+              const points = equityChartData.map((d, idx) => {
+                const x = equityChartData.length > 1 
+                  ? (idx / (equityChartData.length - 1)) * (svgWidth - 60) + 30 
+                  : svgWidth / 2;
+                const y = svgHeight - paddingY - ((d.patrimonio - yMin) / yRange) * usableHeight;
+                return { x, y, ...d };
+              });
+
+              const pathD = points.length > 0 
+                ? points.reduce((acc, p, idx) => {
+                    return idx === 0 ? `M ${p.x} ${p.y}` : `${acc} L ${p.x} ${p.y}`;
+                  }, '')
+                : '';
+
+              const areaD = points.length > 0
+                ? `${pathD} L ${points[points.length - 1].x} ${svgHeight - paddingY + 10} L ${points[0].x} ${svgHeight - paddingY + 10} Z`
+                : '';
+
+              return (
+                <div className="w-full h-full relative">
+                  <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-full overflow-visible">
+                    <defs>
+                      <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
+                        <stop offset="0%" stopColor="#FFE600" />
+                        <stop offset="100%" stopColor="#10B981" />
+                      </linearGradient>
+                      <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#10B981" stopOpacity="0.2" />
+                        <stop offset="100%" stopColor="#10B981" stopOpacity="0.0" />
+                      </linearGradient>
+                    </defs>
+
+                    {/* Preenchimento sob a linha */}
+                    {areaD && <path d={areaD} fill="url(#areaGrad)" className="pointer-events-none" />}
+
+                    {/* Linha fluida principal */}
+                    {pathD && <path d={pathD} fill="none" stroke="url(#lineGrad)" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round" className="pointer-events-none" />}
+
+                    {/* Círculos maiores decorativos invisíveis no SVG para o cursor do mouse */}
+                    {points.map((p, idx) => (
+                      <g key={idx}>
+                        <circle cx={p.x} cy={p.y} r="5" fill="#141414" stroke="#10B981" strokeWidth="2.5" />
+                        <circle cx={p.x} cy={p.y} r="1.5" fill="#FFE600" />
+                      </g>
+                    ))}
+                  </svg>
+
+                  {/* Pontos de Hover absolutos transparentes em HTML para Tooltips interativos perfeitos no iframe */}
+                  {points.map((p, idx) => {
+                    const leftPct = (p.x / svgWidth) * 100;
+                    const topPct = (p.y / svgHeight) * 100;
+
+                    return (
+                      <div 
+                        key={idx} 
+                        className="absolute group z-20 cursor-pointer" 
+                        style={{ left: `${leftPct}%`, top: `${topPct}%`, transform: 'translate(-50%, -50%)', width: '24px', height: '24px' }}
+                      >
+                        <div className="w-full h-full flex items-center justify-center">
+                          <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 opacity-0 group-hover:opacity-100 group-hover:scale-150 transition-all duration-150 shadow-lg shadow-emerald-500/50" />
+                        </div>
+
+                        {/* Card do Tooltip */}
+                        <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 bg-[#1c1c1c] text-white rounded-xl p-3 text-xs opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-30 shadow-xl border border-white/10 min-w-[170px] whitespace-nowrap">
+                          <p className="font-extrabold text-[#FFE600] mb-1">Dia {p.date}</p>
+                          <p className="flex justify-between gap-4 text-white/75 font-semibold text-[11px]">
+                            <span>Patrimônio:</span>
+                            <span className="text-emerald-400 font-black">{formatCurrency(p.patrimonio)}</span>
+                          </p>
+                          <p className="flex justify-between gap-4 text-white/40 text-[9.5px] border-t border-white/5 pt-1 mt-1">
+                            <span>Aporte Base:</span>
+                            <span>{formatCurrency(initialCapital)}</span>
+                          </p>
+                          <p className="flex justify-between gap-4 text-emerald-500/80 text-[9.5px]">
+                            <span>Lucro Acum.:</span>
+                            <span className="font-bold">+{formatCurrency(p.patrimonio - initialCapital)}</span>
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+          </div>
+          <div className="flex justify-between px-2 pt-2 text-[10px] text-white/40">
+            <span>Capital inicial (Aporte): {formatCurrency(initialCapital)}</span>
+            <span>Métrica de evolução: Lucro líquido das saídas acumulado</span>
+          </div>
+        </div>
+
+      </div>
+
+      {/* Seção de Alertas, Projeções e Recomendações Críticas (Bento Grid de 3 Colunas) */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        {/* Bloco de Previsibilidade & Estimativa (Bento Coluna 1) */}
+        <div id="bento-provisoes" className="bg-[#141414] text-white p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between">
+          <div>
+            <div className="bg-[#FFE600]/10 text-[#FFE600] px-3 py-1 rounded-full text-xs font-bold w-fit mb-4 border border-[#FFE600]/20 flex items-center gap-1">
+              <Zap className="w-3.5 h-3.5 animate-pulse" />
+              Previsibilidade & Projeção
+            </div>
+            <h3 className="text-sm font-bold text-white mb-1">Próximos 30 Dias Estimados</h3>
+            <p className="text-xs text-white/50">Estimativa de fluxo com base no ritmo atual de vendas de <span className="text-white font-bold">{unitsSoldPerDay.toFixed(1)}</span> unidades/dia.</p>
+
+            <div className="mt-5 space-y-3.5">
+              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Ritmo de Saída Estimado</p>
                 <div className="flex items-baseline gap-2 mt-1">
                   <span className="text-2xl font-black text-[#FFE600]">{Math.ceil(salesPrediction30Days)}</span>
                   <span className="text-xs text-white/60 font-medium font-mono">unidades / mês</span>
                 </div>
               </div>
 
-              <div className="bg-white/5 p-3.5 rounded-xl border border-white/5">
-                <p className="text-[11px] font-bold text-white/40 uppercase tracking-widest">Faturamento Projetado</p>
+              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Faturamento Projetado</p>
                 <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-xl font-bold text-white/90">{formatCurrency(projectedRevenue30Days)}</span>
+                  <span className="text-lg font-bold text-white/90">{formatCurrency(projectedRevenue30Days)}</span>
                 </div>
               </div>
 
-              <div className="bg-emerald-950/20 p-3.5 rounded-xl border border-emerald-500/20">
-                <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-widest">Ganho Líquido Projetado</p>
+              <div className="bg-emerald-950/20 p-3 rounded-xl border border-emerald-500/20">
+                <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Ganho Líquido Projetado</p>
                 <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-xl font-extrabold text-[#FFE600]">{formatCurrency(projectedNetProfit30Days)}</span>
+                  <span className="text-lg font-extrabold text-emerald-400">{formatCurrency(projectedNetProfit30Days)}</span>
                 </div>
               </div>
             </div>
           </div>
 
-          <div className="mt-6 pt-4 border-t border-white/5 text-[11px] text-white/40 text-center">
+          <div className="mt-5 pt-4 border-t border-white/5 text-[10px] text-white/40 text-center">
             Adicione mais vendas para aumentar a precisão estatística da projeção.
           </div>
         </div>
 
-      </div>
-
-      {/* Seção de Alertas e Recomendações Críticas */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        
-        {/* Estoque Baixo */}
-        <div className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md">
-          <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-4">
-            <span className="w-2.5 h-2.5 rounded-full bg-red-500 block animate-pulse"></span>
-            Alertas de Reposição de Estoque ({lowStockItems.length})
-          </h3>
-          
-          {lowStockItems.length === 0 ? (
-            <div className="text-white/40 text-xs py-8 text-center bg-white/5 rounded-xl border border-dashed border-white/10">
-              Excelente! Todos os produtos estão com estoque acima do nível de segurança.
+        {/* Estoque Baixo (Bento Coluna 2) */}
+        <div id="bento-estoque-baixo" className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between">
+          <div>
+            <div className="bg-red-500/10 text-red-400 px-3 py-1 rounded-full text-xs font-bold w-fit mb-4 border border-red-500/20 flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse"></span>
+              Alerta de Reposição
             </div>
-          ) : (
-            <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
-              {lowStockItems.map((prod) => (
-                <div key={prod.id} className="flex items-center justify-between p-3 rounded-xl bg-red-500/5 border border-red-500/15 hover:bg-red-500/10 transition-colors">
-                  <div>
-                    <p className="text-xs font-bold text-white">{prod.name}</p>
-                    <p className="text-[10px] text-white/40 font-mono mt-0.5">SKU: {prod.sku} | Categoria: {prod.category}</p>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-extrabold text-red-400 bg-red-400/10 px-2 py-1 rounded block border border-red-500/25">
-                      {prod.stock === 1 ? '1 un.' : `${prod.stock} un.`}
-                    </span>
-                    <span className="text-[9px] text-white/40 block mt-1">Seguro: &gt;={prod.minimalStock}</span>
-                  </div>
-                </div>
-              ))}
-              <div className="pt-2 text-center">
-                <button 
-                  onClick={() => onNavigateToTab('stock')}
-                  className="text-xs font-bold text-[#FFE600] hover:underline cursor-pointer"
-                >
-                  Ir para Estoque
-                </button>
+            <h3 className="text-sm font-bold text-white mb-1">Reposição de Estoque ({lowStockItems.length})</h3>
+            <p className="text-xs text-white/50 mb-4">Produtos ativos que atingiram ou estão abaixo do nível mínimo de segurança definido.</p>
+            
+            {lowStockItems.length === 0 ? (
+              <div className="text-white/40 text-xs py-10 text-center bg-white/5 rounded-xl border border-dashed border-white/10 flex flex-col items-center justify-center h-44">
+                <PackageCheck className="w-8 h-8 text-emerald-500 mb-2 opacity-80" />
+                Excelente! Todos os produtos estão com estoque acima do nível seguro.
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Tempo parado */}
-        <div className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md">
-          <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-4">
-            <AlertTriangle className="w-4 h-4 text-amber-400 animate-pulse" />
-            Produtos com Estoque Retido (+30 dias) ({idleStockItems.length})
-          </h3>
-
-          {idleStockItems.length === 0 ? (
-            <div className="text-white/40 text-xs py-8 text-center bg-white/5 rounded-xl border border-dashed border-white/10">
-              Parabéns! Nenhum produto está sem giro há mais de 30 dias.
-            </div>
-          ) : (
-            <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
-              {idleStockItems.map((prod) => {
-                const days = calculateDaysInStock(prod.addedDate);
-                return (
-                  <div key={prod.id} className="flex items-center justify-between p-3 rounded-xl bg-amber-500/5 border border-amber-500/15 hover:bg-amber-500/10 transition-colors">
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {lowStockItems.map((prod) => (
+                  <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors">
                     <div>
-                      <p className="text-xs font-bold text-white">{prod.name}</p>
-                      <p className="text-[10px] text-white/40 font-mono mt-0.5 font-semibold">Valor em caixa: {formatCurrency(prod.purchasePrice * prod.stock)}</p>
+                      <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
+                      <p className="text-[10px] text-white/40 font-mono mt-0.5">SKU: {prod.sku}</p>
                     </div>
                     <div className="text-right">
-                      <span className="text-xs font-extrabold text-amber-400 bg-amber-400/15 px-2.5 py-1 rounded block border border-amber-500/25">
-                        {days} dias parado
+                      <span className="text-xs font-extrabold text-red-400 bg-red-500/10 px-2 py-0.5 rounded block border border-red-500/25">
+                        Restam {prod.stock} un.
                       </span>
-                      <span className="text-[9px] text-white/40 block mt-1">Estoque: {prod.stock} un.</span>
+                      <span className="text-[9px] text-white/40 block mt-0.5">Mínimo: {prod.minimalStock}</span>
                     </div>
                   </div>
-                );
-              })}
-              <div className="pt-2 text-center text-xs text-white/50">
-                💡 <span className="font-semibold text-white/80">Dica:</span> Considere criar ofertas ou anúncios <span className="font-bold text-emerald-400">Clássicos</span> com menor margem para girar esse estoque retido mais rápido!
+                ))}
               </div>
+            )}
+          </div>
+          <div className="mt-4 pt-3 border-t border-white/5 text-center">
+            <button 
+              onClick={() => onNavigateToTab('stock')} 
+              className="text-xs text-[#FFE600] font-bold hover:underline cursor-pointer"
+            >
+              Ir para Controle de Estoque →
+            </button>
+          </div>
+        </div>
+
+        {/* Tempo parado (Bento Coluna 3) */}
+        <div id="bento-sem-giro" className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between">
+          <div>
+            <div className="bg-amber-500/10 text-amber-400 px-3 py-1 rounded-full text-xs font-bold w-fit mb-4 border border-amber-500/20 flex items-center gap-1">
+              <AlertTriangle className="w-3.5 h-3.5 animate-pulse text-amber-400" />
+              Retido Sem Giro
             </div>
-          )}
+            <h3 className="text-sm font-bold text-white mb-1">Retidos (+30 dias) ({idleStockItems.length})</h3>
+            <p className="text-xs text-white/50 mb-4">Produtos em estoque sem nenhum registro de venda nos últimos 30 dias ativos.</p>
+
+            {idleStockItems.length === 0 ? (
+              <div className="text-white/40 text-xs py-10 text-center bg-white/5 rounded-xl border border-dashed border-white/10 flex flex-col items-center justify-center h-44">
+                <Coins className="w-8 h-8 text-[#FFE600] mb-2 opacity-80" />
+                Parabéns! Nenhum produto está sem giro há mais de 30 dias.
+              </div>
+            ) : (
+              <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {idleStockItems.map((prod) => {
+                  const days = calculateDaysInStock(prod.addedDate);
+                  return (
+                    <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/10 hover:bg-amber-500/10 transition-colors">
+                      <div>
+                        <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
+                        <p className="text-[10px] text-white/40 font-mono mt-0.5 font-semibold">Custo em caixa: {formatCurrency(prod.purchasePrice * prod.stock)}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-xs font-extrabold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded block border border-amber-500/25">
+                          {days} dias
+                        </span>
+                        <span className="text-[9px] text-white/40 block mt-0.5">Estoque: {prod.stock} un.</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="mt-4 pt-3 border-t border-white/5 text-center">
+            <div className="text-[10px] text-white/50 leading-tight">
+              💡 <span className="font-semibold text-white">Dica:</span> Crie ofertas ou anúncios <span className="font-bold text-emerald-400">Clássicos</span> para girar esse estoque retido mais rápido!
+            </div>
+          </div>
         </div>
 
       </div>

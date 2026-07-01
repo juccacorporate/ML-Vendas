@@ -70,7 +70,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
       quantity,
       salePrice: Number(customSalePrice),
       date: saleDate,
-      mlFee: calculateMLFee(Number(customSalePrice), selectedProduct.mlFeeType) * quantity,
+      mlFee: calculateMLFee(Number(customSalePrice), selectedProduct.mlFeeType, selectedProduct.customFeePercent) * quantity,
       shippingCost: shippingCostType === 'unit' ? Number(customShipping) * quantity : Number(customShipping),
       purchasePrice: selectedProduct.purchasePrice,
       discount: Number(discount)
@@ -259,7 +259,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                     <p className="text-[10px] text-white/50 font-bold uppercase">Encargos Totais ML</p>
                     <p className="text-sm font-extrabold text-red-400 mt-0.5">
                       {formatCurrency(
-                        calculateMLFee(customSalePrice, selectedProduct.mlFeeType) * quantity + 
+                        calculateMLFee(customSalePrice, selectedProduct.mlFeeType, selectedProduct.customFeePercent) * quantity + 
                         (shippingCostType === 'unit' ? customShipping * quantity : customShipping)
                       )}
                     </p>
@@ -480,7 +480,11 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
                       {/* Comissão */}
                       <td className="py-4 px-4 text-center text-red-400 font-mono">
-                        -{formatCurrency(totalFees)}
+                        <span className="font-bold">-{formatCurrency(totalFees)}</span>
+                        <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
+                          <p>Taxa ML: {formatCurrency(sale.mlFee)}</p>
+                          <p>Frete: {formatCurrency(sale.shippingCost)}</p>
+                        </div>
                       </td>
 
                       {/* Lucro Liquido */}

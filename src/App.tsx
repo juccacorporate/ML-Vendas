@@ -115,6 +115,79 @@ export default function App() {
     setHasFetchedFromCloud(false);
   }, [webAppUrl]);
 
+  // Função para sanitizar e corrigir automaticamente produtos e vendas vindos da planilha
+  const sanitizeCloudData = (cloudProducts: Product[], cloudSales: Sale[]) => {
+    const sanitizedProducts = (cloudProducts || []).map(p => ({
+      ...p,
+      purchasePrice: Number(p.purchasePrice) || 0,
+      salePrice: Number(p.salePrice) || 0,
+      stock: Number(p.stock) || 0,
+      minimalStock: Number(p.minimalStock) || 0,
+      shippingCost: Number(p.shippingCost) || 0,
+      customFeePercent: p.customFeePercent !== undefined ? Number(p.customFeePercent) : undefined
+    }));
+
+    const sanitizedSales = (cloudSales || []).map(s => {
+      let salePrice = Number(s.salePrice) || 0;
+      let purchasePrice = Number(s.purchasePrice) || 0;
+      const quantity = Number(s.quantity) || 1;
+      const discount = Number(s.discount) || 0;
+
+      // Corrigir preços corrompidos/bizarros (como datas formatadas por engano na planilha, menores ou iguais a zero ou absurdamente grandes)
+      if (salePrice <= 0 || salePrice > 1000000) {
+        if (Number(s.grossProfit) > 0 && purchasePrice > 0) {
+          salePrice = Number(s.grossProfit) + purchasePrice + discount;
+        } else {
+          // Tentar achar o preço no produto correspondente
+          const matchingProd = sanitizedProducts.find(p => p.id === s.productId);
+          if (matchingProd) {
+            salePrice = matchingProd.salePrice;
+            purchasePrice = matchingProd.purchasePrice;
+          } else {
+            salePrice = 0;
+          }
+        }
+      }
+
+      const totalSaleValue = salePrice * quantity;
+      const totalCostValue = purchasePrice * quantity;
+
+      // Recalcular comissões e lucros para garantir total consistência com os dados reais
+      const matchingProdForFee = sanitizedProducts.find(p => p.id === s.productId);
+      let mlFee = Number(s.mlFee) || 0;
+      
+      // Se a comissão gravada na base veio como 0, mas o produto original cobra comissão, recalculamos de forma retroativa para corrigir dados legados
+      if (matchingProdForFee && mlFee === 0 && matchingProdForFee.mlFeeType !== 'none') {
+        const percent = matchingProdForFee.mlFeeType === 'custom' 
+          ? (matchingProdForFee.customFeePercent || 0) 
+          : (matchingProdForFee.mlFeeType === 'classic' ? 12 : (matchingProdForFee.mlFeeType === 'premium' ? 17 : 0));
+        let calculatedFee = (salePrice * percent) / 100;
+        if (salePrice < 79 && (matchingProdForFee.mlFeeType === 'classic' || matchingProdForFee.mlFeeType === 'premium')) {
+          calculatedFee += 6;
+        }
+        mlFee = Number((calculatedFee * quantity).toFixed(2));
+      }
+
+      const shippingCost = Number(s.shippingCost) || 0;
+      const grossProfit = totalSaleValue - totalCostValue - discount;
+      const netProfit = totalSaleValue - totalCostValue - mlFee - shippingCost - discount;
+
+      return {
+        ...s,
+        salePrice,
+        purchasePrice,
+        quantity,
+        discount,
+        mlFee,
+        shippingCost,
+        grossProfit,
+        netProfit
+      };
+    });
+
+    return { products: sanitizedProducts, sales: sanitizedSales };
+  };
+
   // Buscar dados da planilha na inicialização do aplicativo para manter sincronizado com múltiplos dispositivos
   useEffect(() => {
     if (!webAppUrl || hasFetchedFromCloud) return;
@@ -131,19 +204,28 @@ export default function App() {
         }
         const result = await response.json();
         if (result.status === 'success') {
-          // Sincroniza os estados locais diretamente com o conteúdo atual da planilha do usuário
-          setProducts(result.products || []);
-          setSales(result.sales || []);
-          console.log('Dados em tempo real obtidos com sucesso do Google Sheets!');
+          // Sanitização robusta contra dados corrompidos ou chaves de datas na coluna de preços
+          const sanitized = sanitizeCloudData(result.products || [], result.sales || []);
+          
+          setProducts(sanitized.products);
+          setSales(sanitized.sales);
+          
+          // Sincronizar o capital inicial / aporte
+          if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
+            setInitialCapital(result.initialCapital);
+            localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+          }
+
+          console.log('Dados em tempo real obtidos e sanitizados com sucesso do Google Sheets!');
           setHasFetchedFromCloud(true); // Habilita o auto-sync somente após download com sucesso total
         } else if (result.status === 'error') {
           throw new Error(result.message || 'Erro ao carregar dados do Apps Script.');
         }
       } catch (err: any) {
         console.error('Erro ao recuperar dados iniciais da nuvem:', err);
-        setCloudSyncError('Não foi possível sincronizar com o banco de dados em tempo real. Exibindo dados locais offline.');
-        // Se falhar o carregamento, marcamos como fetched para o app carregar (modo offline) sem travar na tela de loading
-        setHasFetchedFromCloud(true);
+        setCloudSyncError('Sincronização pendente. Não foi possível conectar com a planilha para importar dados. Edições locais protegidas contra sobrescrita na nuvem.');
+        // Se falhar o carregamento, NÃO marcamos como fetched para bloquear escrita acidental e incentivar nova tentativa manual
+        setHasFetchedFromCloud(false);
       } finally {
         setIsFetchingFromCloud(false);
       }
@@ -166,12 +248,21 @@ export default function App() {
       }
       const result = await response.json();
       if (result.status === 'success') {
-        setProducts(result.products || []);
-        setSales(result.sales || []);
-        console.log('Dados importados com sucesso do Google Sheets!');
+        const sanitized = sanitizeCloudData(result.products || [], result.sales || []);
+        
+        setProducts(sanitized.products);
+        setSales(sanitized.sales);
+        
+        // Sincronizar o capital inicial / aporte
+        if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
+          setInitialCapital(result.initialCapital);
+          localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+        }
+
+        console.log('Dados importados e sanitizados com sucesso do Google Sheets!');
         setHasFetchedFromCloud(true);
         setHasPendingWrite(false); // Como acabamos de ler, não temos alterações locais novas a gravar
-        return { status: 'success', message: `Leitura concluída com sucesso! ${result.products?.length || 0} produtos e ${result.sales?.length || 0} vendas importados da sua planilha.` };
+        return { status: 'success', message: `Leitura concluída com sucesso! ${sanitized.products.length} produtos e ${sanitized.sales.length} vendas importados da sua planilha.` };
       } else {
         throw new Error(result.message || 'Erro do Google Apps Script');
       }
@@ -219,7 +310,14 @@ export default function App() {
     return () => clearInterval(interval);
   }, [webAppUrl, hasFetchedFromCloud, products, sales, hasPendingWrite]);
 
-  // Sincronização automática em background sempre que 'products' ou 'sales' mudarem!
+  // Quando o capital inicial / aporte mudar localmente após o fetch inicial, marcamos que temos alterações para sincronizar com o Sheets
+  useEffect(() => {
+    if (hasFetchedFromCloud) {
+      setHasPendingWrite(true);
+    }
+  }, [initialCapital, hasFetchedFromCloud]);
+
+  // Sincronização automática em background sempre que 'products', 'sales' ou 'initialCapital' mudarem!
   useEffect(() => {
     if (!webAppUrl) return;
     
@@ -235,7 +333,7 @@ export default function App() {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ webAppUrl, products, sales })
+          body: JSON.stringify({ webAppUrl, products, sales, initialCapital })
         });
 
         if (!response.ok) {
@@ -258,7 +356,7 @@ export default function App() {
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
+  }, [products, sales, initialCapital, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
 
   // Loop de atualização das vendas pendentes (conclusão automática por período de 30 dias)
   useEffect(() => {
@@ -409,6 +507,13 @@ export default function App() {
     setHasPendingWrite(true);
   };
 
+  const handleUpdateCapital = (newCapital: number) => {
+    if (newCapital !== initialCapital) {
+      setInitialCapital(newCapital);
+      setHasPendingWrite(true);
+    }
+  };
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#070707] text-white flex items-center justify-center p-4 font-sans selection:bg-[#FFE600] selection:text-black">
@@ -548,7 +653,7 @@ export default function App() {
             products={products}
             sales={sales}
             initialCapital={initialCapital}
-            onUpdateCapital={setInitialCapital}
+            onUpdateCapital={handleUpdateCapital}
             onNavigateToTab={(tab) => {
               setActiveTab(tab);
               window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -586,6 +691,7 @@ export default function App() {
             webAppUrl={webAppUrl}
             onUpdateWebAppUrl={setWebAppUrl}
             onPullFromCloud={handlePullFromCloud}
+            initialCapital={initialCapital}
           />
         )}
 
