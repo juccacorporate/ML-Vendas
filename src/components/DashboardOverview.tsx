@@ -79,6 +79,27 @@ export default function DashboardOverview({
   const totalMLFees = filteredAllSales.reduce((acc, s) => acc + s.mlFee, 0);
   const totalShipping = filteredAllSales.reduce((acc, s) => acc + s.shippingCost, 0);
 
+  // Agrupar custos por produto (SKU / linha) para exibição detalhada no card
+  const costsByProduct = filteredAllSales.reduce((acc: { [key: string]: { productName: string; quantity: number; mlFee: number; shippingCost: number; total: number } }, s) => {
+    const key = s.productName;
+    if (!acc[key]) {
+      acc[key] = {
+        productName: s.productName,
+        quantity: 0,
+        mlFee: 0,
+        shippingCost: 0,
+        total: 0
+      };
+    }
+    acc[key].quantity += s.quantity;
+    acc[key].mlFee += s.mlFee;
+    acc[key].shippingCost += s.shippingCost;
+    acc[key].total += s.mlFee + s.shippingCost;
+    return acc;
+  }, {});
+
+  const costsGroupedList = Object.values(costsByProduct).filter(item => item.total > 0);
+
   // Valores Congelados (Retidos - vendas dentro de 30 dias que ainda não estão concluídas)
   const totalFrozenRevenue = filteredPendingSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
   const totalFrozenNetProfit = filteredPendingSales.reduce((acc, s) => acc + s.netProfit, 0);
@@ -381,10 +402,6 @@ export default function DashboardOverview({
                   <span className="text-[#FFE600] font-mono font-bold">{formatCurrency(totalFrozenNetProfit)}</span>
                 </div>
                 <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-2 mt-1 text-white/40">
-                  <span>Faturamento Bruto Pendente:</span>
-                  <span className="text-white/60 font-mono font-bold">{formatCurrency(totalFrozenRevenue)}</span>
-                </div>
-                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-2 mt-1 text-white/40">
                   <span>Liberado Separado:</span>
                   <span className="text-emerald-400 font-mono font-bold">{formatCurrency(totalSalesRevenue)}</span>
                 </div>
@@ -412,18 +429,22 @@ export default function DashboardOverview({
               </div>
             </div>
 
-            {filteredAllSales.length > 0 ? (
+            {costsGroupedList.length > 0 ? (
               <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
-                <p className="text-[9px] font-bold text-amber-500 uppercase tracking-wider">Detalhamento dos Custos:</p>
-                <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
-                  <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
-                    <span className="text-white/50">Taxa do Mercado Livre:</span>
-                    <span className="font-mono text-red-400 font-bold">-{formatCurrency(totalMLFees)}</span>
-                  </div>
-                  <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
-                    <span className="text-white/50">Custo de Frete:</span>
-                    <span className="font-mono text-red-400 font-bold">-{formatCurrency(totalShipping)}</span>
-                  </div>
+                <p className="text-[9px] font-bold text-amber-500 uppercase tracking-wider">Custos por Produto:</p>
+                <div className="max-h-[85px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                  {costsGroupedList.map(item => (
+                    <div key={item.productName} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
+                      <div className="flex justify-between items-center text-[10.5px] font-bold text-white/80">
+                        <span className="truncate max-w-[130px]" title={`${item.quantity}x ${item.productName}`}>{item.quantity}x {item.productName}</span>
+                        <span className="font-mono text-red-400">-{formatCurrency(item.total)}</span>
+                      </div>
+                      <div className="flex gap-3 text-[9px] text-white/40 font-medium">
+                        <span>Taxa ML: <strong className="font-mono text-white/60">{formatCurrency(item.mlFee)}</strong></span>
+                        <span>Frete: <strong className="font-mono text-white/60">{formatCurrency(item.shippingCost)}</strong></span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
                 <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-1.5 mt-1 text-white/50 bg-white/5 px-2 py-1 rounded">
                   <span>Custos Totais (Soma):</span>

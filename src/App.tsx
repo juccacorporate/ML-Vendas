@@ -129,43 +129,55 @@ export default function App() {
 
     const sanitizedSales = (cloudSales || []).map(s => {
       let salePrice = Number(s.salePrice) || 0;
-      let purchasePrice = Number(s.purchasePrice) || 0;
       const quantity = Number(s.quantity) || 1;
       const discount = Number(s.discount) || 0;
+
+      // Encontrar produto correspondente por ID ou Nome para consistência absoluta e correção de desalinhamentos
+      let matchingProd = sanitizedProducts.find(p => p.id === s.productId);
+      if (!matchingProd && s.productName) {
+        matchingProd = sanitizedProducts.find(p => p.name.trim().toLowerCase() === s.productName.trim().toLowerCase());
+      } else if (matchingProd && s.productName && matchingProd.name.trim().toLowerCase() !== s.productName.trim().toLowerCase()) {
+        const foundByName = sanitizedProducts.find(p => p.name.trim().toLowerCase() === s.productName.trim().toLowerCase());
+        if (foundByName) {
+          matchingProd = foundByName;
+        }
+      }
+
+      let purchasePrice = Number(s.purchasePrice) || 0;
+      if (matchingProd) {
+        // Garantir preço de compra real do produto
+        purchasePrice = matchingProd.purchasePrice;
+      }
 
       // Corrigir preços corrompidos/bizarros (como datas formatadas por engano na planilha, menores ou iguais a zero ou absurdamente grandes)
       if (salePrice <= 0 || salePrice > 1000000) {
         if (Number(s.grossProfit) > 0 && purchasePrice > 0) {
           salePrice = Number(s.grossProfit) + purchasePrice + discount;
+        } else if (matchingProd) {
+          salePrice = matchingProd.salePrice;
         } else {
-          // Tentar achar o preço no produto correspondente
-          const matchingProd = sanitizedProducts.find(p => p.id === s.productId);
-          if (matchingProd) {
-            salePrice = matchingProd.salePrice;
-            purchasePrice = matchingProd.purchasePrice;
-          } else {
-            salePrice = 0;
-          }
+          salePrice = 0;
         }
       }
 
       const totalSaleValue = salePrice * quantity;
       const totalCostValue = purchasePrice * quantity;
 
-      // Recalcular comissões e lucros para garantir total consistência com os dados reais
-      const matchingProdForFee = sanitizedProducts.find(p => p.id === s.productId);
+      // Recalcular comissões com base no produto real para consistência absoluta
       let mlFee = Number(s.mlFee) || 0;
-      
-      // Se a comissão gravada na base veio como 0, mas o produto original cobra comissão, recalculamos de forma retroativa para corrigir dados legados
-      if (matchingProdForFee && mlFee === 0 && matchingProdForFee.mlFeeType !== 'none') {
-        const percent = matchingProdForFee.mlFeeType === 'custom' 
-          ? (matchingProdForFee.customFeePercent || 0) 
-          : (matchingProdForFee.mlFeeType === 'classic' ? 12 : (matchingProdForFee.mlFeeType === 'premium' ? 17 : 0));
-        let calculatedFee = (salePrice * percent) / 100;
-        if (salePrice < 79 && (matchingProdForFee.mlFeeType === 'classic' || matchingProdForFee.mlFeeType === 'premium')) {
-          calculatedFee += 6;
+      if (matchingProd) {
+        if (matchingProd.mlFeeType !== 'none') {
+          const percent = matchingProd.mlFeeType === 'custom' 
+            ? (matchingProd.customFeePercent || 0) 
+            : (matchingProd.mlFeeType === 'classic' ? 12 : (matchingProd.mlFeeType === 'premium' ? 17 : 0));
+          let calculatedFee = (salePrice * percent) / 100;
+          if (salePrice < 79 && (matchingProd.mlFeeType === 'classic' || matchingProd.mlFeeType === 'premium')) {
+            calculatedFee += 6;
+          }
+          mlFee = Number((calculatedFee * quantity).toFixed(2));
+        } else {
+          mlFee = 0;
         }
-        mlFee = Number((calculatedFee * quantity).toFixed(2));
       }
 
       const shippingCost = Number(s.shippingCost) || 0;
@@ -174,6 +186,7 @@ export default function App() {
 
       return {
         ...s,
+        productId: matchingProd ? matchingProd.id : s.productId,
         salePrice,
         purchasePrice,
         quantity,
