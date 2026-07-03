@@ -253,3 +253,28 @@ export function getDaysRemainingForRelease(saleDateStr: string, currentStatus?: 
   return Math.max(0, 30 - diffDays);
 }
 
+/**
+ * Formata datas no formato curto DD/MM
+ */
+export function formatShortDate(dateStr: string): string {
+  if (!dateStr) return '';
+  const parts = dateStr.split('-');
+  if (parts.length >= 3) {
+    return `${parts[2]}/${parts[1]}`;
+  }
+  return dateStr;
+}
+
+/**
+ * Calcula a data estimada de liberação somando 30 dias à data da venda
+ */
+export function getReleaseDateStr(dateStr: string): string {
+  if (!dateStr) return '';
+  const date = new Date(dateStr + 'T12:00:00');
+  date.setDate(date.getDate() + 30);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${day}/${month}`;
+}
+
+

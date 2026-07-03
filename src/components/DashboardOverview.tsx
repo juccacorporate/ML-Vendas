@@ -5,8 +5,8 @@
 
 import { useState } from 'react';
 import { Product, Sale } from '../types';
-import { formatCurrency, calculateDaysInStock } from '../utils';
-import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins } from 'lucide-react';
+import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr } from '../utils';
+import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle } from 'lucide-react';
 
 interface DashboardOverviewProps {
   products: Product[];
@@ -64,19 +64,40 @@ export default function DashboardOverview({
     return true;
   });
 
-  // Dividir as vendas filtradas em liberadas (completed) e congeladas (pending)
-  const filteredCompletedSales = filteredAllSales.filter(sale => sale.status !== 'pending');
+  // Dividir as vendas filtradas em liberadas (completed), congeladas (pending) e estornadas (refunded)
+  const filteredCompletedSales = filteredAllSales.filter(sale => sale.status === 'completed');
   const filteredPendingSales = filteredAllSales.filter(sale => sale.status === 'pending');
+  const filteredRefundedSales = filteredAllSales.filter(sale => sale.status === 'refunded');
+
+  // Agrupar as vendas pendentes por data para prever a liberação de fundos (+30 dias)
+  const pendingGroupedByDate = filteredPendingSales.reduce((acc: { [key: string]: { date: string; totalNetProfit: number } }, s) => {
+    if (!acc[s.date]) {
+      acc[s.date] = { date: s.date, totalNetProfit: 0 };
+    }
+    acc[s.date].totalNetProfit += s.netProfit;
+    return acc;
+  }, {});
+
+  const pendingGroupedList = Object.values(pendingGroupedByDate).sort((a, b) => b.date.localeCompare(a.date));
 
   // Valores Liberados (Realizados)
   const totalSalesRevenue = filteredCompletedSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
   const totalCompletedMLFees = filteredCompletedSales.reduce((acc, s) => acc + s.mlFee, 0);
   const totalCompletedShipping = filteredCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
   const totalCostOfGoodsSold = filteredCompletedSales.reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
-  const totalNetProfit = totalSalesRevenue - totalCostOfGoodsSold - totalCompletedMLFees - totalCompletedShipping;
+
+  // Custos de reembolso e prejuízos imprevistos no período filtrado
+  const totalRefundedShipping = filteredRefundedSales.reduce((acc, s) => acc + s.shippingCost, 0);
+  // O prejuízo imprevisto total do estorno engloba o prejuízo físico/extra informado pelo usuário + o frete pago na devolução/cancelamento
+  const totalUnforeseenLosses = filteredRefundedSales.reduce((acc, s) => acc + (s.lossAmount || 0) + s.shippingCost, 0);
+
+  // Lucro líquido do período = faturamento das vendas de fato concluídas menos os seus custos e taxas (garante que fique zerado se não houver vendas concluídas)
+  const totalNetProfit = Math.max(0, totalSalesRevenue - totalCostOfGoodsSold - totalCompletedMLFees - totalCompletedShipping);
 
   // Custos totais operacionais de todas as vendas do período (concluídas e pendentes) para exibição no card de custos
-  const totalMLFees = filteredAllSales.reduce((acc, s) => acc + s.mlFee, 0);
+  // Comissão ML só é cobrada em vendas não reembolsadas
+  const totalMLFees = filteredAllSales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + s.mlFee, 0);
+  // Frete é cobrado em todas as vendas (inclusive as reembolsadas/canceladas!)
   const totalShipping = filteredAllSales.reduce((acc, s) => acc + s.shippingCost, 0);
 
   // Agrupar custos por produto (SKU / linha) para exibição detalhada no card
@@ -91,10 +112,12 @@ export default function DashboardOverview({
         total: 0
       };
     }
-    acc[key].quantity += s.quantity;
-    acc[key].mlFee += s.mlFee;
+    if (s.status !== 'refunded') {
+      acc[key].quantity += s.quantity;
+      acc[key].mlFee += s.mlFee;
+    }
     acc[key].shippingCost += s.shippingCost;
-    acc[key].total += s.mlFee + s.shippingCost;
+    acc[key].total = acc[key].mlFee + acc[key].shippingCost;
     return acc;
   }, {});
 
@@ -112,17 +135,23 @@ export default function DashboardOverview({
   const totalPotentialSaleValue = products.reduce((acc, p) => acc + (p.salePrice * p.stock), 0);
 
   // Faturamento líquido acumulado de TODAS as vendas concluídas (sem limite de período, para calcular Caixa)
-  const allCompletedSales = sales.filter(s => s.status !== 'pending');
+  const allCompletedSales = sales.filter(s => s.status === 'completed');
   const allSalesRevenue = allCompletedSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
   const allMLFees = allCompletedSales.reduce((acc, s) => acc + s.mlFee, 0);
   const allShipping = allCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
 
+  // Custos de frete e prejuízos de TODAS as vendas reembolsadas na base (para cálculo do Caixa)
+  const allRefundedSales = sales.filter(s => s.status === 'refunded');
+  const allRefundedShipping = allRefundedSales.reduce((acc, s) => acc + s.shippingCost, 0);
+  const allUnforeseenLosses = allRefundedSales.reduce((acc, s) => acc + (s.lossAmount || 0), 0);
+
   // Custo de mercadoria de todas as vendas registradas (concluídas e pendentes) + estoque ativo
-  const costOfGoodsAllSales = sales.reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
+  // Vendas reembolsadas NÃO entram aqui pois o estoque voltou para o ativo
+  const costOfGoodsAllSales = sales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
   const totalStockInvestment = totalStockCost + costOfGoodsAllSales;
 
-  // Caixa Disponível Atual (Apenas recursos de vendas concluídas/liberadas)
-  const liquidCash = initialCapital - totalStockInvestment + (allSalesRevenue - allMLFees - allShipping);
+  // Caixa Disponível Atual (Apenas recursos de vendas concluídas/liberadas, deduzindo custos de frete refund e prejuízos)
+  const liquidCash = initialCapital - totalStockInvestment + (allSalesRevenue - allMLFees - allShipping) - allRefundedShipping - allUnforeseenLosses;
 
   // Função auxiliar interna para simular o preço líquido unitário do produto (descontadas as taxas ML e frete)
   const calculateProductNetPrice = (p: Product) => {
@@ -180,8 +209,10 @@ export default function DashboardOverview({
     salesByDate[dateStr] = { amount: 0, quantity: 0, net: 0 };
   }
 
-  // Preencher com as vendas reais (concluídas e pendentes) para mostrar o panorama consolidado do canal
+  // Preencher com as vendas reais (concluídas e pendentes) para mostrar o panorama consolidado do canal (ignora estornos)
   filteredAllSales.forEach(sale => {
+    if (sale.status === 'refunded') return; // estornos saem desse gráfico diário de vendas e lucros
+    
     if (salesByDate[sale.date]) {
       salesByDate[sale.date].amount += sale.salePrice * sale.quantity;
       salesByDate[sale.date].quantity += sale.quantity;
@@ -368,8 +399,8 @@ export default function DashboardOverview({
         </div>
       )}
 
-      {/* Grid de KPIs Financeiros */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* Grid de KPIs Financeiros - Linha Superior (Cards Largos) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         
         {/* Faturamento Previsto */}
         <div id="kpi-faturamento" className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
@@ -390,9 +421,14 @@ export default function DashboardOverview({
                 <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                   {filteredPendingSales.map(s => {
                     return (
-                      <div key={s.id} className="flex justify-between text-[10.5px] font-medium leading-relaxed">
-                        <span className="truncate max-w-[120px] text-white/50" title={`${s.quantity}x ${s.productName}`}>{s.quantity}x {s.productName}</span>
-                        <span className="font-mono text-[#FFE600] font-bold">{formatCurrency(s.netProfit)}</span>
+                      <div key={s.id} className="flex justify-between items-center text-[10.5px] font-medium leading-relaxed">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="text-[10px] text-black font-black font-mono bg-[#FFE600] px-1.5 py-0.5 rounded shrink-0 shadow-[0_1px_3px_rgba(0,0,0,0.3)]" title={`Data da venda: ${s.date}`}>
+                            {formatShortDate(s.date)}
+                          </span>
+                          <span className="truncate text-white/60 font-semibold" title={`${s.quantity}x ${s.productName}`}>{s.quantity}x {s.productName}</span>
+                        </div>
+                        <span className="font-mono text-[#FFE600] font-bold shrink-0">{formatCurrency(s.netProfit)}</span>
                       </div>
                     );
                   })}
@@ -462,6 +498,11 @@ export default function DashboardOverview({
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-amber-500" />
         </div>
 
+      </div>
+
+      {/* Grid de KPIs Financeiros - Linha Inferior (3 Cards Lado a Lado) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+
         {/* Ganho Líquido */}
         <div id="kpi-lucro" className="bg-[#141414] p-5 rounded-2xl border border-emerald-500/20 shadow-sm relative overflow-hidden transition-all hover:border-emerald-500/30 bg-gradient-to-b from-[#141414] to-emerald-950/15 flex flex-col justify-between min-h-[148px]">
           <div>
@@ -480,6 +521,28 @@ export default function DashboardOverview({
                 + {formatCurrency(totalFrozenNetProfit)} retido
               </p>
             )}
+
+            {pendingGroupedList.length > 0 && (
+              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
+                <p className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider mb-1">Previsão de Liberação (+30 dias):</p>
+                <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                  {pendingGroupedList.map(item => {
+                    const releaseDate = getReleaseDateStr(item.date);
+                    return (
+                      <div key={item.date} className="flex justify-between items-center text-[10.5px] font-medium leading-relaxed">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-white/50">Vendas {formatShortDate(item.date)}</span>
+                          <span className="text-[8.5px] text-[#FFE600] font-bold font-mono bg-[#FFE600]/10 px-1 py-0.2 rounded shrink-0 border border-[#FFE600]/10" title="Data prevista de liberação">
+                            Libera {releaseDate}
+                          </span>
+                        </div>
+                        <span className="font-mono text-emerald-400 font-bold shrink-0">{formatCurrency(item.totalNetProfit)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
           <p className="text-[11px] text-white/70 mt-4 flex items-center gap-1 font-medium">
             <span className="text-emerald-400 font-extrabold bg-emerald-500/20 px-1 py-0.5 rounded border border-emerald-500/10">
@@ -495,7 +558,7 @@ export default function DashboardOverview({
             <div className="flex justify-between items-start">
               <div>
                 <p className="text-xs font-bold text-[#FFE600] uppercase tracking-wider font-sans">Estoque Líquido de Venda</p>
-                <h3 className="text-xl font-black text-white mt-1.5" title="Valor do estoque ativo com as comissões e fretes do ML já descontados">{formatCurrency(totalPotentialNetSaleValue)}</h3>
+                <h3 className="text-xl font-black text-white mt-1.5" title="Valor do estoque active com as comissões e fretes do ML já descontados">{formatCurrency(totalPotentialNetSaleValue)}</h3>
               </div>
               <div className="bg-[#FFE600]/15 p-2 rounded-xl border border-[#FFE600]/25 text-[#FFE600]">
                 <PackageCheck className="w-4 h-4" />
@@ -511,6 +574,58 @@ export default function DashboardOverview({
               <strong className="text-white/70 font-mono font-bold">{formatCurrency(totalStockCost)}</strong>
             </p>
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-[#FFE600]" />
+        </div>
+
+        {/* Prejuízos e Imprevistos */}
+        <div id="kpi-prejuizos" className="bg-[#141414] p-5 rounded-2xl border border-red-500/10 shadow-sm relative overflow-hidden transition-all hover:border-red-500/20 bg-gradient-to-b from-[#141414] to-red-950/10 flex flex-col justify-between min-h-[148px]">
+          <div>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-xs font-bold text-red-400 uppercase tracking-wider">Prejuízos e Imprevistos</p>
+                <h3 className="text-xl font-black text-red-400 mt-1.5">{formatCurrency(totalUnforeseenLosses)}</h3>
+              </div>
+              <div className="bg-red-500/10 p-2 rounded-xl border border-red-500/20 text-red-400">
+                <AlertCircle className="w-4 h-4" />
+              </div>
+            </div>
+
+            {filteredRefundedSales.length > 0 ? (
+              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
+                <p className="text-[9px] font-bold text-red-400 uppercase tracking-wider">Relação de Estornos:</p>
+                <div className="max-h-[110px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                  {filteredRefundedSales.map(s => {
+                    return (
+                      <div key={s.id} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
+                        <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
+                          <span className="truncate max-w-[120px] text-white/70 font-bold" title={`${s.quantity}x ${s.productName}`}>{s.quantity}x {s.productName}</span>
+                          <div className="text-right">
+                            {s.lossAmount ? (
+                              <span className="font-mono text-red-400 font-bold block">{formatCurrency(s.lossAmount)}</span>
+                            ) : (
+                              <span className="text-white/30 block text-[9px] font-bold">Sem perda física</span>
+                            )}
+                            <span className="text-[8.5px] text-white/35 block font-mono">Frete: {formatCurrency(s.shippingCost)}</span>
+                          </div>
+                        </div>
+                        {s.lossReason && (
+                          <p className="text-[9.5px] text-red-400 font-medium bg-red-500/10 px-1.5 py-0.5 rounded mt-1 border border-red-500/10 truncate max-w-full" title={s.lossReason}>
+                            Motivo: {s.lossReason}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-white/40 mt-4">Sem prejuízos ou imprevistos registrados no período.</p>
+            )}
+          </div>
+          <p className="text-[11px] text-white/50 mt-4 flex justify-between">
+            <span>Soma dos estornos:</span>
+            <span className="font-mono text-white/70">{formatCurrency(totalUnforeseenLosses)}</span>
+          </p>
+          <span className="absolute bottom-0 left-0 right-0 h-1 bg-red-500" />
         </div>
 
       </div>
@@ -581,60 +696,69 @@ export default function DashboardOverview({
             </div>
           </div>
 
-          {/* Canvas SVG Interativo de Gráfico de Barras Duplo */}
-          <div className="h-64 flex items-end justify-between gap-2.5 sm:gap-4 pt-10 px-2 relative border-b border-l border-white/10">
-            {/* Linhas de fundo para escala */}
-            <div className="absolute top-10 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
-            <div className="absolute top-28 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
-            <div className="absolute top-46 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
+          {/* Container de Rolagem Lateral para evitar que as barras amassem ou andem fora da especificação em resoluções menores */}
+          <div className="w-full overflow-x-auto pb-3 scrollbar-thin">
+            {/* Canvas SVG Interativo de Gráfico de Barras Duplo */}
+            <div className="h-64 flex items-end justify-between gap-3 pt-10 px-2 relative border-b border-l border-white/10 min-w-[550px] w-full">
+              {/* Linhas de fundo para escala */}
+              <div className="absolute top-10 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
+              <div className="absolute top-28 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
+              <div className="absolute top-46 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
 
-            {chartData.map((d, idx) => {
-              const fatHeight = maxChartValue > 0 ? (d.faturamento / maxChartValue) * 80 : 0;
-              const lucHeight = maxChartValue > 0 ? (d.lucroLiquido / maxChartValue) * 80 : 0;
+              {chartData.map((d, idx) => {
+                const fatHeight = maxChartValue > 0 ? (d.faturamento / maxChartValue) * 80 : 0;
+                const lucHeight = maxChartValue > 0 ? (d.lucroLiquido / maxChartValue) * 80 : 0;
 
-              return (
-                <div key={idx} className="flex-1 flex flex-col items-center h-full justify-end group relative z-10">
-                  
-                  {/* Tooltip on Hover */}
-                  <div className="absolute bottom-full mb-2 bg-[#1c1c1c] text-white rounded-xl p-3 text-xs opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-20 shadow-xl border border-white/10 min-w-[150px] whitespace-normal">
-                    <p className="font-bold text-[#FFE600] mb-1">Dia {d.date}</p>
-                    <p className="flex justify-between gap-4 text-white/60">
-                      <span>Faturamento:</span> 
-                      <span className="text-white font-semibold">{formatCurrency(d.faturamento)}</span>
-                    </p>
-                    <p className="flex justify-between gap-4 text-emerald-400 mt-0.5">
-                      <span>Lucro Líquido:</span>
-                      <span className="font-bold">{formatCurrency(d.lucroLiquido)}</span>
-                    </p>
-                    <p className="flex justify-between gap-4 text-amber-400 mt-0.5 border-t border-white/5 pt-1">
-                      <span>Qtd. Vendas:</span>
-                      <span className="text-white font-bold">{d.quantidade} un.</span>
-                    </p>
-                  </div>
-
-                  {/* Barras e Detalhes */}
-                  <div className="w-full flex justify-center items-end gap-1.5 h-full">
+                return (
+                  <div key={idx} className="flex-1 flex flex-col items-center h-full justify-end group relative z-10">
                     
-                    {/* Barra Faturamento */}
-                    <div 
-                      className="w-4 sm:w-6 bg-gradient-to-t from-yellow-650 to-[#FFE600] bg-yellow-450 rounded-t-sm transition-all duration-300 hover:scale-x-105 cursor-pointer"
-                      style={{ height: `${Math.max(fatHeight, 2)}%` }}
-                    />
+                    {/* Tooltip on Hover */}
+                    <div className={`absolute bottom-full mb-2 bg-[#1c1c1c] text-white rounded-xl p-3 text-xs opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-20 shadow-xl border border-white/10 min-w-[155px] whitespace-normal ${
+                      idx === 0 
+                        ? 'left-0 translate-x-0' 
+                        : idx === chartData.length - 1 
+                        ? 'right-0 translate-x-0' 
+                        : 'left-1/2 -translate-x-1/2'
+                    }`}>
+                      <p className="font-bold text-[#FFE600] mb-1">Dia {d.date}</p>
+                      <p className="flex justify-between gap-4 text-white/60">
+                        <span>Faturamento:</span> 
+                        <span className="text-white font-semibold">{formatCurrency(d.faturamento)}</span>
+                      </p>
+                      <p className="flex justify-between gap-4 text-emerald-400 mt-0.5">
+                        <span>Lucro Líquido:</span>
+                        <span className="font-bold">{formatCurrency(d.lucroLiquido)}</span>
+                      </p>
+                      <p className="flex justify-between gap-4 text-amber-400 mt-0.5 border-t border-white/5 pt-1">
+                        <span>Qtd. Vendas:</span>
+                        <span className="text-white font-bold">{d.quantidade} un.</span>
+                      </p>
+                    </div>
 
-                    {/* Barra Lucro Líquido */}
-                    <div 
-                      className="w-4 sm:w-6 bg-gradient-to-t from-emerald-600 to-emerald-400 rounded-t-sm transition-all duration-300 hover:scale-x-105 cursor-pointer"
-                      style={{ height: `${Math.max(lucHeight, 2)}%` }}
-                    />
+                    {/* Barras e Detalhes */}
+                    <div className="w-full flex justify-center items-end gap-1.5 h-full">
+                      
+                      {/* Barra Faturamento */}
+                      <div 
+                        className="w-4 sm:w-6 bg-gradient-to-t from-yellow-650 to-[#FFE600] bg-yellow-450 rounded-t-sm transition-all duration-300 hover:scale-x-105 cursor-pointer"
+                        style={{ height: `${Math.max(fatHeight, 2)}%` }}
+                      />
 
+                      {/* Barra Lucro Líquido */}
+                      <div 
+                        className="w-4 sm:w-6 bg-gradient-to-t from-emerald-600 to-emerald-400 rounded-t-sm transition-all duration-300 hover:scale-x-105 cursor-pointer"
+                        style={{ height: `${Math.max(lucHeight, 2)}%` }}
+                      />
+
+                    </div>
+
+                    <p className="text-[10px] font-bold text-white/40 mt-2 tracking-tighter">
+                      {d.date}
+                    </p>
                   </div>
-
-                  <p className="text-[10px] font-bold text-white/40 mt-2 tracking-tighter">
-                    {d.date}
-                  </p>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
           <div className="flex justify-between px-2 pt-2 text-[10px] text-white/40">
             <span>Valores máximos no gráfico: {formatCurrency(maxChartValue)}</span>
@@ -680,7 +804,7 @@ export default function DashboardOverview({
 
               const points = equityChartData.map((d, idx) => {
                 const x = equityChartData.length > 1 
-                  ? (idx / (equityChartData.length - 1)) * (svgWidth - 60) + 30 
+                  ? (idx / (equityChartData.length - 1)) * (svgWidth - 80) + 40 
                   : svgWidth / 2;
                 const y = svgHeight - paddingY - ((d.patrimonio - yMin) / yRange) * usableHeight;
                 return { x, y, ...d };
@@ -719,6 +843,38 @@ export default function DashboardOverview({
                     {/* Círculos maiores decorativos invisíveis no SVG para o cursor do mouse */}
                     {points.map((p, idx) => (
                       <g key={idx}>
+                        {/* Linha vertical bem sutil de grade */}
+                        <line 
+                          x1={p.x} 
+                          y1={p.y} 
+                          x2={p.x} 
+                          y2={svgHeight - paddingY} 
+                          stroke="rgba(255, 255, 255, 0.08)" 
+                          strokeWidth="1" 
+                          strokeDasharray="2 2" 
+                          className="pointer-events-none"
+                        />
+                        
+                        {/* Valor de patrimônio estático legível acima da bolinha */}
+                        <text 
+                          x={p.x} 
+                          y={p.y - 12} 
+                          textAnchor="middle" 
+                          className="fill-[#10B981] font-bold text-[9px] font-mono select-none"
+                        >
+                          {formatCurrency(p.patrimonio).split(',')[0]}
+                        </text>
+
+                        {/* Data estática no rodapé do gráfico de linha */}
+                        <text 
+                          x={p.x} 
+                          y={svgHeight - paddingY + 14} 
+                          textAnchor="middle" 
+                          className="fill-white/30 font-bold text-[8px] font-mono select-none"
+                        >
+                          {p.date}
+                        </text>
+
                         <circle cx={p.x} cy={p.y} r="5" fill="#141414" stroke="#10B981" strokeWidth="2.5" />
                         <circle cx={p.x} cy={p.y} r="1.5" fill="#FFE600" />
                       </g>
@@ -734,14 +890,20 @@ export default function DashboardOverview({
                       <div 
                         key={idx} 
                         className="absolute group z-20 cursor-pointer" 
-                        style={{ left: `${leftPct}%`, top: `${topPct}%`, transform: 'translate(-50%, -50%)', width: '24px', height: '24px' }}
+                        style={{ left: `${leftPct}%`, top: `${topPct}%`, transform: 'translate(-50%, -50%)', width: '44px', height: '44px' }}
                       >
                         <div className="w-full h-full flex items-center justify-center">
                           <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 opacity-0 group-hover:opacity-100 group-hover:scale-150 transition-all duration-150 shadow-lg shadow-emerald-500/50" />
                         </div>
 
-                        {/* Card do Tooltip */}
-                        <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 bg-[#1c1c1c] text-white rounded-xl p-3 text-xs opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-30 shadow-xl border border-white/10 min-w-[170px] whitespace-nowrap">
+                        {/* Card do Tooltip adaptativo para evitar vazamento das bordas */}
+                        <div className={`absolute bottom-full mb-3 bg-[#1c1c1c] text-white rounded-xl p-3 text-xs opacity-0 pointer-events-none group-hover:opacity-100 transition-opacity z-30 shadow-xl border border-white/10 min-w-[170px] whitespace-nowrap ${
+                          idx === 0 
+                            ? 'left-0 translate-x-0' 
+                            : idx === equityChartData.length - 1 
+                            ? 'right-0 translate-x-0 left-auto' 
+                            : 'left-1/2 -translate-x-1/2'
+                        }`}>
                           <p className="font-extrabold text-[#FFE600] mb-1">Dia {p.date}</p>
                           <p className="flex justify-between gap-4 text-white/75 font-semibold text-[11px]">
                             <span>Patrimônio:</span>

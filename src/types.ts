@@ -34,6 +34,8 @@ export interface Sale {
   discount?: number;     // Desconto em R$ aplicado à venda
   status?: 'pending' | 'completed' | 'refunded'; // Status da venda
   completionTime?: number; // Tempo em milissegundos para conclusão no sistema
+  lossAmount?: number;     // Prejuízo extra do estorno/cancelamento
+  lossReason?: string;     // Motivo curto do prejuízo no estorno
 }
 
 export interface GoogleSheetsConfig {

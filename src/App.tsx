@@ -323,13 +323,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [webAppUrl, hasFetchedFromCloud, products, sales, hasPendingWrite]);
 
-  // Quando o capital inicial / aporte mudar localmente após o fetch inicial, marcamos que temos alterações para sincronizar com o Sheets
-  useEffect(() => {
-    if (hasFetchedFromCloud) {
-      setHasPendingWrite(true);
-    }
-  }, [initialCapital, hasFetchedFromCloud]);
-
   // Sincronização automática em background sempre que 'products', 'sales' ou 'initialCapital' mudarem!
   useEffect(() => {
     if (!webAppUrl) return;
@@ -484,7 +477,7 @@ export default function App() {
     setHasPendingWrite(true);
   };
 
-  const handleCancelSale = (saleId: string) => {
+  const handleCancelSale = (saleId: string, lossAmount: number = 0, lossReason: string = '') => {
     const targetSale = sales.find(s => s.id === saleId);
     if (!targetSale) return;
 
@@ -499,14 +492,16 @@ export default function App() {
       return p;
     }));
 
-    // Ao invés de deletar, atualiza o status para 'refunded' e zera os lucros e venda
+    // Ao invés de deletar, atualiza o status para 'refunded', zera os lucros e venda, e salva o prejuízo extra e o motivo
     setSales(prev => prev.map(s => {
       if (s.id === saleId) {
         return {
           ...s,
           status: 'refunded' as const,
           netProfit: 0,
-          grossProfit: 0
+          grossProfit: 0,
+          lossAmount: Number(lossAmount) || 0,
+          lossReason: lossReason || undefined
         };
       }
       return s;
@@ -659,7 +654,7 @@ export default function App() {
       />
 
       {/* Área de Conteúdo Principal com Container Limitador de Responsividade */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      <main className="flex-1 max-w-[1550px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
         
         {activeTab === 'dashboard' && (
           <DashboardOverview
@@ -712,7 +707,7 @@ export default function App() {
 
       {/* Footer corporativo */}
       <footer className="bg-[#0d0d0d] text-white/40 py-6 border-t border-white/10 mt-12 text-center text-xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-2">
+        <div className="max-w-[1550px] mx-auto px-4 sm:px-6 lg:px-8 space-y-2">
           <p>© 2026 Controle Administrativo de Vendas no Mercado Livre. Todos os direitos reservados.</p>
           <p className="text-[10px] text-white/20 font-medium">Desenvolvido com diretrizes de precisão gerencial de faturamento e fluxo líq. corporativo.</p>
         </div>

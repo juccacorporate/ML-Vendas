@@ -30,7 +30,7 @@ export default function Header({
 }: HeaderProps) {
   return (
     <header className="bg-[#0d0d0d] text-white shadow-xl border-b border-white/10">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="max-w-[1550px] mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col md:flex-row items-center justify-between py-5 gap-4">
           
           {/* Logo & Branding */}

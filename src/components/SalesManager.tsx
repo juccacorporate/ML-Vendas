@@ -12,7 +12,7 @@ interface SalesManagerProps {
   products: Product[];
   sales: Sale[];
   onAddSale: (sale: Omit<Sale, 'id' | 'grossProfit' | 'netProfit'>) => void;
-  onCancelSale: (saleId: string) => void;
+  onCancelSale: (saleId: string, lossAmount?: number, lossReason?: string) => void;
   onCompleteSale?: (saleId: string) => void;
   onClearDatabase: () => void;
 }
@@ -28,6 +28,12 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const [discount, setDiscount] = useState<number>(0);
   const [formError, setFormError] = useState<string | null>(null);
   const [cancellingSaleId, setCancellingSaleId] = useState<string | null>(null);
+
+  // Estados para o Modal de Cancelamento com Pergunta de Prejuízo
+  const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
+  const [saleToCancel, setSaleToCancel] = useState<Sale | null>(null);
+  const [lossAmountInput, setLossAmountInput] = useState<string>('0');
+  const [lossReasonInput, setLossReasonInput] = useState<string>('');
 
   // Estados para o Modal de Excluir Tudo por Senha
   const [isClearOpen, setIsClearOpen] = useState(false);
@@ -457,6 +463,11 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                         <div className="flex items-center gap-2">
                           <div>
                             <p className="text-white/90 font-bold">{sale.productName}</p>
+                            {sale.status === 'refunded' && sale.lossReason && (
+                              <p className="text-[10px] text-red-400 font-bold mt-1 bg-red-500/5 px-2 py-1 rounded border border-red-500/10 w-fit max-w-xs leading-snug" title={sale.lossReason}>
+                                Motivo: {sale.lossReason}
+                              </p>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -490,9 +501,16 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       {/* Lucro Liquido */}
                       <td className="py-4 px-4 text-center">
                         {sale.status === 'refunded' ? (
-                          <span className="text-red-500/50 italic line-through font-bold block animate-pulse">
-                            {formatCurrency(0)}
-                          </span>
+                          <div className="space-y-1">
+                            <span className="text-red-500 italic font-bold block">
+                              {formatCurrency(0)}
+                            </span>
+                            {sale.lossAmount !== undefined && sale.lossAmount > 0 && (
+                              <span className="text-[10px] text-red-400 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto" title="Prejuízo adicional lançado no estorno">
+                                Prejuízo: -{formatCurrency(sale.lossAmount)}
+                              </span>
+                            )}
+                          </div>
                         ) : (
                           <span className={`text-emerald-400 font-black block ${isPending ? 'text-white/30 italic line-through' : ''}`}>
                             {formatCurrency(sale.netProfit)}
@@ -564,35 +582,19 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                             </button>
                           )}
                           
-                          {cancellingSaleId === sale.id ? (
-                            <div className="flex items-center gap-1">
-                              <button
-                                onClick={() => {
-                                  onCancelSale(sale.id);
-                                  setCancellingSaleId(null);
-                                }}
-                                className="bg-red-600 hover:bg-red-700 text-white font-extrabold text-[10px] px-2 py-1 rounded cursor-pointer animate-pulse"
-                              >
-                                Confirmar Estorno
-                              </button>
-                              <button
-                                onClick={() => setCancellingSaleId(null)}
-                                className="bg-white/10 hover:bg-white/20 text-white text-[10px] px-2 py-1 rounded cursor-pointer"
-                              >
-                                Voltar
-                              </button>
-                            </div>
-                          ) : (
-                            sale.status !== 'refunded' && (
-                              <button
-                                onClick={() => setCancellingSaleId(sale.id)}
-                                className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
-                                title="Estornar Venda"
-                                id={`cancel-sale-btn-${sale.id}`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )
+                          {sale.status !== 'refunded' && (
+                            <button
+                              onClick={() => {
+                                setSaleToCancel(sale);
+                                setLossAmountInput('0');
+                                setIsCancelModalOpen(true);
+                              }}
+                              className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+                              title="Estornar Venda"
+                              id={`cancel-sale-btn-${sale.id}`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           )}
                         </div>
                       </td>
@@ -662,6 +664,90 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmação de Estorno com Pergunta de Prejuízo */}
+      {isCancelModalOpen && saleToCancel && (
+        <div className="fixed inset-0 bg-[#000000]/85 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-[#141414] rounded-2xl border border-red-500/20 max-w-md w-full p-6 shadow-2xl relative animate-in fade-in zoom-in duration-150">
+            <h3 className="text-lg font-bold text-red-500 mb-2 flex items-center gap-2">
+              <AlertCircle className="w-5 h-5" />
+              <span>Estornar / Cancelar Venda</span>
+            </h3>
+            <p className="text-xs text-white/70 mb-4 leading-relaxed">
+              Você está prestes a estornar a venda de <strong>{saleToCancel.quantity}x {saleToCancel.productName}</strong> realizada em {saleToCancel.date.split('-').reverse().join('/')}.
+              O estoque será devolvido automaticamente para a base.
+            </p>
+
+            <div className="bg-white/5 border border-white/10 p-4 rounded-xl space-y-4 mb-5">
+              <div>
+                <label className="text-xs font-bold text-white/80 block leading-relaxed mb-1.5">
+                  Houve prejuízo financeiro extra com este estorno?
+                  <span className="text-[10px] text-white/40 block font-normal mt-0.5">
+                    Informe caso haja custos extras não reembolsados, embalagem perdida ou danos físicos ao produto.
+                  </span>
+                </label>
+                
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-xs font-bold text-white/40">
+                    R$
+                  </span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={lossAmountInput}
+                    onChange={(e) => setLossAmountInput(e.target.value)}
+                    placeholder="0,00"
+                    className="w-full bg-black/40 border border-white/10 rounded-lg pl-9 pr-4 py-2.5 text-sm text-white font-mono font-bold focus:outline-none focus:ring-2 focus:ring-red-500/30"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-white/80 block leading-relaxed mb-1.5">
+                  Descreva o que aconteceu (motivo do prejuízo):
+                  <span className="text-[10px] text-white/40 block font-normal mt-0.5">
+                    Deixe uma frase explicativa curta para registrar no histórico e no card de prejuízos.
+                  </span>
+                </label>
+                <input
+                  type="text"
+                  value={lossReasonInput}
+                  onChange={(e) => setLossReasonInput(e.target.value)}
+                  placeholder="Ex: Cliente devolveu produto quebrado / Danificou caixa"
+                  className="w-full bg-black/40 border border-white/10 rounded-lg px-3 py-2.5 text-xs text-white placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-red-500/30 font-medium"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsCancelModalOpen(false);
+                  setSaleToCancel(null);
+                  setLossReasonInput('');
+                }}
+                className="bg-white/10 hover:bg-white/15 text-white text-xs font-bold py-2.5 px-4 rounded-xl cursor-pointer"
+              >
+                Voltar
+              </button>
+              <button
+                onClick={() => {
+                  const loss = Number(lossAmountInput) || 0;
+                  onCancelSale(saleToCancel.id, loss, lossReasonInput);
+                  setIsCancelModalOpen(false);
+                  setSaleToCancel(null);
+                  setLossReasonInput('');
+                }}
+                className="bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold py-2.5 px-5 rounded-xl cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.2)]"
+              >
+                Confirmar Estorno
+              </button>
+            </div>
           </div>
         </div>
       )}
