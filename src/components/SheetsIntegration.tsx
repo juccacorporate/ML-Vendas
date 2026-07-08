@@ -159,6 +159,27 @@ function doGet(e) {
       return Number(val) || 0;
     }
 
+    // Função para formatar datas da planilha de forma imune a problemas de fuso horário/timezone
+    function formatSheetDate(val) {
+      if (!val) return "";
+      if (Object.prototype.toString.call(val) === '[object Date]') {
+        try {
+          return Utilities.formatDate(val, ss.getSpreadsheetTimeZone(), "yyyy-MM-dd");
+        } catch(err) {}
+      }
+      var d = new Date(val);
+      if (!isNaN(d.getTime())) {
+        try {
+          return Utilities.formatDate(d, ss.getSpreadsheetTimeZone(), "yyyy-MM-dd");
+        } catch(err) {
+          try {
+            return d.toISOString().split('T')[0];
+          } catch(e) {}
+        }
+      }
+      return String(val);
+    }
+
     // 1. Ler Produtos
     var products = [];
     var productSheet = ss.getSheetByName("Produtos");
@@ -183,19 +204,7 @@ function doGet(e) {
           var row = prodData[i];
           if (!row[idxId]) continue;
           
-          var addedDateStr = "";
-          if (row[idxAddedDate]) {
-            try {
-              var d = new Date(row[idxAddedDate]);
-              if (!isNaN(d.getTime())) {
-                addedDateStr = d.toISOString().split('T')[0];
-              } else {
-                addedDateStr = String(row[idxAddedDate]);
-              }
-            } catch(err) {
-              addedDateStr = String(row[idxAddedDate]);
-            }
-          }
+          var addedDateStr = formatSheetDate(row[idxAddedDate]);
           
           products.push({
             id: String(row[idxId]),
@@ -248,19 +257,7 @@ function doGet(e) {
           var row = salesData[i];
           if (!row[idxSaleId]) continue;
           
-          var dateStr = "";
-          if (row[idxDate]) {
-            try {
-              var d = new Date(row[idxDate]);
-              if (!isNaN(d.getTime())) {
-                dateStr = d.toISOString().split('T')[0];
-              } else {
-                dateStr = String(row[idxDate]);
-              }
-            } catch(err) {
-              dateStr = String(row[idxDate]);
-            }
-          }
+          var dateStr = formatSheetDate(row[idxDate]);
           
           sales.push({
             id: String(row[idxSaleId]),
@@ -686,6 +683,10 @@ export default function SheetsIntegration({
                 <li>No campo <strong className="text-white font-bold">"Quem tem acesso" (Who has access)</strong>, mude para <strong className="text-[#FFE600] font-bold">"Qualquer pessoa" (Anyone)</strong>.</li>
                 <li>Clique em "Implantar", autorize o acesso à sua conta do Google e <strong className="text-[#FFE600] font-bold">copie a URL do "App da Web" gerada</strong> para colar na barra "Passo 2" à esquerda!</li>
               </ol>
+
+              <div className="bg-[#FFE600]/10 border border-[#FFE600]/20 rounded-xl p-3 text-[11px] text-[#FFE600] leading-relaxed font-semibold mb-4 animate-pulse">
+                ⚠️ <strong className="font-bold">ATUALIZAÇÃO DE SCRIPT ANTIGO:</strong> Se você já tinha o script configurado antes e quer apenas corrigi-lo, você <strong className="underline text-white">DEVE</strong> ir em <strong>Implantar &gt; Gerenciar implantações</strong>, clicar no ícone de <strong>Lápis (Editar)</strong>, e no campo <strong>Versão</strong> selecionar obrigatoriamente <strong className="underline text-white font-black">"Nova versão" (New version)</strong> antes de clicar em Implantar. Caso contrário, o Google continuará rodando a versão antiga com erro!
+              </div>
 
               <button
                 onClick={handleCopyScript}

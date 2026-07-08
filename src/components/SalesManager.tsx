@@ -25,7 +25,13 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const [customSalePrice, setCustomSalePrice] = useState<number>(0);
   const [customShipping, setCustomShipping] = useState<number>(0);
   const [shippingCostType, setShippingCostType] = useState<'unit' | 'total'>('unit');
-  const [saleDate, setSaleDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  const [saleDate, setSaleDate] = useState<string>(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
   const [discount, setDiscount] = useState<number>(0);
   const [formError, setFormError] = useState<string | null>(null);
   const [cancellingSaleId, setCancellingSaleId] = useState<string | null>(null);

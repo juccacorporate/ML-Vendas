@@ -14,6 +14,23 @@ async function startServer() {
   // Middleware para JSON com limite maior para sincronização de grandes volumes se houver
   app.use(express.json({ limit: '20mb' }));
 
+  // Helper para realizar fetch com timeout nativo robusto e limpar o temporizador de forma segura
+  async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 12000) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      clearTimeout(id);
+      return response;
+    } catch (error) {
+      clearTimeout(id);
+      throw error;
+    }
+  }
+
   // API Proxy para Sincronização do Google Sheets - GET para buscar dados em realtime
   app.get('/api/sync-sheets', async (req, res) => {
     const webAppUrl = req.query.webAppUrl as string;
@@ -27,7 +44,7 @@ async function startServer() {
 
     try {
       console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
-      const response = await fetch(webAppUrl);
+      const response = await fetchWithTimeout(webAppUrl, {}, 12000);
 
       if (!response.ok) {
         throw new Error(`Google Sheets API retornou status HTTP ${response.status}`);
@@ -38,19 +55,29 @@ async function startServer() {
       try {
         responseData = JSON.parse(responseText);
       } catch (err) {
-        console.error('Falha ao decodificar JSON retornado pelo Apps Script:', responseText.substring(0, 500));
+        console.error('Falha ao decodificar JSON retornado pelo Apps Script:', responseText.substring(0, 1000));
+        
+        let customMessage = 'A resposta do Google Sheets Apps Script não é um JSON válido. Verifique se o script foi implantado corretamente como Web App.';
+        if (responseText.includes('<!DOCTYPE') || responseText.includes('<html') || responseText.includes('<script')) {
+          customMessage = '⚠️ Sua planilha do Google Sheets retornou uma página de erro do Google (Erro 500/Sintaxe). Isso ocorre quando o Apps Script possui erros de sintaxe ou autorização de conta. Para corrigir: \n1. Abra sua planilha e acesse "Extensões > Apps Script".\n2. Copie o NOVO código do Passo 3 da plataforma e cole substituindo todo o código atual.\n3. Salve clicando no disquete 💾.\n4. Clique em "Implantar" > "Gerenciar implantações" > clique no ícone de Lápis (Editar) > NO SELETOR DE VERSÃO mude para "Nova versão" (Obrigatoriamente!) e clique em "Implantar".';
+        }
+        
         return res.status(502).json({
           status: 'error',
-          message: 'A resposta do Google Sheets Apps Script não é um JSON válido. Verifique se o script foi implantado corretamente como Web App.'
+          message: customMessage
         });
       }
 
       return res.json(responseData);
     } catch (error: any) {
       console.error('Erro de Sincronização no Servidor Proxy (GET):', error);
+      let errorMsg = error.message || String(error);
+      if (error.name === 'AbortError') {
+        errorMsg = 'A planilha do Google Sheets demorou demais para responder (Tempo Limite de 12s Excedido). Certifique-se de que o link do Web App do Apps Script está correto, ativo e que sua planilha não possui centenas de milhares de linhas vazias que atrasam a resposta.';
+      }
       return res.status(500).json({
         status: 'error',
-        message: `Ocorreu um erro ao buscar os dados na sua planilha: ${error.message || error}`
+        message: `Ocorreu um erro ao buscar os dados na sua planilha: ${errorMsg}`
       });
     }
   });
@@ -70,13 +97,13 @@ async function startServer() {
       console.log(`Disparando envio ao Web App do Google Sheets: ${webAppUrl}`);
       
       // Enviando requisição diretamente do servidor para evitar problemas de iframe/CORS/compartilhamento
-      const response = await fetch(webAppUrl, {
+      const response = await fetchWithTimeout(webAppUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain;charset=utf-8'
         },
         body: JSON.stringify({ products, sales, initialCapital })
-      });
+      }, 15000);
 
       if (!response.ok) {
         throw new Error(`Google Sheets API retornou status HTTP ${response.status}`);
@@ -87,7 +114,13 @@ async function startServer() {
       try {
         responseData = JSON.parse(responseText);
       } catch (err) {
-        // Se a resposta do Apps Script não for JSON puro, tratamos texto bruto como mensagem de sucesso
+        if (responseText.includes('<!DOCTYPE') || responseText.includes('<html') || responseText.includes('<script')) {
+          return res.status(502).json({
+            status: 'error',
+            message: '⚠️ Sua planilha do Google Sheets retornou uma página de erro do Google (Erro 500/Sintaxe) ao salvar. Certifique-se de copiar o novo código do Passo 3, salvá-lo no Apps Script, e criar uma "Nova versão" ao Implantar como Web App de acesso público ("Qualquer pessoa").'
+          });
+        }
+        // Se a resposta do Apps Script não for JSON puro mas for texto plano, tratamos como mensagem de sucesso
         responseData = { 
           status: 'success', 
           message: responseText || 'Planilha integrada e gravada com sucesso.' 
@@ -97,9 +130,13 @@ async function startServer() {
       return res.json(responseData);
     } catch (error: any) {
       console.error('Erro de Sincronização no Servidor Proxy:', error);
+      let errorMsg = error.message || String(error);
+      if (error.name === 'AbortError') {
+        errorMsg = 'O envio demorou demais para responder (Tempo Limite de 15s Excedido). Verifique o Web App do Apps Script.';
+      }
       return res.status(500).json({
         status: 'error',
-        message: `Ocorreu um erro ao gravar os dados na sua planilha: ${error.message || error}`
+        message: `Ocorreu um erro ao gravar os dados na sua planilha: ${errorMsg}`
       });
     }
   });

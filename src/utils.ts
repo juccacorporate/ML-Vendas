@@ -32,18 +32,31 @@ export function calculateMLFee(salePrice: number, feeType: 'classic' | 'premium'
 }
 
 /**
- * Calcula os dias que um produto está parado em estoque
+ * Calcula os dias que um produto está parado em estoque de forma imune a fusos horários
  */
 export function calculateDaysInStock(addedDateStr: string): number {
-  const addedDate = new Date(addedDateStr);
+  if (!addedDateStr) return 0;
+  
+  // Garante parsing local dividindo partes
+  const parts = addedDateStr.split('-');
+  let addedDate: Date;
+  if (parts.length === 3) {
+    const year = parseInt(parts[0], 10);
+    const month = parseInt(parts[1], 10) - 1;
+    const day = parseInt(parts[2], 10);
+    addedDate = new Date(year, month, day);
+  } else {
+    addedDate = new Date(addedDateStr);
+  }
+  
   const now = new Date();
   
   // Reset time to compare days only
   addedDate.setHours(0, 0, 0, 0);
   now.setHours(0, 0, 0, 0);
 
-  const diffTime = Math.abs(now.getTime() - addedDate.getTime());
-  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  const diffTime = now.getTime() - addedDate.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
   
   return isNaN(diffDays) ? 0 : diffDays;
 }
@@ -59,11 +72,28 @@ export function formatCurrency(value: number): string {
 }
 
 /**
- * Formata datas
+ * Formata datas de forma robusta e independente de fuso horário
  */
 export function formatDate(dateStr: string): string {
   if (!dateStr) return '';
+  // Se for no formato YYYY-MM-DD, ex: 2026-06-29, formatamos de forma direta e imune a fusos horários
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const [year, month, day] = parts;
+    return `${day}/${month}/${year}`;
+  }
+  // Fallback seguro se não for no formato YYYY-MM-DD
   const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return dateStr;
+  
+  // Se a string não contiver hora, extrai as partes UTC
+  if (!dateStr.includes(':')) {
+    const day = String(date.getUTCDate()).padStart(2, '0');
+    const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+    const year = date.getUTCFullYear();
+    return `${day}/${month}/${year}`;
+  }
+  
   return date.toLocaleDateString('pt-BR');
 }
 
