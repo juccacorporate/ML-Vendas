@@ -163,9 +163,9 @@ export default function App() {
       const totalSaleValue = salePrice * quantity;
       const totalCostValue = purchasePrice * quantity;
 
-      // Recalcular comissões com base no produto real para consistência absoluta
+      // Recalcular comissões com base no produto real para consistência absoluta se não for venda personalizada
       let mlFee = Number(s.mlFee) || 0;
-      if (matchingProd) {
+      if (!s.isCustomSale && matchingProd) {
         if (matchingProd.mlFeeType !== 'none') {
           const percent = matchingProd.mlFeeType === 'custom' 
             ? (matchingProd.customFeePercent || 0) 
@@ -509,6 +509,54 @@ export default function App() {
     setHasPendingWrite(true);
   };
 
+  // Editar Registro de Venda Concluído/Pendente/Cancelado com reajuste automático de estoque e lucros
+  const handleEditSale = (updatedSale: Sale) => {
+    const oldSale = sales.find(s => s.id === updatedSale.id);
+    if (!oldSale) return;
+
+    // 1. Reajustar estoque: se a venda antiga não era estornada, devolvemos a quantidade antiga.
+    // Se a nova venda não é estornada, subtraímos a nova quantidade.
+    // Caso contrário (se for estornada), a quantidade não é deduzida.
+    setProducts(prev => prev.map(p => {
+      let stockChange = 0;
+      
+      // Se a venda antiga deduziu estoque (não era estornada)
+      if (oldSale.status !== 'refunded' && p.id === oldSale.productId) {
+        stockChange += oldSale.quantity; // devolve ao estoque
+      }
+
+      // Se a venda atualizada vai deduzir estoque (não é estornada)
+      if (updatedSale.status !== 'refunded' && p.id === updatedSale.productId) {
+        stockChange -= updatedSale.quantity; // consome do estoque
+      }
+
+      if (stockChange !== 0) {
+        return {
+          ...p,
+          stock: Math.max(0, p.stock + stockChange)
+        };
+      }
+      return p;
+    }));
+
+    // 2. Calcular lucro bruto e líquido recalculados com base em seus valores, descontando o desconto
+    const totalSaleValue = updatedSale.salePrice * updatedSale.quantity;
+    const totalCostValue = updatedSale.purchasePrice * updatedSale.quantity;
+    const discount = updatedSale.discount || 0;
+    
+    const grossProfit = totalSaleValue - totalCostValue - discount;
+    const netProfit = updatedSale.status === 'refunded' ? 0 : (totalSaleValue - totalCostValue - updatedSale.mlFee - updatedSale.shippingCost - discount);
+
+    const freshSale: Sale = {
+      ...updatedSale,
+      grossProfit: Number(grossProfit.toFixed(2)),
+      netProfit: Number(netProfit.toFixed(2))
+    };
+
+    setSales(prev => prev.map(s => s.id === updatedSale.id ? freshSale : s));
+    setHasPendingWrite(true);
+  };
+
   const handleClearDatabase = () => {
     setProducts([]);
     setSales([]);
@@ -687,6 +735,7 @@ export default function App() {
             onCancelSale={handleCancelSale}
             onCompleteSale={handleCompleteSale}
             onClearDatabase={handleClearDatabase}
+            onEditSale={handleEditSale}
           />
         )}
 

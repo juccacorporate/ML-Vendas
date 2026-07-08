@@ -93,7 +93,8 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     salesSheet.clear();
     var salesHeaders = [
       "ID Venda", "ID Produto", "Nome Produto", "Quantidade", "Preço Venda", "Data", 
-      "Taxa ML", "Custo Frete", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Desconto", "Status", "Tempo Conclusão"
+      "Taxa ML", "Custo Frete", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Desconto", "Status", "Tempo Conclusão",
+      "ID Venda Mercado Livre", "Prejuízo Extra", "Motivo Prejuízo", "Tipo de Frete", "Venda Customizada", "Comissão Customizada", "Frete Customizado"
     ];
     salesSheet.appendRow(salesHeaders);
     
@@ -113,7 +114,14 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
           s.netProfit,
           s.discount || 0,
           s.status || "pending",
-          s.completionTime || 0
+          s.completionTime || 0,
+          s.mlSaleId || "",
+          s.lossAmount || 0,
+          s.lossReason || "",
+          s.shippingType || "transportadora",
+          s.isCustomSale ? "Sim" : "Não",
+          s.customMlFee || 0,
+          s.customShippingCost || 0
         ];
       });
       salesSheet.getRange(2, 1, salesRows.length, salesHeaders.length).setValues(salesRows);
@@ -227,6 +235,13 @@ function doGet(e) {
         var idxDisc = headers.indexOf("Desconto");
         var idxStatus = headers.indexOf("Status");
         var idxComp = headers.indexOf("Tempo Conclusão");
+        var idxMlSaleId = headers.indexOf("ID Venda Mercado Livre");
+        var idxLossAmount = headers.indexOf("Prejuízo Extra");
+        var idxLossReason = headers.indexOf("Motivo Prejuízo");
+        var idxShippingType = headers.indexOf("Tipo de Frete");
+        var idxIsCustomSale = headers.indexOf("Venda Customizada");
+        var idxCustomMlFee = headers.indexOf("Comissão Customizada");
+        var idxCustomShippingCost = headers.indexOf("Frete Customizado");
         
         for (var i = 1; i < salesData.length; i++) {
           var row = salesData[i];
@@ -260,7 +275,14 @@ function doGet(e) {
             netProfit: idxNet !== -1 ? sanitizeNumber(row[idxNet]) : 0,
             discount: idxDisc !== -1 ? sanitizeNumber(row[idxDisc]) : 0,
             status: idxStatus !== -1 ? String(row[idxStatus]) : "completed",
-            completionTime: idxComp !== -1 ? (row[idxComp] !== "" ? sanitizeNumber(row[idxComp]) : undefined) : undefined
+            completionTime: idxComp !== -1 ? (row[idxComp] !== "" ? sanitizeNumber(row[idxComp]) : undefined) : undefined,
+            mlSaleId: idxMlSaleId !== -1 ? (String(row[idxMlSaleId]) || undefined) : undefined,
+            lossAmount: idxLossAmount !== -1 ? (sanitizeNumber(row[idxLossAmount]) || undefined) : undefined,
+            lossReason: idxLossReason !== -1 ? (String(row[idxLossReason]) || undefined) : undefined,
+            shippingType: idxShippingType !== -1 ? (String(row[idxShippingType]) as any || undefined) : undefined,
+            isCustomSale: idxIsCustomSale !== -1 ? (row[idxIsCustomSale] === "Sim" ? true : false) : undefined,
+            customMlFee: idxCustomMlFee !== -1 ? (sanitizeNumber(row[idxCustomMlFee]) || undefined) : undefined,
+            customShippingCost: idxCustomShippingCost !== -1 ? (sanitizeNumber(row[idxCustomShippingCost]) || undefined) : undefined
           });
         }
       }

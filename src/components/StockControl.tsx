@@ -233,7 +233,7 @@ export default function StockControl({
                 <th className="py-4 px-5">Produto / SKU</th>
                 <th className="py-4 px-4 text-center">Compra</th>
                 <th className="py-4 px-4 text-center">Venda ML</th>
-                <th className="py-4 px-4 text-center">Diferença</th>
+                <th className="py-4 px-4 text-center text-[#FFE600] font-black">Lucro & Margem Líq.</th>
                 <th className="py-4 px-4 text-center">Previsão Comissão ML</th>
                 <th className="py-4 px-4 text-center">Frete</th>
                 <th className="py-4 px-4 text-center">Estoque Atual</th>
@@ -257,7 +257,7 @@ export default function StockControl({
                   const mlFee = calculateMLFee(p.salePrice, p.mlFeeType, p.customFeePercent);
                   const difference = p.salePrice - p.purchasePrice;
                   const estimatedNetProfit = p.salePrice - p.purchasePrice - mlFee - p.shippingCost;
-                  const netMargin = (estimatedNetProfit / p.salePrice) * 100;
+                  const netMargin = p.purchasePrice > 0 ? (estimatedNetProfit / p.purchasePrice) * 100 : 0;
 
                   return (
                     <tr key={p.id} className="hover:bg-white/5 transition-colors">
@@ -286,17 +286,29 @@ export default function StockControl({
                         {formatCurrency(p.salePrice)}
                       </td>
 
-                      {/* Diferença */}
-                      <td className="py-4 px-4 text-center">
-                        <span className="text-white font-bold block">{formatCurrency(difference)}</span>
+                      {/* Lucro & Margem Líquida */}
+                      <td className="py-4 px-4 text-center bg-emerald-500/5 border-x border-white/5">
+                        <span className={`text-[13px] font-black block font-mono ${estimatedNetProfit > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {estimatedNetProfit > 0 ? '+' : ''}{formatCurrency(estimatedNetProfit)}
+                        </span>
                         {estimatedNetProfit > 0 ? (
-                          <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-1 rounded">
-                            +{netMargin.toFixed(0)}% Líq
-                          </span>
+                          <div className="flex flex-col items-center gap-0.5 mt-0.5">
+                            <span className="text-[10px] text-emerald-400 font-black bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30" title="Margem de ganho esperada sobre o preço de compra">
+                              {netMargin.toFixed(0)}% Margem
+                            </span>
+                            <span className="text-[9px] text-white/30 font-medium font-mono">
+                              (Bruto: {formatCurrency(difference)})
+                            </span>
+                          </div>
                         ) : (
-                          <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1 rounded">
-                            Negativo
-                          </span>
+                          <div className="flex flex-col items-center gap-0.5 mt-0.5">
+                            <span className="text-[9.5px] text-red-400 font-bold bg-red-500/10 px-1.5 py-0.2 rounded-full">
+                              Sem Margem
+                            </span>
+                            <span className="text-[9px] text-white/30 font-medium font-mono">
+                              (Bruto: {formatCurrency(difference)})
+                            </span>
+                          </div>
                         )}
                       </td>
 

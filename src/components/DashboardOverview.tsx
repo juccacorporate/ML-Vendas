@@ -5,7 +5,7 @@
 
 import { useState } from 'react';
 import { Product, Sale } from '../types';
-import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr } from '../utils';
+import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr, calculateMLFee } from '../utils';
 import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle } from 'lucide-react';
 
 interface DashboardOverviewProps {
@@ -129,6 +129,45 @@ export default function DashboardOverview({
 
   // Margem líquida (calculada com base no faturamento de vendas liberadas ou total, vamos usar faturamento liberado para ser conservador)
   const netMarginPercent = totalSalesRevenue > 0 ? (totalNetProfit / totalSalesRevenue) * 100 : 0;
+
+  // Métricas de Envio (Mercado Livre Full vs Transportadora / Catálogo)
+  // Filtrar apenas vendas com status diferente de 'refunded' para análise de desempenho de canais
+  const activeSales = filteredAllSales.filter(s => s.status !== 'refunded');
+
+  const fullSales = activeSales.filter(s => s.shippingType === 'full');
+  const transportadoraSales = activeSales.filter(s => s.shippingType !== 'full'); // Padrão é transportadora se for undefined
+
+  const totalFullRevenue = fullSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
+  const totalFullProfit = fullSales.reduce((acc, s) => acc + s.netProfit, 0);
+  const totalFullQty = fullSales.reduce((acc, s) => acc + s.quantity, 0);
+  const fullMarginPercent = totalFullRevenue > 0 ? (totalFullProfit / totalFullRevenue) * 100 : 0;
+
+  const totalTranspRevenue = transportadoraSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
+  const totalTranspProfit = transportadoraSales.reduce((acc, s) => acc + s.netProfit, 0);
+  const totalTranspQty = transportadoraSales.reduce((acc, s) => acc + s.quantity, 0);
+  const transpMarginPercent = totalTranspRevenue > 0 ? (totalTranspProfit / totalTranspRevenue) * 100 : 0;
+
+  // Calcular variâncias de comissão / precificação de briga de catálogo
+  let catalogNegativeVariance = 0; // Desvio negativo acumulado (ex: briga de catálogo)
+  let catalogPositiveVariance = 0; // Desvio positivo acumulado (ex: otimização de custo)
+
+  activeSales.forEach(s => {
+    const product = products.find(p => p.id === s.productId);
+    if (product) {
+      const defaultMlFeeUnit = calculateMLFee(product.salePrice, product.mlFeeType, product.customFeePercent);
+      const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost;
+      const realNetProfitUnit = s.netProfit / s.quantity;
+
+      const varianceUnit = realNetProfitUnit - defaultEstimatedNetProfitUnit;
+      const totalVariance = varianceUnit * s.quantity;
+
+      if (totalVariance < -0.10) {
+        catalogNegativeVariance += Math.abs(totalVariance);
+      } else if (totalVariance > 0.10) {
+        catalogPositiveVariance += totalVariance;
+      }
+    }
+  });
 
   // Valor total bloqueado/investido em estoque
   const totalStockCost = products.reduce((acc, p) => acc + (p.purchasePrice * p.stock), 0);
@@ -628,6 +667,128 @@ export default function DashboardOverview({
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-red-500" />
         </div>
 
+      </div>
+
+      {/* NOVO PAINEL: Desempenho por Canal de Envio (Mercado Livre Full vs Transportadora / Catálogo) */}
+      <div className="bg-[#141414] rounded-2xl border border-white/5 shadow-md overflow-hidden p-5">
+        <div className="border-b border-white/5 pb-4 mb-5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div>
+            <h3 className="text-base font-light text-white flex items-center gap-2">
+              <Zap className="w-4 h-4 text-[#FFE600] animate-pulse" />
+              Desempenho Logístico: Full vs. Catálogo / Transportadora
+            </h3>
+            <p className="text-xs text-white/50 mt-0.5">Mapeamento dinâmico de faturamento, margem e desvios de lucro causados por briga de catálogo.</p>
+          </div>
+          <div className="flex items-center gap-1.5 self-start sm:self-auto bg-white/5 px-2.5 py-1 rounded-lg border border-white/5 text-[10px] text-white/60 font-bold">
+            <span>Período Ativo</span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          
+          {/* Card: Mercado Livre Full */}
+          <div className="bg-[#1a1a1a] p-4 rounded-xl border border-[#FFE600]/20 flex flex-col justify-between">
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-[10px] text-black font-black bg-[#FFE600] px-2 py-0.5 rounded shadow-sm">
+                  ⚡ MERCADO LIVRE FULL
+                </span>
+                <span className="text-xs font-mono font-bold text-[#FFE600]">{totalFullQty} un</span>
+              </div>
+              <div className="space-y-1.5 mt-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-white/50">Faturamento Bruto:</span>
+                  <span className="font-bold text-white font-mono">{formatCurrency(totalFullRevenue)}</span>
+                </div>
+                <div className="flex justify-between text-xs border-t border-white/5 pt-1.5">
+                  <span className="text-emerald-400 font-bold">Lucro Líquido Real:</span>
+                  <span className="font-black text-emerald-400 font-mono">{formatCurrency(totalFullProfit)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 pt-2.5 border-t border-white/5 flex items-center justify-between">
+              <span className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Margem de Lucro:</span>
+              <span className="text-xs text-emerald-400 font-black bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                {fullMarginPercent.toFixed(1)}% Margem
+              </span>
+            </div>
+          </div>
+
+          {/* Card: Transportadora / Catálogo */}
+          <div className="bg-[#1a1a1a] p-4 rounded-xl border border-white/10 flex flex-col justify-between">
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-[10px] text-white/80 font-bold bg-white/5 border border-white/10 px-2 py-0.5 rounded">
+                  🚚 TRANSPORTADORA / CATÁLOGO
+                </span>
+                <span className="text-xs font-mono font-bold text-white/60">{totalTranspQty} un</span>
+              </div>
+              <div className="space-y-1.5 mt-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-white/50">Faturamento Bruto:</span>
+                  <span className="font-bold text-white font-mono">{formatCurrency(totalTranspRevenue)}</span>
+                </div>
+                <div className="flex justify-between text-xs border-t border-white/5 pt-1.5">
+                  <span className="text-emerald-400 font-bold">Lucro Líquido Real:</span>
+                  <span className="font-black text-emerald-400 font-mono">{formatCurrency(totalTranspProfit)}</span>
+                </div>
+              </div>
+            </div>
+            <div className="mt-4 pt-2.5 border-t border-white/5 flex items-center justify-between">
+              <span className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Margem de Lucro:</span>
+              <span className="text-xs text-emerald-400 font-black bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full">
+                {transpMarginPercent.toFixed(1)}% Margem
+              </span>
+            </div>
+          </div>
+
+          {/* Card: Variância / Análise de Competição */}
+          <div className="bg-[#1a1a1a] p-4 rounded-xl border border-white/5 flex flex-col justify-between col-span-1 md:col-span-2 lg:col-span-1">
+            <div>
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-[10px] text-white/50 font-bold uppercase tracking-wider">
+                  ⚠️ Variância por Competição
+                </span>
+                <span className="text-[9px] text-[#FFE600] font-mono">Feedback Real</span>
+              </div>
+              
+              <div className="space-y-2.5 mt-2.5">
+                <div className="flex justify-between text-xs">
+                  <span className="text-white/50">Variação Negativa (Catálogo):</span>
+                  <span className="font-bold text-red-400 font-mono">-{formatCurrency(catalogNegativeVariance)}</span>
+                </div>
+                <div className="flex justify-between text-xs border-t border-white/5 pt-2">
+                  <span className="text-white/50">Variação Otimizada (Ganhos):</span>
+                  <span className="font-bold text-emerald-400 font-mono">+{formatCurrency(catalogPositiveVariance)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-2 border-t border-white/5">
+              {catalogNegativeVariance > catalogPositiveVariance ? (
+                <div className="flex items-center gap-1.5 bg-red-500/10 border border-red-500/20 rounded-lg p-2 text-[10px] text-red-400 leading-snug">
+                  <ArrowDownRight className="w-4 h-4 shrink-0" />
+                  <span>
+                    <strong>Impacto de Concorrência:</strong> Perda líquida acumulada de <strong className="font-mono">{formatCurrency(catalogNegativeVariance - catalogPositiveVariance)}</strong> em relação ao planejado devido a guerra de preços.
+                  </span>
+                </div>
+              ) : catalogPositiveVariance > 0 ? (
+                <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-2 text-[10px] text-emerald-400 leading-snug">
+                  <ArrowUpRight className="w-4 h-4 shrink-0 animate-bounce" />
+                  <span>
+                    <strong>Desempenho Otimizado:</strong> Ganho líquido extra acumulado de <strong className="font-mono">{formatCurrency(catalogPositiveVariance - catalogNegativeVariance)}</strong> em relação ao cadastro base devido a fretes unificados ou valor superior.
+                  </span>
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 rounded-lg p-2 text-[10px] text-white/40 leading-snug">
+                  <Clock className="w-3.5 h-3.5 shrink-0" />
+                  <span>Sem desvios significativos de precificação ou logísticas de comissão nas vendas deste período.</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+        </div>
       </div>
 
       {/* Sub-painel de Detalhes de Patrimônio em Estoque */}

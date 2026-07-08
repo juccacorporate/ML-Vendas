@@ -36,6 +36,11 @@ export interface Sale {
   completionTime?: number; // Tempo em milissegundos para conclusão no sistema
   lossAmount?: number;     // Prejuízo extra do estorno/cancelamento
   lossReason?: string;     // Motivo curto do prejuízo no estorno
+  shippingType?: 'transportadora' | 'full'; // Tipo de Envio: Mercado Livre Full ou Transportadora
+  isCustomSale?: boolean; // Se a venda teve taxas ajustadas manualmente
+  customMlFee?: number;   // Comissão unitária customizada na venda
+  customShippingCost?: number; // Frete unitário customizado na venda
+  mlSaleId?: string;      // ID da venda do Mercado Livre
 }
 
 export interface GoogleSheetsConfig {
