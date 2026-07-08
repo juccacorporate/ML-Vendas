@@ -36,7 +36,7 @@ export interface Sale {
   completionTime?: number; // Tempo em milissegundos para conclusão no sistema
   lossAmount?: number;     // Prejuízo extra do estorno/cancelamento
   lossReason?: string;     // Motivo curto do prejuízo no estorno
-  shippingType?: 'transportadora' | 'full'; // Tipo de Envio: Mercado Livre Full ou Transportadora
+  shippingType?: 'transportadora' | 'full' | 'flex'; // Tipo de Envio: Mercado Livre Full, Transportadora ou Flex
   isCustomSale?: boolean; // Se a venda teve taxas ajustadas manualmente
   customMlFee?: number;   // Comissão unitária customizada na venda
   customShippingCost?: number; // Frete unitário customizado na venda
@@ -50,3 +50,45 @@ export interface GoogleSheetsConfig {
   connected: boolean;
   lastSync?: string;
 }
+
+export interface MLImportRecord {
+  id: string; // N.º de venda
+  dateStr: string; // Data da venda original
+  status: string; // Estado
+  statusDescription: string; // Descrição do status
+  multiProduct: boolean; // Pacote de diversos produtos
+  isKit: boolean; // Pertence a um kit
+  units: number; // Unidades
+  productRevenue: number; // Receita por produtos
+  surchargeRevenue: number; // Receita por acréscimo
+  installmentFee: number; // Taxa de parcelamento
+  saleFeeAndTaxes: number; // Tarifa de venda e impostos (valor negativo)
+  shippingRevenue: number; // Receita por envio
+  shippingFee: number; // Tarifas de envio
+  shippingWeightCost: number; // Custo de envio medidas/peso
+  shippingDiffCost: number; // Custo por diferenças
+  discountsAndBonuses: number; // Descontos e bônus
+  refundsAndCancellations: number; // Cancelamentos e reembolsos
+  totalBrl: number; // Total BRL
+  billingMonth: string; // Mês de faturamento
+  isAdSale: boolean; // Venda por publicidade
+  adId: string; // # de anúncio
+  adTitle: string; // Título do anúncio
+  variation: string; // Variação
+  adUnitPrice: number; // Preço unitário
+  adType: string; // Tipo de anúncio (Clássico, Premium)
+  invoiceStatus: string; // NF-e em anexo
+  buyerName: string; // Dados pessoais ou da empresa
+  buyerDocument: string; // Tipo e número do documento
+  buyerAddress: string; // Endereço
+  shippingMethod: string; // Forma de entrega
+  shippingDateGo: string; // Data a caminho
+  shippingDateDelivery: string; // Data de entrega
+  carrier: string; // Transportador
+  trackingNumber: string; // Número de rastreamento
+  trackingUrl: string; // URL de acompanhamento
+  isClaimOpen: boolean; // Reclamação aberta
+  isClaimClosed: boolean; // Reclamação encerrada
+  isInMediation: boolean; // Em mediação
+}
+

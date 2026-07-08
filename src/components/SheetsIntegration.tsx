@@ -134,8 +134,42 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     configSheet.appendRow(["Chave", "Valor"]);
     var capital = payload.initialCapital !== undefined ? payload.initialCapital : 500;
     configSheet.appendRow(["Aporte", capital]);
+
+    // 4. Sincronizar Importações Mercado Livre (Aba dedicada requisitada)
+    if (payload.mlRecords) {
+      var mlSheet = ss.getSheetByName("Importe Mercado Livre") || ss.insertSheet("Importe Mercado Livre");
+      mlSheet.clear();
+      var mlHeaders = [
+        "N.º de venda", "Data da venda", "Estado", "Descrição do status", "Pacote de diversos produtos",
+        "Pertence a um kit", "Unidades", "Receita por produtos (BRL)", "Receita por acréscimo no preço (pago pelo comprador)",
+        "Taxa de parcelamento equivalente ao acréscimo", "Tarifa de venda e impostos (BRL)", "Receita por envio (BRL)",
+        "Tarifas de envio (BRL)", "Custo de envio com base nas medidas e peso declarados", "Custo por diferenças nas medidas e no peso do pacote",
+        "Descontos e bônus", "Cancelamentos e reembolsos (BRL)", "Total (BRL)", "Mês de faturamento das suas tarifas",
+        "Venda por publicidade", "# de anúncio", "Título do anúncio", "Variação", "Preço unitário de venda do anúncio (BRL)",
+        "Tipo de anúncio", "NF-e em anexo", "Dados pessoais ou da empresa", "Tipo e número do documento", "Endereço",
+        "Forma de entrega", "Data a caminho", "Data de entrega", "Transportador", "Número de rastreamento", "URL de acompanhamento",
+        "Reclamação aberta", "Reclamação encerrada", "Em mediação"
+      ];
+      mlSheet.appendRow(mlHeaders);
+      if (payload.mlRecords.length > 0) {
+        var mlRows = payload.mlRecords.map(function(r) {
+          return [
+            r.id, r.dateStr, r.status, r.statusDescription, r.multiProduct ? "Sim" : "Não",
+            r.isKit ? "Sim" : "Não", r.units, r.productRevenue, r.surchargeRevenue,
+            r.installmentFee, r.saleFeeAndTaxes, r.shippingRevenue,
+            r.shippingFee, r.shippingWeightCost, r.shippingDiffCost,
+            r.discountsAndBonuses, r.refundsAndCancellations, r.totalBrl, r.billingMonth,
+            r.isAdSale ? "Sim" : "Não", r.adId, r.adTitle, r.variation, r.adUnitPrice,
+            r.adType, r.invoiceStatus, r.buyerName, r.buyerDocument, r.buyerAddress,
+            r.shippingMethod, r.shippingDateGo, r.shippingDateDelivery, r.carrier, r.trackingNumber, r.trackingUrl,
+            r.isClaimOpen ? "Sim" : "Não", r.isClaimClosed ? "Sim" : "Não", r.isInMediation ? "Sim" : "Não"
+          ];
+        });
+        mlSheet.getRange(2, 1, mlRows.length, mlHeaders.length).setValues(mlRows);
+      }
+    }
     
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas 'Produtos', 'Vendas' e 'Config' atualizadas." }))
+    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas atualizadas no Sheets, incluindo faturamento Mercado Livre." }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
@@ -151,7 +185,6 @@ function doGet(e) {
     function sanitizeNumber(val) {
       if (val && Object.prototype.toString.call(val) === '[object Date]') {
         try {
-          // No Google Sheets, datas começam em 30/12/1899. Converte milissegundos JavaScript de volta para número do Sheets
           var sheetsNum = (val.getTime() - new Date(1899, 11, 30).getTime()) / (24 * 60 * 60 * 1000);
           return sheetsNum;
         } catch(err) {}
@@ -213,12 +246,12 @@ function doGet(e) {
             purchasePrice: sanitizeNumber(row[idxPurchase]),
             salePrice: sanitizeNumber(row[idxSale]),
             stock: sanitizeNumber(row[idxStock]),
-            minimalStock: idxMinStock !== -1 ? sanitizeNumber(row[idxMinStock]) : 0,
-            addedDate: addedDateStr || new Date().toISOString().split('T')[0],
-            category: idxCategory !== -1 ? String(row[idxCategory]) : "Geral",
-            mlFeeType: idxFeeType !== -1 ? String(row[idxFeeType]) : "none",
-            customFeePercent: idxCustomFee !== -1 ? (row[idxCustomFee] !== "" ? sanitizeNumber(row[idxCustomFee]) : undefined) : undefined,
-            shippingCost: idxShipping !== -1 ? sanitizeNumber(row[idxShipping]) : 0
+            minimalStock: sanitizeNumber(row[idxMinStock]),
+            addedDate: addedDateStr,
+            category: String(row[idxCategory] || "Geral"),
+            mlFeeType: String(row[idxFeeType] || "none"),
+            customFeePercent: sanitizeNumber(row[idxCustomFee]),
+            shippingCost: sanitizeNumber(row[idxShipping])
           });
         }
       }
@@ -300,13 +333,108 @@ function doGet(e) {
         }
       }
     }
+
+    // 4. Ler Importações Mercado Livre (Aba 'Importe Mercado Livre' requisitada no vídeo)
+    var mlRecords = [];
+    var mlSheet = ss.getSheetByName("Importe Mercado Livre");
+    if (mlSheet) {
+      var mlData = mlSheet.getDataRange().getValues();
+      if (mlData.length > 1) {
+        var headers = mlData[0];
+        var idxId = headers.indexOf("N.º de venda");
+        var idxDate = headers.indexOf("Data da venda");
+        var idxStatus = headers.indexOf("Estado");
+        var idxStatusDesc = headers.indexOf("Descrição do status");
+        var idxMulti = headers.indexOf("Pacote de diversos produtos");
+        var idxKit = headers.indexOf("Pertence a um kit");
+        var idxUnits = headers.indexOf("Unidades");
+        var idxProductRevenue = headers.indexOf("Receita por produtos (BRL)");
+        var idxSurcharge = headers.indexOf("Receita por acréscimo no preço (pago pelo comprador)");
+        var idxInstallment = headers.indexOf("Taxa de parcelamento equivalente ao acréscimo");
+        var idxSaleFee = headers.indexOf("Tarifa de venda e impostos (BRL)");
+        var idxShipRevenue = headers.indexOf("Receita por envio (BRL)");
+        var idxShipFee = headers.indexOf("Tarifas de envio (BRL)");
+        var idxWeightCost = headers.indexOf("Custo de envio com base nas medidas e peso declarados");
+        var idxDiffCost = headers.indexOf("Custo por diferenças nas medidas e no peso do pacote");
+        var idxDiscount = headers.indexOf("Descontos e bônus");
+        var idxRefund = headers.indexOf("Cancelamentos e reembolsos (BRL)");
+        var idxTotal = headers.indexOf("Total (BRL)");
+        var idxBillingMonth = headers.indexOf("Mês de faturamento das suas tarifas");
+        var idxAdSale = headers.indexOf("Venda por publicidade");
+        var idxAdId = headers.indexOf("# de anúncio");
+        var idxAdTitle = headers.indexOf("Título do anúncio");
+        var idxVariation = headers.indexOf("Variação");
+        var idxUnitPrice = headers.indexOf("Preço unitário de venda do anúncio (BRL)");
+        var idxAdType = headers.indexOf("Tipo de anúncio");
+        var idxInvoice = headers.indexOf("NF-e em anexo");
+        var idxBuyerName = headers.indexOf("Dados pessoais ou da empresa");
+        var idxBuyerDoc = headers.indexOf("Tipo e número do documento");
+        var idxAddress = headers.indexOf("Endereço");
+        var idxShipMethod = headers.indexOf("Forma de entrega");
+        var idxDateGo = headers.indexOf("Data a caminho");
+        var idxDateDel = headers.indexOf("Data de entrega");
+        var idxCarrier = headers.indexOf("Transportador");
+        var idxTrackNum = headers.indexOf("Número de rastreamento");
+        var idxTrackUrl = headers.indexOf("URL de acompanhamento");
+        var idxClaimOpen = headers.indexOf("Reclamação aberta");
+        var idxClaimClose = headers.indexOf("Reclamação encerrada");
+        var idxMediation = headers.indexOf("Em mediação");
+
+        for (var i = 1; i < mlData.length; i++) {
+          var row = mlData[i];
+          if (!row[idxId !== -1 ? idxId : 0]) continue;
+          
+          mlRecords.push({
+            id: idxId !== -1 ? String(row[idxId]) : "",
+            dateStr: idxDate !== -1 ? String(row[idxDate]) : "",
+            status: idxStatus !== -1 ? String(row[idxStatus]) : "",
+            statusDescription: idxStatusDesc !== -1 ? String(row[idxStatusDesc]) : "",
+            multiProduct: idxMulti !== -1 ? (row[idxMulti] === "Sim") : false,
+            isKit: idxKit !== -1 ? (row[idxKit] === "Sim") : false,
+            units: idxUnits !== -1 ? sanitizeNumber(row[idxUnits]) : 1,
+            productRevenue: idxProductRevenue !== -1 ? sanitizeNumber(row[idxProductRevenue]) : 0,
+            surchargeRevenue: idxSurcharge !== -1 ? sanitizeNumber(row[idxSurcharge]) : 0,
+            installmentFee: idxInstallment !== -1 ? sanitizeNumber(row[idxInstallment]) : 0,
+            saleFeeAndTaxes: idxSaleFee !== -1 ? sanitizeNumber(row[idxSaleFee]) : 0,
+            shippingRevenue: idxShipRevenue !== -1 ? sanitizeNumber(row[idxShipRevenue]) : 0,
+            shippingFee: idxShipFee !== -1 ? sanitizeNumber(row[idxShipFee]) : 0,
+            shippingWeightCost: idxWeightCost !== -1 ? sanitizeNumber(row[idxWeightCost]) : 0,
+            shippingDiffCost: idxDiffCost !== -1 ? sanitizeNumber(row[idxDiffCost]) : 0,
+            discountsAndBonuses: idxDiscount !== -1 ? sanitizeNumber(row[idxDiscount]) : 0,
+            refundsAndCancellations: idxRefund !== -1 ? sanitizeNumber(row[idxRefund]) : 0,
+            totalBrl: idxTotal !== -1 ? sanitizeNumber(row[idxTotal]) : 0,
+            billingMonth: idxBillingMonth !== -1 ? String(row[idxBillingMonth]) : "",
+            isAdSale: idxAdSale !== -1 ? (row[idxAdSale] === "Sim") : false,
+            adId: idxAdId !== -1 ? String(row[idxAdId]) : "",
+            adTitle: idxAdTitle !== -1 ? String(row[idxAdTitle]) : "",
+            variation: idxVariation !== -1 ? String(row[idxVariation]) : "",
+            adUnitPrice: idxUnitPrice !== -1 ? sanitizeNumber(row[idxUnitPrice]) : 0,
+            adType: idxAdType !== -1 ? String(row[idxAdType]) : "",
+            invoiceStatus: idxInvoice !== -1 ? String(row[idxInvoice]) : "",
+            buyerName: idxBuyerName !== -1 ? String(row[idxBuyerName]) : "",
+            buyerDocument: idxBuyerDoc !== -1 ? String(row[idxBuyerDoc]) : "",
+            buyerAddress: idxAddress !== -1 ? String(row[idxAddress]) : "",
+            shippingMethod: idxShipMethod !== -1 ? String(row[idxShipMethod]) : "",
+            shippingDateGo: idxDateGo !== -1 ? String(row[idxDateGo]) : "",
+            shippingDateDelivery: idxDateDel !== -1 ? String(row[idxDateDel]) : "",
+            carrier: idxCarrier !== -1 ? String(row[idxCarrier]) : "",
+            trackingNumber: idxTrackNum !== -1 ? String(row[idxTrackNum]) : "",
+            trackingUrl: idxTrackUrl !== -1 ? String(row[idxTrackUrl]) : "",
+            isClaimOpen: idxClaimOpen !== -1 ? (row[idxClaimOpen] === "Sim") : false,
+            isClaimClosed: idxClaimClose !== -1 ? (row[idxClaimClose] === "Sim") : false,
+            isInMediation: idxMediation !== -1 ? (row[idxMediation] === "Sim") : false
+          });
+        }
+      }
+    }
     
     return ContentService.createTextOutput(JSON.stringify({
       status: "success",
       products: products,
       sales: sales,
       initialCapital: initialCapital,
-      hasConfigSheet: hasConfigSheet
+      hasConfigSheet: hasConfigSheet,
+      mlRecords: mlRecords
     }))
     .setMimeType(ContentService.MimeType.JSON);
     

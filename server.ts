@@ -84,7 +84,7 @@ async function startServer() {
 
   // API Proxy para Sincronização do Google Sheets - POST para gravar dados
   app.post('/api/sync-sheets', async (req, res) => {
-    const { webAppUrl, products, sales, initialCapital } = req.body;
+    const { webAppUrl, products, sales, initialCapital, mlRecords } = req.body;
 
     if (!webAppUrl) {
       return res.status(400).json({ 
@@ -102,7 +102,7 @@ async function startServer() {
         headers: {
           'Content-Type': 'text/plain;charset=utf-8'
         },
-        body: JSON.stringify({ products, sales, initialCapital })
+        body: JSON.stringify({ products, sales, initialCapital, mlRecords })
       }, 15000);
 
       if (!response.ok) {

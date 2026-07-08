@@ -779,17 +779,13 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                           </span>
                         )}
                         
-                        {sale.status === 'completed' ? (
-                          <span className="text-[10px] text-emerald-400 font-bold bg-emerald-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 animate-bounce">
-                            +{(sale.netProfit / totalSaleValue * 100).toFixed(0)}% real
-                          </span>
-                        ) : sale.status === 'refunded' ? (
-                          <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
-                            Cancelado
+                        {sale.status === 'completed' || sale.status === 'pending' ? (
+                          <span className="text-[10px] text-[#FFE600] font-bold bg-[#FFE600]/10 border border-[#FFE600]/20 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
+                            +{((sale.netProfit / (sale.purchasePrice * sale.quantity || 1)) * 100).toFixed(0)}% Margem
                           </span>
                         ) : (
-                          <span className="text-[10px] text-amber-400 bg-amber-500/10 border border-amber-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 animate-pulse font-extrabold">
-                            Retido ⏳
+                          <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
+                            Cancelado
                           </span>
                         )}
                       </td>

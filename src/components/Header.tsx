@@ -153,6 +153,19 @@ export default function Header({
             )}
           </button>
 
+          <button
+            onClick={() => setActiveTab('mercadolivre')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === 'mercadolivre'
+                ? 'bg-[#FFE600] text-black shadow-[0_0_15px_rgba(255,230,0,0.2)]'
+                : 'text-white/65 hover:text-white hover:bg-white/5'
+            }`}
+            id="tab-mercadolivre"
+          >
+            <Database className="w-4 h-4" />
+            Importe Mercado Livre
+          </button>
+
           {onLogout && (
             <button
               onClick={onLogout}
