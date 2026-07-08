@@ -184,6 +184,16 @@ export default function App() {
       const grossProfit = totalSaleValue - totalCostValue - discount;
       const netProfit = totalSaleValue - totalCostValue - mlFee - shippingCost - discount;
 
+      // Preservar propriedades locais se a planilha ainda não as tiver por usar script antigo
+      const localSale = sales.find(ls => ls.id === s.id);
+      const mlSaleId = s.mlSaleId || (localSale && localSale.mlSaleId) || undefined;
+      const lossAmount = s.lossAmount !== undefined ? s.lossAmount : (localSale ? localSale.lossAmount : undefined);
+      const lossReason = s.lossReason || (localSale && localSale.lossReason) || undefined;
+      const shippingType = s.shippingType || (localSale && localSale.shippingType) || 'transportadora';
+      const isCustomSale = s.isCustomSale !== undefined ? s.isCustomSale : (localSale ? localSale.isCustomSale : undefined);
+      const customMlFee = s.customMlFee !== undefined ? s.customMlFee : (localSale ? localSale.customMlFee : undefined);
+      const customShippingCost = s.customShippingCost !== undefined ? s.customShippingCost : (localSale ? localSale.customShippingCost : undefined);
+
       return {
         ...s,
         productId: matchingProd ? matchingProd.id : s.productId,
@@ -194,7 +204,14 @@ export default function App() {
         mlFee,
         shippingCost,
         grossProfit,
-        netProfit
+        netProfit,
+        mlSaleId,
+        lossAmount,
+        lossReason,
+        shippingType,
+        isCustomSale,
+        customMlFee,
+        customShippingCost
       };
     });
 
@@ -225,8 +242,10 @@ export default function App() {
           
           // Sincronizar o capital inicial / aporte
           if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
-            setInitialCapital(result.initialCapital);
-            localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+            if (result.hasConfigSheet || result.initialCapital !== 500) {
+              setInitialCapital(result.initialCapital);
+              localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+            }
           }
 
           console.log('Dados em tempo real obtidos e sanitizados com sucesso do Google Sheets!');
@@ -268,8 +287,10 @@ export default function App() {
         
         // Sincronizar o capital inicial / aporte
         if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
-          setInitialCapital(result.initialCapital);
-          localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+          if (result.hasConfigSheet || result.initialCapital !== 500) {
+            setInitialCapital(result.initialCapital);
+            localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+          }
         }
 
         console.log('Dados importados e sanitizados com sucesso do Google Sheets!');
@@ -650,7 +671,7 @@ export default function App() {
   }
 
   // Se estiver carregando o banco de dados pela primeira vez na inicialização após o login
-  if (!hasFetchedFromCloud && isFetchingFromCloud) {
+  if (!hasFetchedFromCloud && isFetchingFromCloud && activeTab !== 'sheets') {
     return (
       <div className="min-h-screen bg-[#070707] text-white flex flex-col items-center justify-center p-4 font-sans">
         <div className="flex flex-col items-center max-w-sm text-center space-y-6">
@@ -665,16 +686,32 @@ export default function App() {
             </div>
           </div>
           
-          <div className="space-y-2">
-            <span className="text-[10px] font-black tracking-widest bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/20 px-3 py-1 rounded-full uppercase">
-              SINCRONIZANDO EM REALTIME 🔄
-            </span>
-            <h2 className="text-xl font-light tracking-tight pt-2">
-              Buscando Banco de Dados
-            </h2>
-            <p className="text-xs text-white/50 leading-relaxed">
-              Carregando estoque, faturamento e vendas sincronizadas do Google Sheets. Por favor, aguarde...
-            </p>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <span className="text-[10px] font-black tracking-widest bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/20 px-3 py-1 rounded-full uppercase">
+                SINCRONIZANDO EM REALTIME 🔄
+              </span>
+              <h2 className="text-xl font-light tracking-tight pt-2">
+                Buscando Banco de Dados
+              </h2>
+              <p className="text-xs text-white/50 leading-relaxed">
+                Carregando estoque, faturamento e vendas sincronizadas do Google Sheets. Por favor, aguarde...
+              </p>
+            </div>
+
+            <div className="pt-4 border-t border-white/5">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsFetchingFromCloud(false);
+                  setHasFetchedFromCloud(true); // Desbloqueia o aplicativo para o modo local
+                  setActiveTab('sheets'); // Redireciona para aba de configurações
+                }}
+                className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-extrabold text-[10px] py-3 px-4 rounded-xl transition-all cursor-pointer uppercase tracking-wider hover:text-[#FFE600] hover:border-[#FFE600]/30"
+              >
+                ⚙️ Ajustar Link ou Cancelar Sincronização
+              </button>
+            </div>
           </div>
         </div>
       </div>

@@ -20,7 +20,8 @@ import {
   Layers,
   ShieldCheck,
   Zap,
-  Globe
+  Globe,
+  AlertCircle
 } from 'lucide-react';
 
 interface SheetsIntegrationProps {
@@ -279,7 +280,7 @@ function doGet(e) {
             mlSaleId: idxMlSaleId !== -1 ? (String(row[idxMlSaleId]) || undefined) : undefined,
             lossAmount: idxLossAmount !== -1 ? (sanitizeNumber(row[idxLossAmount]) || undefined) : undefined,
             lossReason: idxLossReason !== -1 ? (String(row[idxLossReason]) || undefined) : undefined,
-            shippingType: idxShippingType !== -1 ? (String(row[idxShippingType]) as any || undefined) : undefined,
+            shippingType: idxShippingType !== -1 ? (String(row[idxShippingType]) || undefined) : undefined,
             isCustomSale: idxIsCustomSale !== -1 ? (row[idxIsCustomSale] === "Sim" ? true : false) : undefined,
             customMlFee: idxCustomMlFee !== -1 ? (sanitizeNumber(row[idxCustomMlFee]) || undefined) : undefined,
             customShippingCost: idxCustomShippingCost !== -1 ? (sanitizeNumber(row[idxCustomShippingCost]) || undefined) : undefined
@@ -290,8 +291,10 @@ function doGet(e) {
 
     // 3. Ler Configurações (Aporte / Capital Inicial)
     var initialCapital = 500;
+    var hasConfigSheet = false;
     var configSheet = ss.getSheetByName("Config");
     if (configSheet) {
+      hasConfigSheet = true;
       var configData = configSheet.getDataRange().getValues();
       for (var i = 1; i < configData.length; i++) {
         if (configData[i][0] === "Aporte") {
@@ -305,7 +308,8 @@ function doGet(e) {
       status: "success",
       products: products,
       sales: sales,
-      initialCapital: initialCapital
+      initialCapital: initialCapital,
+      hasConfigSheet: hasConfigSheet
     }))
     .setMimeType(ContentService.MimeType.JSON);
     
@@ -327,6 +331,11 @@ export default function SheetsIntegration({
 }: SheetsIntegrationProps) {
   const [copied, setCopied] = useState<'headers' | 'script' | null>(null);
   const [inputUrl, setInputUrl] = useState(spreadsheetUrl);
+  const [inputWebAppUrl, setInputWebAppUrl] = useState(webAppUrl);
+
+  useEffect(() => {
+    setInputWebAppUrl(webAppUrl);
+  }, [webAppUrl]);
   
   const [isSyncing, setIsSyncing] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
@@ -474,6 +483,26 @@ export default function SheetsIntegration({
   return (
     <div className="space-y-6 animate-fade-in text-white animate-fade-in">
       
+      {/* Banner de Aviso de Atualização Obrigatória do Apps Script */}
+      <div className="bg-[#FFE600]/10 border-2 border-[#FFE600] rounded-2xl p-5 shadow-lg space-y-3">
+        <div className="flex items-center gap-3 text-[#FFE600]">
+          <AlertCircle className="w-6 h-6 animate-pulse" />
+          <h4 className="text-sm font-black uppercase tracking-wider">Aviso Importante: Atualização Obrigatória da Planilha (Database) ⚠️</h4>
+        </div>
+        <p className="text-xs text-white/90 leading-relaxed font-medium">
+          Investidor, para garantir que novos campos como o <strong>ID Venda Mercado Livre</strong>, o <strong>Preço de Compra</strong>, 
+          as <strong>Vendas Personalizadas</strong> e o seu <strong>Aporte de Capital</strong> sejam salvos diretamente na planilha do Google Sheets sem sumir, 
+          é <strong>obrigatório atualizar o seu código do Apps Script</strong>.
+        </p>
+        <div className="text-xs text-white/70 space-y-1 bg-black/40 p-3.5 rounded-xl border border-white/5">
+          <p className="font-bold text-white mb-1">Como atualizar em 30 segundos:</p>
+          <p>1. Copie o novo código gerado no <strong>Painel Direito (Passo 3)</strong>.</p>
+          <p>2. No seu Google Sheets, clique em <strong>Extensões &gt; Apps Script</strong>.</p>
+          <p>3. Apague todo o código antigo, cole o novo código e clique em salvar 💾.</p>
+          <p>4. Clique em <strong>Implantar &gt; Gerenciar implantações &gt; Editar (ícone de lápis) &gt; Nova versão</strong> e clique em <strong>Implantar</strong>!</p>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Painel Esquerdo: Configurar Links */}
@@ -535,15 +564,38 @@ export default function SheetsIntegration({
               </div>
               <p className="text-xs text-white/50 mb-4">Insira o link do <strong>Web App gerado no Passo 3 (Painel Direito)</strong> para que você possa ler (Importar) ou escrever (Exportar) dados em tempo real de forma 100% segura.</p>
               
-              <div className="space-y-3">
+              <form onSubmit={(e) => { e.preventDefault(); onUpdateWebAppUrl(inputWebAppUrl); }} className="space-y-3">
                 <input
                   type="url"
-                  value={webAppUrl}
-                  onChange={(e) => onUpdateWebAppUrl(e.target.value)}
+                  required
+                  value={inputWebAppUrl}
+                  onChange={(e) => setInputWebAppUrl(e.target.value)}
                   placeholder="Ex: https://script.google.com/macros/s/AKfycb.../exec"
                   className="w-full bg-white/5 border border-[#FFE600]/25 rounded-xl px-4 py-3 text-xs focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-mono text-[#FFE600] placeholder-white/30"
                 />
-                
+                <button
+                  type="submit"
+                  className="w-full bg-[#FFE600] hover:bg-[#FFE600]/85 text-black font-extrabold text-xs py-2.5 rounded-xl transition-all cursor-pointer text-center shadow-[0_0_12px_rgba(255,230,0,0.1)] hover:shadow-[0_0_16px_rgba(255,230,0,0.2)]"
+                >
+                  Salvar Link do Web App
+                </button>
+              </form>
+              
+              <div className="space-y-3 pt-2">
+                {webAppUrl && webAppUrl === inputWebAppUrl && (
+                  <div className="p-3 bg-emerald-950/25 border border-emerald-500/15 rounded-xl text-xs text-emerald-400 font-bold flex items-center gap-2 animate-fade-in">
+                    <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></span>
+                    <span>Link do Web App ativo e salvo na memória! 🔗</span>
+                  </div>
+                )}
+
+                {inputWebAppUrl && inputWebAppUrl !== webAppUrl && (
+                  <div className="p-3 bg-[#FFE600]/10 border border-[#FFE600]/20 rounded-xl text-xs text-[#FFE600] font-medium flex items-center gap-2 animate-pulse">
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                    <span>Atenção: Clique em "Salvar Link do Web App" para aplicar as alterações.</span>
+                  </div>
+                )}
+
                 {webAppUrl && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
                     <button
