@@ -33,6 +33,7 @@ interface SheetsIntegrationProps {
   onUpdateWebAppUrl: (url: string) => void;
   onPullFromCloud: () => Promise<{ status: 'success' | 'error'; message: string }>;
   initialCapital: number;
+  mlRecords: any[];
 }
 
 const APPS_SCRIPT_CODE = `function doPost(e) {
@@ -94,13 +95,14 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     salesSheet.clear();
     var salesHeaders = [
       "ID Venda", "ID Produto", "Nome Produto", "Quantidade", "Preço Venda", "Data", 
-      "Taxa ML", "Custo Frete", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Desconto", "Status", "Tempo Conclusão",
+      "Taxa ML", "Custo Frete", "Receita por Envio", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Desconto", "Status", "Tempo Conclusão",
       "ID Venda Mercado Livre", "Prejuízo Extra", "Motivo Prejuízo", "Tipo de Frete", "Venda Customizada", "Comissão Customizada", "Frete Customizado"
     ];
     salesSheet.appendRow(salesHeaders);
     
     if (payload.sales && payload.sales.length > 0) {
-      var salesRows = payload.sales.map(function(s) {
+      var salesRows = payload.sales.map(function(s, index) {
+        var rNum = index + 2;
         return [
           s.id, 
           s.productId || "", 
@@ -110,9 +112,10 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
           s.date, 
           s.mlFee, 
           s.shippingCost, 
+          s.shippingRevenue || 0,
           s.purchasePrice, 
-          s.grossProfit, 
-          s.netProfit,
+          "=(D" + rNum + "*E" + rNum + ")-(J" + rNum + "*D" + rNum + ")",
+          "=(D" + rNum + "*E" + rNum + ")-G" + rNum + "-H" + rNum + "+I" + rNum + "-(J" + rNum + "*D" + rNum + ")",
           s.discount || 0,
           s.status || "pending",
           s.completionTime || 0,
@@ -145,7 +148,7 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
         "Taxa de parcelamento equivalente ao acréscimo", "Tarifa de venda e impostos (BRL)", "Receita por envio (BRL)",
         "Tarifas de envio (BRL)", "Custo de envio com base nas medidas e peso declarados", "Custo por diferenças nas medidas e no peso do pacote",
         "Descontos e bônus", "Cancelamentos e reembolsos (BRL)", "Total (BRL)", "Mês de faturamento das suas tarifas",
-        "Venda por publicidade", "# de anúncio", "Título do anúncio", "Variação", "Preço unitário de venda do anúncio (BRL)",
+        "Venda por publicidade", "SKU", "# de anúncio", "Título do anúncio", "Variação", "Preço unitário de venda do anúncio (BRL)",
         "Tipo de anúncio", "NF-e em anexo", "Dados pessoais ou da empresa", "Tipo e número do documento", "Endereço",
         "Forma de entrega", "Data a caminho", "Data de entrega", "Transportador", "Número de rastreamento", "URL de acompanhamento",
         "Reclamação aberta", "Reclamação encerrada", "Em mediação"
@@ -159,7 +162,7 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
             r.installmentFee, r.saleFeeAndTaxes, r.shippingRevenue,
             r.shippingFee, r.shippingWeightCost, r.shippingDiffCost,
             r.discountsAndBonuses, r.refundsAndCancellations, r.totalBrl, r.billingMonth,
-            r.isAdSale ? "Sim" : "Não", r.adId, r.adTitle, r.variation, r.adUnitPrice,
+            r.isAdSale ? "Sim" : "Não", r.sku || "", r.adId, r.adTitle, r.variation, r.adUnitPrice,
             r.adType, r.invoiceStatus, r.buyerName, r.buyerDocument, r.buyerAddress,
             r.shippingMethod, r.shippingDateGo, r.shippingDateDelivery, r.carrier, r.trackingNumber, r.trackingUrl,
             r.isClaimOpen ? "Sim" : "Não", r.isClaimClosed ? "Sim" : "Não", r.isInMediation ? "Sim" : "Não"
@@ -272,6 +275,7 @@ function doGet(e) {
         var idxDate = headers.indexOf("Data");
         var idxFee = headers.indexOf("Taxa ML");
         var idxShip = headers.indexOf("Custo Frete");
+        var idxShipRevenue = headers.indexOf("Receita por Envio");
         var idxPur = headers.indexOf("Preço Compra");
         var idxGross = headers.indexOf("Lucro Bruto");
         var idxNet = headers.indexOf("Lucro Líquido");
@@ -301,6 +305,7 @@ function doGet(e) {
             date: dateStr || new Date().toISOString().split('T')[0],
             mlFee: idxFee !== -1 ? sanitizeNumber(row[idxFee]) : 0,
             shippingCost: idxShip !== -1 ? sanitizeNumber(row[idxShip]) : 0,
+            shippingRevenue: idxShipRevenue !== -1 ? sanitizeNumber(row[idxShipRevenue]) : 0,
             purchasePrice: idxPur !== -1 ? sanitizeNumber(row[idxPur]) : 0,
             grossProfit: idxGross !== -1 ? sanitizeNumber(row[idxGross]) : 0,
             netProfit: idxNet !== -1 ? sanitizeNumber(row[idxNet]) : 0,
@@ -361,6 +366,7 @@ function doGet(e) {
         var idxTotal = headers.indexOf("Total (BRL)");
         var idxBillingMonth = headers.indexOf("Mês de faturamento das suas tarifas");
         var idxAdSale = headers.indexOf("Venda por publicidade");
+        var idxSku = headers.indexOf("SKU");
         var idxAdId = headers.indexOf("# de anúncio");
         var idxAdTitle = headers.indexOf("Título do anúncio");
         var idxVariation = headers.indexOf("Variação");
@@ -422,7 +428,8 @@ function doGet(e) {
             trackingUrl: idxTrackUrl !== -1 ? String(row[idxTrackUrl]) : "",
             isClaimOpen: idxClaimOpen !== -1 ? (row[idxClaimOpen] === "Sim") : false,
             isClaimClosed: idxClaimClose !== -1 ? (row[idxClaimClose] === "Sim") : false,
-            isInMediation: idxMediation !== -1 ? (row[idxMediation] === "Sim") : false
+            isInMediation: idxMediation !== -1 ? (row[idxMediation] === "Sim") : false,
+            sku: idxSku !== -1 ? String(row[idxSku]) : ""
           });
         }
       }
@@ -452,7 +459,8 @@ export default function SheetsIntegration({
   webAppUrl,
   onUpdateWebAppUrl,
   onPullFromCloud,
-  initialCapital
+  initialCapital,
+  mlRecords
 }: SheetsIntegrationProps) {
   const [copied, setCopied] = useState<'headers' | 'script' | null>(null);
   const [inputUrl, setInputUrl] = useState(spreadsheetUrl);
@@ -512,7 +520,7 @@ export default function SheetsIntegration({
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ webAppUrl, products, sales, initialCapital })
+        body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords })
       });
 
       if (!response.ok) {

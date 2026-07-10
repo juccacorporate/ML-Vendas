@@ -4,12 +4,13 @@
  */
 
 import React, { useState } from 'react';
-import { Product } from '../types';
+import { Product, Sale } from '../types';
 import { calculateMLFee, calculateDaysInStock, formatCurrency } from '../utils';
 import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers } from 'lucide-react';
 
 interface StockControlProps {
   products: Product[];
+  sales: Sale[];
   onAddProduct: (product: Omit<Product, 'id'>) => void;
   onEditProduct: (product: Product) => void;
   onDeleteProduct: (id: string) => void;
@@ -18,6 +19,7 @@ interface StockControlProps {
 
 export default function StockControl({
   products,
+  sales,
   onAddProduct,
   onEditProduct,
   onDeleteProduct,
@@ -63,7 +65,22 @@ export default function StockControl({
     if (stockStatusFilter === 'low') {
       matchesStatus = p.stock <= p.minimalStock;
     } else if (stockStatusFilter === 'idle') {
-      matchesStatus = calculateDaysInStock(p.addedDate) >= 30;
+      // Calcular dias sem giro reais
+      const lastSale = sales
+        .filter(s => s.productId === p.id && s.status !== 'refunded')
+        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+        
+      let daysWithoutSale = 0;
+      if (lastSale) {
+        const lastDate = new Date(lastSale.date + 'T12:00:00');
+        const diffTime = new Date().getTime() - lastDate.getTime();
+        daysWithoutSale = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      } else {
+        const addedDate = new Date(p.addedDate + 'T12:00:00');
+        const diffTime = new Date().getTime() - addedDate.getTime();
+        daysWithoutSale = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      }
+      matchesStatus = daysWithoutSale >= 30;
     }
 
     return matchesSearch && matchesCategory && matchesStatus;
@@ -250,7 +267,21 @@ export default function StockControl({
                 </tr>
               ) : (
                 filteredProducts.map((p) => {
-                  const days = calculateDaysInStock(p.addedDate);
+                  const lastSale = sales
+                    .filter(s => s.productId === p.id && s.status !== 'refunded')
+                    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
+                    
+                  let days = 0;
+                  if (lastSale) {
+                    const lastDate = new Date(lastSale.date + 'T12:00:00');
+                    const diffTime = new Date().getTime() - lastDate.getTime();
+                    days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                  } else {
+                    const addedDate = new Date(p.addedDate + 'T12:00:00');
+                    const diffTime = new Date().getTime() - addedDate.getTime();
+                    days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+                  }
+
                   const isCritical = p.stock <= p.minimalStock;
                   
                   // Lucro Esperado (comissão padrão estimativa)

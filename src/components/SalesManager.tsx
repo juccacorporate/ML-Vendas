@@ -24,6 +24,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const [quantity, setQuantity] = useState(1);
   const [customSalePrice, setCustomSalePrice] = useState<number>(0);
   const [customShipping, setCustomShipping] = useState<number>(0);
+  const [shippingRevenue, setShippingRevenue] = useState<number>(0);
   const [shippingCostType, setShippingCostType] = useState<'unit' | 'total'>('unit');
   const [saleDate, setSaleDate] = useState<string>(() => {
     const d = new Date();
@@ -63,6 +64,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const [isEditCustomMlFee, setIsEditCustomMlFee] = useState(false);
   const [editMlFeeUnit, setEditMlFeeUnit] = useState<number>(0);
   const [editShippingCost, setEditShippingCost] = useState<number>(0);
+  const [editShippingRevenue, setEditShippingRevenue] = useState<number>(0);
   const [editDate, setEditDate] = useState<string>('');
   const [editStatus, setEditStatus] = useState<'pending' | 'completed' | 'refunded'>('pending');
   const [editLossAmount, setEditLossAmount] = useState<number>(0);
@@ -92,6 +94,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setEditMlFeeUnit(feeUnit);
     
     setEditShippingCost(sale.shippingCost);
+    setEditShippingRevenue(sale.shippingRevenue || 0);
     setEditDate(sale.date);
     setEditStatus(sale.status);
     setEditLossAmount(sale.lossAmount || 0);
@@ -115,6 +118,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
       isCustomSale: isEditCustomMlFee,
       customMlFee: isEditCustomMlFee ? Number(editMlFeeUnit) : undefined,
       shippingCost: Number(editShippingCost),
+      shippingRevenue: Number(editShippingRevenue),
       date: editDate,
       status: editStatus,
       mlFee: finalMlFeeTotal,
@@ -182,6 +186,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
       date: saleDate,
       mlFee: finalMlFeeUnit * quantity,
       shippingCost: shippingCostType === 'unit' ? Number(customShipping) * quantity : Number(customShipping),
+      shippingRevenue: Number(shippingRevenue),
       purchasePrice: selectedProduct.purchasePrice,
       discount: Number(discount),
       shippingType,
@@ -196,6 +201,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setQuantity(1);
     setCustomSalePrice(0);
     setCustomShipping(0);
+    setShippingRevenue(0);
     setDiscount(0);
     setFormError(null);
     setShippingType('transportadora');
@@ -204,8 +210,18 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setMlSaleId('');
   };
 
-  // Filtragem de vendas
-  const filteredSales = sales.filter(s => 
+  // Deduplicar vendas para evitar IDs duplicados na renderização e cálculos
+  const uniqueSalesMap = new Map<string, Sale>();
+  sales.forEach(sale => {
+    const key = sale.mlSaleId || sale.id;
+    if (!uniqueSalesMap.has(key)) {
+      uniqueSalesMap.set(key, sale);
+    }
+  });
+  const uniqueSales = Array.from(uniqueSalesMap.values());
+
+  // Filtragem de vendas a partir da lista deduplicada
+  const filteredSales = uniqueSales.filter(s => 
     s.productName.toLowerCase().includes(searchTerm.toLowerCase())
   ).sort((a,b) => b.date.localeCompare(a.date));
 
@@ -213,6 +229,27 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const periodTotalRevenue = filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
   const periodTotalNetProfit = filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + s.netProfit, 0);
   const periodPendingProfit = filteredSales.filter(s => s.status === 'pending').reduce((acc, s) => acc + s.netProfit, 0);
+
+  // Calcular total de unidades vendidas por produto (desconsiderando estornos)
+  const productsSoldCounts = React.useMemo(() => {
+    const counts: { [name: string]: number } = {};
+    filteredSales.forEach(s => {
+      if (s.status !== 'refunded') {
+        const product = products.find(p => p.id === s.productId);
+        const name = product ? product.name : s.productName;
+        counts[name] = (counts[name] || 0) + s.quantity;
+      }
+    });
+    return Object.entries(counts)
+      .map(([name, qty]) => ({ name, qty }))
+      .sort((a, b) => b.qty - a.qty);
+  }, [filteredSales]);
+
+  const totalProductsSold = React.useMemo(() => {
+    return filteredSales
+      .filter(s => s.status !== 'refunded')
+      .reduce((sum, s) => sum + s.quantity, 0);
+  }, [filteredSales]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -312,6 +349,21 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       step="0.01"
                       value={customShipping || ''}
                       onChange={(e) => setCustomShipping(Number(e.target.value))}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                      placeholder="0,00"
+                    />
+                  </div>
+
+                  {/* Receita por Envio */}
+                  <div>
+                    <label className="text-xs font-bold text-white/70 block mb-1">
+                      Receita por Envio R$ (Pago pelo comprador)
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={shippingRevenue || ''}
+                      onChange={(e) => setShippingRevenue(Number(e.target.value))}
                       className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
                       placeholder="0,00"
                     />
@@ -597,6 +649,30 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
           </div>
         </div>
 
+        {/* Painel de Unidades Vendidas por Produto */}
+        {productsSoldCounts.length > 0 && (
+          <div className="p-5 border-b border-white/5 bg-white/[0.01]">
+            <span className="text-[10px] text-white/40 font-black block uppercase tracking-widest mb-3 flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5 text-[#FFE600]" />
+              Volume de Vendas por Produto (Sem Estornos) — Total Geral: {totalProductsSold} un.
+            </span>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {productsSoldCounts.map((item, idx) => (
+                <div key={idx} className="bg-white/5 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-all flex items-center justify-between">
+                  <div className="min-w-0 flex-1 pr-2">
+                    <span className="text-[10px] text-white/80 font-bold block truncate" title={item.name}>
+                      {item.name}
+                    </span>
+                  </div>
+                  <div className="bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/20 px-2.5 py-1 rounded-lg text-xs font-black shrink-0">
+                    {item.qty} un
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
@@ -608,7 +684,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                 <th className="py-4 px-4 text-center">Total Bruto</th>
                 <th className="py-4 px-4 text-center">Projeção de Lucro</th>
                 <th className="py-4 px-4 text-center">Comissão + Frete</th>
-                <th className="py-4 px-4 text-center">Lucro Líquido</th>
+                <th className="py-4 px-4 text-center text-emerald-400 font-black">Lucro Líquido</th>
                 <th className="py-4 px-4 text-center">Status</th>
                 <th className="py-4 px-5 text-right font-medium">Ação</th>
               </tr>
@@ -623,7 +699,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
               ) : (
                 filteredSales.map((sale) => {
                   const totalSaleValue = sale.salePrice * sale.quantity;
-                  const totalFees = sale.mlFee + sale.shippingCost;
+                  const totalFees = sale.mlFee + sale.shippingCost - (sale.shippingRevenue || 0);
                   const isPending = sale.status === 'pending';
 
                   // Encontrar produto correspondente para analisar diferenciação de margem líq
@@ -665,7 +741,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       <td className="py-4 px-4">
                         <div className="flex items-center gap-2">
                           <div>
-                            <p className="text-white/90 font-bold">{sale.productName}</p>
+                            <p className="text-white/90 font-bold">{product ? product.name : sale.productName}</p>
                             
                             {/* Badges de Envio e Diferença de Margem em relação ao planejado */}
                             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
@@ -718,54 +794,66 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                         {formatCurrency(totalSaleValue)}
                       </td>
 
-                      {/* Projeção de Lucro */}
+                      {/* Projeção de Lucro (do Cadastro) */}
                       <td className="py-4 px-4 text-center">
-                        {(() => {
-                          const purchasePriceUnit = sale.purchasePrice > 0 ? sale.purchasePrice : (product?.purchasePrice || 0);
-                          const mlFeeUnit = sale.mlFee / sale.quantity;
-                          const shippingCostUnit = sale.shippingCost / sale.quantity;
-                          const discountUnit = (sale.discount || 0) / sale.quantity;
-                          const expectedNetProfitUnit = sale.salePrice - purchasePriceUnit - mlFeeUnit - shippingCostUnit - discountUnit;
-                          const totalExpectedNetProfit = expectedNetProfitUnit * sale.quantity;
-                          const expectedMarginPercent = purchasePriceUnit > 0 ? (expectedNetProfitUnit / purchasePriceUnit) * 100 : 0;
-
+                        {product ? (() => {
+                          const unitSalePrice = product.salePrice;
+                          const purchasePriceUnit = product.purchasePrice;
+                          const defaultMlFeeUnit = calculateMLFee(unitSalePrice, product.mlFeeType, product.customFeePercent);
+                          const unitExpectedProfit = unitSalePrice - purchasePriceUnit - defaultMlFeeUnit - product.shippingCost;
+                          const expectedMarginPercent = purchasePriceUnit > 0 ? (unitExpectedProfit / purchasePriceUnit) * 100 : 0;
                           return (
                             <div className="flex flex-col items-center gap-1">
-                              <span className={totalExpectedNetProfit >= 0 ? "text-emerald-400 font-black font-mono" : "text-red-400 font-black font-mono"}>
-                                {totalExpectedNetProfit >= 0 ? '+' : ''}{formatCurrency(totalExpectedNetProfit)}
+                              <span className={unitExpectedProfit >= 0 ? "text-emerald-400 font-black font-mono" : "text-red-400 font-black font-mono"}>
+                                {unitExpectedProfit >= 0 ? '+' : ''}{formatCurrency(unitExpectedProfit)}/un
                               </span>
-                              {expectedMarginPercent !== 0 && (
-                                <span 
-                                  className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
-                                    expectedMarginPercent >= 0 
-                                      ? "text-emerald-400 bg-emerald-500/20 border-emerald-500/30" 
-                                      : "text-red-400 bg-red-500/20 border-red-500/30"
-                                  }`} 
-                                  title="Margem projetada de ganho esperada sobre o preço de compra"
-                                >
-                                  {expectedMarginPercent.toFixed(0)}% Margem
-                                </span>
-                              )}
+                              <span 
+                                className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                                  expectedMarginPercent >= 0 
+                                    ? "text-emerald-400 bg-emerald-500/20 border-emerald-500/30" 
+                                    : "text-red-400 bg-red-500/20 border-red-500/30"
+                                }`} 
+                                title="Margem de lucro cadastrada sobre o custo do produto"
+                              >
+                                {expectedMarginPercent.toFixed(0)}% Margem
+                              </span>
                             </div>
                           );
-                        })()}
+                        })() : (
+                          <span className="text-white/30 text-xs">-</span>
+                        )}
                       </td>
 
-                      {/* Comissão */}
+                      {/* Comissão + Frete */}
                       <td className="py-4 px-4 text-center text-red-400 font-mono">
-                        <span className="font-bold">-{formatCurrency(totalFees)}</span>
-                        <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
-                          <p>Taxa ML: {formatCurrency(sale.mlFee)}</p>
-                          <p>Frete: {formatCurrency(sale.shippingCost)}</p>
-                        </div>
+                        {sale.status === 'refunded' ? (
+                          <div className="flex flex-col items-center">
+                            <span className="font-bold">-{formatCurrency(sale.shippingCost)}</span>
+                            <span className="text-[10px] text-red-400/70 mt-1 font-sans font-bold uppercase tracking-wider">Frete de devolução</span>
+                          </div>
+                        ) : (
+                          <>
+                            <span className="font-bold">-{formatCurrency(totalFees)}</span>
+                            <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
+                              <p>Taxa ML: {formatCurrency(sale.mlFee)}</p>
+                              <p>Frete: {formatCurrency(sale.shippingCost)}</p>
+                              {sale.discount !== undefined && sale.discount > 0 && (
+                                <p className="text-red-400 font-bold">Desconto/Campanha: {formatCurrency(sale.discount)}</p>
+                              )}
+                              {sale.shippingRevenue !== undefined && sale.shippingRevenue > 0 && (
+                                <p className="text-emerald-400 font-bold">Rec. Envio: +{formatCurrency(sale.shippingRevenue)}</p>
+                              )}
+                            </div>
+                          </>
+                        )}
                       </td>
 
                       {/* Lucro Liquido */}
                       <td className="py-4 px-4 text-center">
                         {sale.status === 'refunded' ? (
                           <div className="space-y-1">
-                            <span className="text-red-500 italic font-bold block">
-                              {formatCurrency(0)}
+                            <span className="text-red-500 font-black block">
+                              -{formatCurrency(Math.abs(sale.netProfit))}
                             </span>
                             {sale.lossAmount !== undefined && sale.lossAmount > 0 && (
                               <span className="text-[10px] text-red-400 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto" title="Prejuízo adicional lançado no estorno">
@@ -774,14 +862,24 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                             )}
                           </div>
                         ) : (
-                          <span className={`text-emerald-400 font-black block ${isPending ? 'text-white/30 italic line-through' : ''}`}>
-                            {formatCurrency(sale.netProfit)}
+                          <span className={`font-black block ${
+                            sale.netProfit < 0 
+                              ? 'text-red-400' 
+                              : isPending ? 'text-emerald-600' : 'text-emerald-400'
+                          }`}>
+                            {sale.netProfit > 0 ? '+' : ''}{formatCurrency(sale.netProfit)}
                           </span>
                         )}
                         
                         {sale.status === 'completed' || sale.status === 'pending' ? (
-                          <span className="text-[10px] text-[#FFE600] font-bold bg-[#FFE600]/10 border border-[#FFE600]/20 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
-                            +{((sale.netProfit / (sale.purchasePrice * sale.quantity || 1)) * 100).toFixed(0)}% Margem
+                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 ${
+                            sale.netProfit < 0
+                              ? 'text-red-400 bg-red-500/10 border border-red-500/20'
+                              : isPending
+                                ? 'text-emerald-600 bg-emerald-600/10 border border-emerald-600/20'
+                                : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                          }`}>
+                            {sale.netProfit > 0 ? '+' : ''}{((sale.netProfit / (sale.purchasePrice * sale.quantity || 1)) * 100).toFixed(0)}% Margem
                           </span>
                         ) : (
                           <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
@@ -1147,6 +1245,18 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                     step="0.01"
                     value={editShippingCost || ''}
                     onChange={(e) => setEditShippingCost(Number(e.target.value))}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                  />
+                </div>
+
+                {/* Receita por Envio Total */}
+                <div>
+                  <label className="text-xs font-bold text-white/70 block mb-1">Receita por Envio Total (R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editShippingRevenue || ''}
+                    onChange={(e) => setEditShippingRevenue(Number(e.target.value))}
                     className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
                   />
                 </div>

@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut } from 'lucide-react';
+import { useState } from 'react';
+import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut, Calculator } from 'lucide-react';
+import MLCalculatorModal from './MLCalculatorModal';
 
 interface HeaderProps {
   activeTab: string;
@@ -28,6 +30,8 @@ export default function Header({
   cloudSyncError = null,
   onLogout
 }: HeaderProps) {
+  const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+
   return (
     <header className="bg-[#0d0d0d] text-white shadow-xl border-b border-white/10">
       <div className="max-w-[1550px] mx-auto px-4 sm:px-6 lg:px-8">
@@ -166,6 +170,15 @@ export default function Header({
             Importe Mercado Livre
           </button>
 
+          <button
+            onClick={() => setIsCalculatorOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer text-white/65 hover:text-white hover:bg-white/5"
+            id="btn-calculator"
+          >
+            <Calculator className="w-4 h-4" />
+            Calculadora ML
+          </button>
+
           {onLogout && (
             <button
               onClick={onLogout}
@@ -180,6 +193,8 @@ export default function Header({
         </div>
 
       </div>
+      
+      <MLCalculatorModal isOpen={isCalculatorOpen} onClose={() => setIsCalculatorOpen(false)} />
     </header>
   );
 }

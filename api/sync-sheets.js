@@ -38,13 +38,13 @@ export default async function handler(req, res) {
       console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
       response = await fetch(webAppUrl);
     } else {
-      const { products, sales, initialCapital } = req.body || {};
+      const { products, sales, initialCapital, mlRecords } = req.body || {};
       response = await fetch(webAppUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain;charset=utf-8'
         },
-        body: JSON.stringify({ products, sales, initialCapital })
+        body: JSON.stringify({ products, sales, initialCapital, mlRecords })
       });
     }
 

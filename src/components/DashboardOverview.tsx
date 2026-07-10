@@ -23,10 +23,20 @@ export default function DashboardOverview({
   initialCapital,
   onUpdateCapital
 }: DashboardOverviewProps) {
+  // Deduplicar vendas para evitar IDs duplicados na renderização e cálculos
+  const uniqueSalesMap = new Map<string, Sale>();
+  sales.forEach(sale => {
+    const key = sale.mlSaleId || sale.id;
+    if (!uniqueSalesMap.has(key)) {
+      uniqueSalesMap.set(key, sale);
+    }
+  });
+  const uniqueSales = Array.from(uniqueSalesMap.values());
+
   const [selectedTimeframe, setSelectedTimeframe] = useState<'all' | '30days' | '7days' | 'custom'>('all');
 
   // Encontrar limites para o período customizado (slider de data)
-  const salesDates = sales.map(s => new Date(s.date).getTime()).sort();
+  const salesDates = uniqueSales.map(s => new Date(s.date).getTime()).sort();
   const oldestTime = salesDates.length > 0 ? salesDates[0] : new Date('2026-03-01').getTime();
   const todayTime = new Date('2026-06-17').getTime(); // Hoje baseado nos registros
   const totalDays = Math.max(1, Math.ceil((todayTime - oldestTime) / (1000 * 60 * 60 * 24)));
@@ -47,7 +57,7 @@ export default function DashboardOverview({
   const customEndDate = getCustomDateStr(endOffset);
 
   // Filtrar todas as vendas pelo período selecionado (sem distinção de status para filtros iniciais)
-  const filteredAllSales = sales.filter(sale => {
+  const filteredAllSales = uniqueSales.filter(sale => {
     if (selectedTimeframe === 'all') return true;
     
     if (selectedTimeframe === 'custom') {
@@ -102,10 +112,12 @@ export default function DashboardOverview({
 
   // Agrupar custos por produto (SKU / linha) para exibição detalhada no card
   const costsByProduct = filteredAllSales.reduce((acc: { [key: string]: { productName: string; quantity: number; mlFee: number; shippingCost: number; total: number } }, s) => {
-    const key = s.productName;
+    const product = products.find(p => p.id === s.productId);
+    const displayName = product ? product.name : s.productName;
+    const key = displayName;
     if (!acc[key]) {
       acc[key] = {
-        productName: s.productName,
+        productName: displayName,
         quantity: 0,
         mlFee: 0,
         shippingCost: 0,
@@ -174,19 +186,19 @@ export default function DashboardOverview({
   const totalPotentialSaleValue = products.reduce((acc, p) => acc + (p.salePrice * p.stock), 0);
 
   // Faturamento líquido acumulado de TODAS as vendas concluídas (sem limite de período, para calcular Caixa)
-  const allCompletedSales = sales.filter(s => s.status === 'completed');
+  const allCompletedSales = uniqueSales.filter(s => s.status === 'completed');
   const allSalesRevenue = allCompletedSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
   const allMLFees = allCompletedSales.reduce((acc, s) => acc + s.mlFee, 0);
   const allShipping = allCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
 
   // Custos de frete e prejuízos de TODAS as vendas reembolsadas na base (para cálculo do Caixa)
-  const allRefundedSales = sales.filter(s => s.status === 'refunded');
+  const allRefundedSales = uniqueSales.filter(s => s.status === 'refunded');
   const allRefundedShipping = allRefundedSales.reduce((acc, s) => acc + s.shippingCost, 0);
   const allUnforeseenLosses = allRefundedSales.reduce((acc, s) => acc + (s.lossAmount || 0), 0);
 
   // Custo de mercadoria de todas as vendas registradas (concluídas e pendentes) + estoque ativo
   // Vendas reembolsadas NÃO entram aqui pois o estoque voltou para o ativo
-  const costOfGoodsAllSales = sales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
+  const costOfGoodsAllSales = uniqueSales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
   const totalStockInvestment = totalStockCost + costOfGoodsAllSales;
 
   // Caixa Disponível Atual (Apenas recursos de vendas concluídas/liberadas, deduzindo custos de frete refund e prejuízos)
@@ -215,7 +227,7 @@ export default function DashboardOverview({
   const totalPotentialNetSaleValue = products.reduce((acc, p) => acc + (calculateProductNetPrice(p) * p.stock), 0);
 
   // Acumulado de Dinheiro Congelado (Líquido a receber de Mercado Pago - vendas pendentes)
-  const allPendingSales = sales.filter(s => s.status === 'pending');
+  const allPendingSales = uniqueSales.filter(s => s.status === 'pending');
   const cumulativeFrozenNetValue = allPendingSales.reduce(
     (acc, s) => acc + (s.salePrice * s.quantity - s.mlFee - s.shippingCost), 
     0
@@ -283,7 +295,7 @@ export default function DashboardOverview({
     const dateEntry = Object.keys(salesByDate).sort((a,b) => a.localeCompare(b))[index];
     
     // Lucro acumulado de todas as vendas (não reembolsadas) na base até esta data
-    const cumulativeProfit = sales
+    const cumulativeProfit = uniqueSales
       .filter(s => s.status !== 'refunded' && s.date <= dateEntry)
       .reduce((acc, s) => acc + s.netProfit, 0);
 
@@ -459,13 +471,15 @@ export default function DashboardOverview({
                 <p className="text-[9px] font-bold text-[#FFE600] uppercase tracking-wider">Vendas em Andamento (Líquido):</p>
                 <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                   {filteredPendingSales.map(s => {
+                    const product = products.find(p => p.id === s.productId);
+                    const displayName = product ? product.name : s.productName;
                     return (
                       <div key={s.id} className="flex justify-between items-center text-[10.5px] font-medium leading-relaxed">
                         <div className="flex items-center gap-2 min-w-0">
                           <span className="text-[10px] text-black font-black font-mono bg-[#FFE600] px-1.5 py-0.5 rounded shrink-0 shadow-[0_1px_3px_rgba(0,0,0,0.3)]" title={`Data da venda: ${s.date}`}>
                             {formatShortDate(s.date)}
                           </span>
-                          <span className="truncate text-white/60 font-semibold" title={`${s.quantity}x ${s.productName}`}>{s.quantity}x {s.productName}</span>
+                          <span className="truncate text-white/60 font-semibold" title={`${s.quantity}x ${displayName}`}>{s.quantity}x {displayName}</span>
                         </div>
                         <span className="font-mono text-[#FFE600] font-bold shrink-0">{formatCurrency(s.netProfit)}</span>
                       </div>
@@ -633,17 +647,14 @@ export default function DashboardOverview({
                 <p className="text-[9px] font-bold text-red-400 uppercase tracking-wider">Relação de Estornos:</p>
                 <div className="max-h-[110px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
                   {filteredRefundedSales.map(s => {
+                    const product = products.find(p => p.id === s.productId);
+                    const displayName = product ? product.name : s.productName;
                     return (
                       <div key={s.id} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
                         <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
-                          <span className="truncate max-w-[120px] text-white/70 font-bold" title={`${s.quantity}x ${s.productName}`}>{s.quantity}x {s.productName}</span>
+                          <span className="truncate max-w-[120px] text-white/70 font-bold" title={`${s.quantity}x ${displayName}`}>{s.quantity}x {displayName}</span>
                           <div className="text-right">
-                            {s.lossAmount ? (
-                              <span className="font-mono text-red-400 font-bold block">{formatCurrency(s.lossAmount)}</span>
-                            ) : (
-                              <span className="text-white/30 block text-[9px] font-bold">Sem perda física</span>
-                            )}
-                            <span className="text-[8.5px] text-white/35 block font-mono">Frete: {formatCurrency(s.shippingCost)}</span>
+                            <span className="font-mono text-red-400 font-bold block">-{formatCurrency((s.lossAmount || 0) + s.shippingCost)}</span>
                           </div>
                         </div>
                         {s.lossReason && (

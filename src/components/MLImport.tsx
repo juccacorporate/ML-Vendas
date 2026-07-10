@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { MLImportRecord, Product } from '../types';
+import { MLImportRecord, Product, findMatchingProduct } from '../types';
 import { formatCurrency, formatDate } from '../utils';
 import { 
   Upload, 
@@ -147,6 +147,7 @@ export default function MLImport({
       const idxBillingMonth = getIndex(['mes de faturamento', 'mes faturamento', 'mes_tarifas']);
       const idxAdSale = getIndex(['venda por publicidade', 'publicidade', 'ads', 'ads_venda']);
       const idxAdId = getIndex(['# de anuncio', 'id anuncio', 'id_anuncio', 'numero de anuncio']);
+      const idxSku = getIndex(['sku', 'codigo sku', 'codigo de barras', 'ref']);
       const idxAdTitle = getIndex(['titulo do anuncio', 'titulo anuncio', 'nome do anuncio']);
       const idxVariation = getIndex(['variacao', 'cor', 'tamanho']);
       const idxUnitPrice = getIndex(['preco unitario', 'valor unitario', 'preco unitario de venda']);
@@ -235,7 +236,8 @@ export default function MLImport({
           trackingUrl: idxTrackUrl !== -1 ? row[idxTrackUrl] : '',
           isClaimOpen: idxClaimOpen !== -1 ? cleanBool(row[idxClaimOpen]) : false,
           isClaimClosed: idxClaimClose !== -1 ? cleanBool(row[idxClaimClose]) : false,
-          isInMediation: idxMediation !== -1 ? cleanBool(row[idxMediation]) : false
+          isInMediation: idxMediation !== -1 ? cleanBool(row[idxMediation]) : false,
+          sku: idxSku !== -1 ? row[idxSku] : ''
         });
       }
 
@@ -332,6 +334,7 @@ export default function MLImport({
     let openClaims = 0;
     let refunds = 0;
     let adUnitsSold = 0;
+    let netProfitML = 0;
     
     let totalFullSales = 0;
     let fullUnitsSold = 0;
@@ -343,60 +346,50 @@ export default function MLImport({
     let totalProductCost = 0;
 
     mlRecords.forEach(r => {
-      const isCanceled = r.status.toLowerCase().includes('cancelad') || r.status.toLowerCase().includes('devol');
+      const statusLower = r.status.toLowerCase();
+      const descLower = (r.statusDescription || '').toLowerCase();
+      const isCanceled = statusLower.includes('cancelad') || statusLower.includes('devol') || statusLower.includes('reembols') || statusLower.includes('refund') || statusLower.includes('estorn') || descLower.includes('cancelad') || descLower.includes('devol') || descLower.includes('reembols') || descLower.includes('refund') || descLower.includes('estorn');
       
       if (r.isClaimOpen) openClaims++;
       refunds += Math.abs(r.refundsAndCancellations);
       
       if (isCanceled) return;
 
-      totalRevenue += (r.totalBrl - Math.abs(r.discountsAndBonuses));
+      totalRevenue += r.productRevenue;
       totalSaleFee += Math.abs(r.saleFeeAndTaxes); // Convertemos tarifa em custo positivo
       totalShippingFee += Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const saleFee = Math.abs(r.saleFeeAndTaxes);
+      const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const discount = Math.abs(r.discountsAndBonuses || 0);
+      netProfitML += (r.productRevenue - saleFee - shippingCost - discount + (r.shippingRevenue || 0));
       
       if (r.isAdSale) {
-        totalAdSales += (r.totalBrl - Math.abs(r.discountsAndBonuses));
+        totalAdSales += r.productRevenue;
         adUnitsSold += r.units;
       }
       
       const methodLower = (r.shippingMethod || '').toLowerCase();
       const carrierLower = (r.carrier || '').toLowerCase();
       if (methodLower.includes('full') || carrierLower.includes('full')) {
-        totalFullSales += (r.totalBrl - Math.abs(r.discountsAndBonuses));
+        totalFullSales += r.productRevenue;
         fullUnitsSold += r.units;
       } else if (methodLower.includes('flex') || carrierLower.includes('flex')) {
-        totalFlexSales += (r.totalBrl - Math.abs(r.discountsAndBonuses));
+        totalFlexSales += r.productRevenue;
         flexUnitsSold += r.units;
       } else {
-        totalCarrierSales += (r.totalBrl - Math.abs(r.discountsAndBonuses));
+        totalCarrierSales += r.productRevenue;
         carrierUnitsSold += r.units;
       }
       
-      // Encontrar produto correspondente no estoque para computar o custo real de aquisição
-      let matchingProduct = products.find(p => {
-        const adTitleLower = r.adTitle.toLowerCase();
-        const pNameLower = p.name.toLowerCase();
-        
-        if (pNameLower.includes('20cm') || pNameLower.includes('20 cm')) {
-          return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
-        }
-        if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°')) {
-          return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('hrebos') || adTitleLower.includes('90graus');
-        }
-        return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower);
-      });
-      
-      if (!matchingProduct && products.length > 0) {
-        matchingProduct = products[0];
-      }
+      // Encontrar produto correspondente no estoque para computar o custo real de aquisição usando a nova busca inteligente por SKU
+      const matchingProduct = findMatchingProduct(r, products);
       
       if (matchingProduct) {
         totalProductCost += matchingProduct.purchasePrice * r.units;
       }
     });
 
-    const netProfitML = totalRevenue - totalSaleFee - totalShippingFee - refunds;
-    // Lucro Líquido Previsto (deduzindo também o custo de compra do produto do estoque!)
+    // Lucro Líquido Previsto (deduzindo também o custo de compra do produto do estoque do valor líquido recebido!)
     const predictedNetProfit = netProfitML - totalProductCost;
 
     return {
@@ -493,31 +486,23 @@ export default function MLImport({
   const topAds = useMemo(() => {
     const adMap: { [key: string]: { id: string; title: string; qty: number; total: number } } = {};
     mlRecords.forEach(r => {
-      const isCanceled = r.status.toLowerCase().includes('cancelad') || r.status.toLowerCase().includes('devol');
+      const statusLower = r.status.toLowerCase();
+      const descLower = (r.statusDescription || '').toLowerCase();
+      const isCanceled = statusLower.includes('cancelad') || statusLower.includes('devol') || statusLower.includes('reembols') || statusLower.includes('refund') || statusLower.includes('estorn') || descLower.includes('cancelad') || descLower.includes('devol') || descLower.includes('reembols') || descLower.includes('refund') || descLower.includes('estorn');
       if (!r.adId || isCanceled) return;
 
-      let matchingProduct = products.find(p => {
-        const adTitleLower = r.adTitle.toLowerCase();
-        const pNameLower = p.name.toLowerCase();
-        if (pNameLower.includes('20cm') || pNameLower.includes('20 cm')) {
-          return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto');
-        }
-        if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°')) {
-          return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('hrebos');
-        }
-        return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower);
-      });
-      if (!matchingProduct && products.length > 0) {
-        matchingProduct = products[0];
-      }
+      const matchingProduct = findMatchingProduct(r, products);
       const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
-      const rowNetProfit = (r.totalBrl - Math.abs(r.discountsAndBonuses)) - productCost;
+      const saleFee = Math.abs(r.saleFeeAndTaxes);
+      const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const discount = Math.abs(r.discountsAndBonuses || 0);
+      const rowNetProfit = r.productRevenue - saleFee - shippingCost - productCost - discount + (r.shippingRevenue || 0);
 
-      if (!adMap[r.adId]) {
-        adMap[r.adId] = { id: r.adId, title: r.adTitle, qty: 0, total: 0 };
+      const titleKey = r.adTitle || r.adId; if (!adMap[titleKey]) {
+        adMap[titleKey] = { id: r.adId, title: r.adTitle, qty: 0, total: 0 };
       }
-      adMap[r.adId].qty += r.units;
-      adMap[r.adId].total += rowNetProfit;
+      adMap[titleKey].qty += r.units;
+      adMap[titleKey].total += rowNetProfit;
     });
     return Object.values(adMap).sort((a, b) => b.total - a.total).slice(0, 5);
   }, [mlRecords, products]);
@@ -533,25 +518,17 @@ export default function MLImport({
     ];
     
     mlRecords.forEach(r => {
-      const isCanceled = r.status.toLowerCase().includes('cancelad') || r.status.toLowerCase().includes('devol');
+      const statusLower = r.status.toLowerCase();
+      const descLower = (r.statusDescription || '').toLowerCase();
+      const isCanceled = statusLower.includes('cancelad') || statusLower.includes('devol') || statusLower.includes('reembols') || statusLower.includes('refund') || statusLower.includes('estorn') || descLower.includes('cancelad') || descLower.includes('devol') || descLower.includes('reembols') || descLower.includes('refund') || descLower.includes('estorn');
       if (isCanceled) return;
 
-      let matchingProduct = products.find(p => {
-        const adTitleLower = r.adTitle.toLowerCase();
-        const pNameLower = p.name.toLowerCase();
-        if (pNameLower.includes('20cm') || pNameLower.includes('20 cm')) {
-          return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto');
-        }
-        if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°')) {
-          return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('hrebos');
-        }
-        return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower);
-      });
-      if (!matchingProduct && products.length > 0) {
-        matchingProduct = products[0];
-      }
+      const matchingProduct = findMatchingProduct(r, products);
       const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
-      const rowNetProfit = (r.totalBrl - Math.abs(r.discountsAndBonuses)) - productCost;
+      const saleFee = Math.abs(r.saleFeeAndTaxes);
+      const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const discount = Math.abs(r.discountsAndBonuses || 0);
+      const rowNetProfit = r.productRevenue - saleFee - shippingCost - productCost - discount + (r.shippingRevenue || 0);
 
       let detectedState = 'Outros';
       const address = (r.buyerAddress || '').toUpperCase();
@@ -1215,23 +1192,17 @@ export default function MLImport({
                       {/* Total Recebido */}
                       <td className="py-4 px-5 text-right font-mono">
                         <span className="font-bold text-sm text-[#FFE600] block">
-                          {formatCurrency(r.totalBrl - Math.abs(r.discountsAndBonuses))}
+                          {formatCurrency(r.totalBrl - Math.abs(r.discountsAndBonuses || 0))}
                         </span>
+                        {r.discountsAndBonuses !== 0 && (
+                          <span className="text-[10px] text-amber-400 font-medium block mt-0.5">
+                            Subtotal: {formatCurrency(r.totalBrl)}
+                            <br />
+                            Desc/Bônus: -{formatCurrency(Math.abs(r.discountsAndBonuses))}
+                          </span>
+                        )}
                         {(() => {
-                          let matchingProduct = products.find(p => {
-                            const adTitleLower = r.adTitle.toLowerCase();
-                            const pNameLower = p.name.toLowerCase();
-                            if (pNameLower.includes('20cm') || pNameLower.includes('20 cm')) {
-                              return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto');
-                            }
-                            if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°')) {
-                              return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('hrebos');
-                            }
-                            return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower);
-                          });
-                          if (!matchingProduct && products.length > 0) {
-                            matchingProduct = products[0];
-                          }
+                          const matchingProduct = findMatchingProduct(r, products);
                           const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
                           return matchingProduct ? (
                             <span className="text-[10px] text-red-500 font-bold block mt-0.5">
@@ -1243,25 +1214,27 @@ export default function MLImport({
 
                       {/* Lucro Líquido Previsto por transação */}
                       {(() => {
-                        let matchingProduct = products.find(p => {
-                          const adTitleLower = r.adTitle.toLowerCase();
-                          const pNameLower = p.name.toLowerCase();
-                          if (pNameLower.includes('20cm') || pNameLower.includes('20 cm')) {
-                            return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto');
-                          }
-                          if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°')) {
-                            return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('hrebos');
-                          }
-                          return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower);
-                        });
-                        
-                        if (!matchingProduct && products.length > 0) {
-                          matchingProduct = products[0];
-                        }
-                        
+                        const matchingProduct = findMatchingProduct(r, products);
                         const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
-                        const received = r.totalBrl - Math.abs(r.discountsAndBonuses);
-                        const rowNetProfit = received - productCost;
+                        const saleFee = Math.abs(r.saleFeeAndTaxes);
+                        const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+                        const discount = Math.abs(r.discountsAndBonuses || 0);
+                        const statusLower = r.status.toLowerCase();
+                        const descLower = (r.statusDescription || '').toLowerCase();
+                        const isRefunded = 
+                          statusLower.includes('cancelad') || 
+                          statusLower.includes('devol') || 
+                          statusLower.includes('reembols') || 
+                          statusLower.includes('refund') || 
+                          statusLower.includes('estorn') ||
+                          descLower.includes('cancelad') || 
+                          descLower.includes('devol') || 
+                          descLower.includes('reembols') || 
+                          descLower.includes('refund') || 
+                          descLower.includes('estorn');
+                        const rowNetProfit = isRefunded
+                          ? -shippingCost
+                          : r.productRevenue - saleFee - shippingCost - productCost - discount + (r.shippingRevenue || 0);
                         const marginPercent = ((rowNetProfit / (productCost || 1)) * 100).toFixed(0);
                         
                         return (
@@ -1269,9 +1242,15 @@ export default function MLImport({
                             <span className={`font-extrabold text-sm block ${rowNetProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                               {formatCurrency(rowNetProfit)}
                             </span>
-                            <span className={`text-[10px] font-bold block mt-0.5 ${rowNetProfit >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                              {marginPercent}% Margem
-                            </span>
+                            {isRefunded ? (
+                              <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit ml-auto mt-0.5">
+                                Cancelado
+                              </span>
+                            ) : (
+                              <span className={`text-[10px] font-bold block mt-0.5 ${rowNetProfit >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                                {marginPercent}% Margem
+                              </span>
+                            )}
                           </td>
                         );
                       })()}

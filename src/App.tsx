@@ -4,8 +4,8 @@
  */
 
 import { useState, useEffect } from 'react';
-import { Product, Sale, MLImportRecord } from './types';
-import { INITIAL_PRODUCTS, INITIAL_SALES } from './utils';
+import { Product, Sale, MLImportRecord, findMatchingProduct } from './types';
+import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName } from './utils';
 import { Lock, Unlock, Key, LogOut } from 'lucide-react';
 
 // Importando componentes modulares
@@ -79,7 +79,7 @@ export default function App() {
   
   // Controle de sincronização de múltiplos dispositivos
   const [hasFetchedFromCloud, setHasFetchedFromCloud] = useState<boolean>(false);
-  const [isFetchingFromCloud, setIsFetchingFromCloud] = useState<boolean>(false);
+  const [isFetchingFromCloud, setIsFetchingFromCloud] = useState<boolean>(!!localStorage.getItem("ml_webapp_url"));
   
   // Flag para indicar se há alterações locais novas feitas pelo usuário pendentes de gravação na nuvem.
   // Isso impede que o app faça qualquer escrita na planilha antes de ler o conteúdo atual dela, ou que escreva dados fictícios/antigos!
@@ -133,7 +133,8 @@ export default function App() {
   }, [webAppUrl]);
 
   // Função para sanitizar e corrigir automaticamente produtos e vendas vindos da planilha
-  const sanitizeCloudData = (cloudProducts: Product[], cloudSales: Sale[]) => {
+  const sanitizeCloudData = (cloudProducts: Product[], cloudSales: Sale[], cloudMlRecords?: MLImportRecord[]) => {
+    const recordsToUse = cloudMlRecords || mlRecords || [];
     const sanitizedProducts = (cloudProducts || []).map(p => ({
       ...p,
       purchasePrice: Number(p.purchasePrice) || 0,
@@ -152,9 +153,9 @@ export default function App() {
       // Encontrar produto correspondente por ID ou Nome para consistência absoluta e correção de desalinhamentos
       let matchingProd = sanitizedProducts.find(p => p.id === s.productId);
       if (!matchingProd && s.productName) {
-        matchingProd = sanitizedProducts.find(p => p.name.trim().toLowerCase() === s.productName.trim().toLowerCase());
-      } else if (matchingProd && s.productName && matchingProd.name.trim().toLowerCase() !== s.productName.trim().toLowerCase()) {
-        const foundByName = sanitizedProducts.find(p => p.name.trim().toLowerCase() === s.productName.trim().toLowerCase());
+        matchingProd = sanitizedProducts.find(p => normalizeName(p.name) === normalizeName(s.productName));
+      } else if (matchingProd && s.productName && normalizeName(matchingProd.name) !== normalizeName(s.productName)) {
+        const foundByName = sanitizedProducts.find(p => normalizeName(p.name) === normalizeName(s.productName));
         if (foundByName) {
           matchingProd = foundByName;
         }
@@ -180,30 +181,84 @@ export default function App() {
       const totalSaleValue = salePrice * quantity;
       const totalCostValue = purchasePrice * quantity;
 
-      // Recalcular comissões com base no produto real para consistência absoluta se não for venda personalizada
-      let mlFee = Number(s.mlFee) || 0;
-      if (!s.isCustomSale && matchingProd) {
-        if (matchingProd.mlFeeType !== 'none') {
-          const percent = matchingProd.mlFeeType === 'custom' 
-            ? (matchingProd.customFeePercent || 0) 
-            : (matchingProd.mlFeeType === 'classic' ? 12 : (matchingProd.mlFeeType === 'premium' ? 17 : 0));
-          let calculatedFee = (salePrice * percent) / 100;
-          if (salePrice < 79 && (matchingProd.mlFeeType === 'classic' || matchingProd.mlFeeType === 'premium')) {
-            calculatedFee += 6;
-          }
-          mlFee = Number((calculatedFee * quantity).toFixed(2));
-        } else {
-          mlFee = 0;
-        }
-      }
-
-      const shippingCost = Number(s.shippingCost) || 0;
-      const grossProfit = totalSaleValue - totalCostValue - discount;
-      const netProfit = totalSaleValue - totalCostValue - mlFee - shippingCost - discount;
-
       // Preservar propriedades locais se a planilha ainda não as tiver por usar script antigo
       const localSale = sales.find(ls => ls.id === s.id);
-      const mlSaleId = s.mlSaleId || (localSale && localSale.mlSaleId) || undefined;
+      
+      let mlSaleId = s.mlSaleId || (localSale && localSale.mlSaleId);
+      if (!mlSaleId && s.id) {
+        const cleanId = s.id.split('_')[0];
+        if (/^\d+$/.test(cleanId)) {
+          mlSaleId = cleanId;
+        }
+      }
+      const isMlSale = s.isMlSale || !!mlSaleId || (s.id && !s.id.startsWith('sale_') && /^\d/.test(s.id));
+
+      let mlFee = Number(s.mlFee) || 0;
+      let shippingCost = Number(s.shippingCost) || 0;
+      let shipRev = s.shippingRevenue || 0;
+      let grossProfit = 0;
+      let netProfit = 0;
+
+      if (isMlSale || mlSaleId) {
+        const idToSearch = (mlSaleId || s.id || '').split('_')[0];
+        const originalRecord = recordsToUse.find(r => {
+          if (r.id !== idToSearch) return false;
+          const adTitleLower = (r.adTitle || '').toLowerCase();
+          const pNameLower = (s.productName || '').toLowerCase();
+          
+          if (pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto')) {
+            return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
+          }
+          if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º') || pNameLower.includes('hrebos')) {
+            return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('90º') || adTitleLower.includes('hrebos') || adTitleLower.includes('90graus');
+          }
+          return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower) || normalizeName(adTitleLower).includes(normalizeName(pNameLower)) || normalizeName(pNameLower).includes(normalizeName(adTitleLower));
+        });
+        
+        if (originalRecord) {
+          mlFee = s.status === 'refunded' ? 0 : Math.abs(originalRecord.saleFeeAndTaxes);
+          shippingCost = s.status === 'refunded'
+            ? (Number(s.shippingCost) || (matchingProd ? matchingProd.shippingCost : 6.55) * quantity)
+            : (Math.abs(originalRecord.shippingFee) + Math.abs(originalRecord.shippingWeightCost) + Math.abs(originalRecord.shippingDiffCost));
+          shipRev = s.status === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
+          
+          if (s.status === 'refunded') {
+            netProfit = -shippingCost;
+            grossProfit = 0;
+          } else {
+            netProfit = totalSaleValue - mlFee - shippingCost + shipRev - totalCostValue;
+            grossProfit = totalSaleValue - totalCostValue;
+          }
+        } else {
+          // Fallback se não encontrar o registro em mlRecords
+          if (s.status === 'refunded') {
+            netProfit = -shippingCost;
+            grossProfit = 0;
+          } else {
+            netProfit = totalSaleValue - mlFee - shippingCost + shipRev - totalCostValue;
+            grossProfit = totalSaleValue - totalCostValue;
+          }
+        }
+      } else {
+        // Normal manual sales recalculation
+        if (!s.isCustomSale && matchingProd) {
+          if (matchingProd.mlFeeType !== 'none') {
+            const percent = matchingProd.mlFeeType === 'custom' 
+              ? (matchingProd.customFeePercent || 0) 
+              : (matchingProd.mlFeeType === 'classic' ? 12 : (matchingProd.mlFeeType === 'premium' ? 17 : 0));
+            let calculatedFee = (salePrice * percent) / 100;
+            if (salePrice < 79 && (matchingProd.mlFeeType === 'classic' || matchingProd.mlFeeType === 'premium')) {
+              calculatedFee += 6;
+            }
+            mlFee = Number((calculatedFee * quantity).toFixed(2));
+          } else {
+            mlFee = 0;
+          }
+        }
+        grossProfit = totalSaleValue - totalCostValue;
+        netProfit = s.status === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost + shipRev - totalCostValue);
+      }
+
       const lossAmount = s.lossAmount !== undefined ? s.lossAmount : (localSale ? localSale.lossAmount : undefined);
       const lossReason = s.lossReason || (localSale && localSale.lossReason) || undefined;
       const shippingType = s.shippingType || (localSale && localSale.shippingType) || 'transportadora';
@@ -220,9 +275,11 @@ export default function App() {
         discount,
         mlFee,
         shippingCost,
+        shippingRevenue: shipRev,
         grossProfit,
         netProfit,
         mlSaleId,
+        isMlSale,
         lossAmount,
         lossReason,
         shippingType,
@@ -252,7 +309,7 @@ export default function App() {
         const result = await response.json();
         if (result.status === 'success') {
           // Sanitização robusta contra dados corrompidos ou chaves de datas na coluna de preços
-          const sanitized = sanitizeCloudData(result.products || [], result.sales || []);
+          const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
           
           setProducts(sanitized.products);
           setSales(sanitized.sales);
@@ -300,7 +357,7 @@ export default function App() {
       }
       const result = await response.json();
       if (result.status === 'success') {
-        const sanitized = sanitizeCloudData(result.products || [], result.sales || []);
+        const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
         
         setProducts(sanitized.products);
         setSales(sanitized.sales);
@@ -351,11 +408,13 @@ export default function App() {
           const result = await response.json();
           if (result.status === 'success') {
             // Apenas atualiza se houver dados e forem diferentes dos atuais para evitar re-renderizações e ciclos infinitos
-            if (result.products && JSON.stringify(result.products) !== JSON.stringify(products)) {
-              setProducts(result.products);
+            const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
+            
+            if (sanitized.products && JSON.stringify(sanitized.products) !== JSON.stringify(products)) {
+              setProducts(sanitized.products);
             }
-            if (result.sales && JSON.stringify(result.sales) !== JSON.stringify(sales)) {
-              setSales(result.sales);
+            if (sanitized.sales && JSON.stringify(sanitized.sales) !== JSON.stringify(sales)) {
+              setSales(sanitized.sales);
             }
             if (result.mlRecords && JSON.stringify(result.mlRecords) !== JSON.stringify(mlRecords)) {
               setMlRecords(result.mlRecords);
@@ -398,8 +457,9 @@ export default function App() {
         if (result.status !== 'success') {
           throw new Error(result.message || 'Erro no Apps Script');
         }
-        console.log('Sincronização em tempo real realizada com sucesso!');
+        console.log('Sincronização em tempo real realizada com sucesso! Disparando leitura imediata para garantir consistência de fórmulas.');
         setHasPendingWrite(false); // Reseta a flag de alterações pendentes após sucesso
+        await handlePullFromCloud();
       } catch (err: any) {
         console.error('Erro na sincronização em tempo real:', err);
         setCloudSyncError(err.message || String(err));
@@ -409,7 +469,7 @@ export default function App() {
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, initialCapital, mlRecords, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
+  }, [products, sales, initialCapital, mlRecords, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite, handlePullFromCloud]);
 
   // Loop de atualização das vendas pendentes (conclusão automática por período de 30 dias)
   useEffect(() => {
@@ -418,21 +478,24 @@ export default function App() {
     now.setHours(0, 0, 0, 0);
 
     const updatedSales = sales.map(s => {
-      const status = s.status || 'pending';
-      if (status === 'pending') {
-        const saleDate = new Date(s.date + 'T12:00:00');
-        saleDate.setHours(0, 0, 0, 0);
-        const diffTime = now.getTime() - saleDate.getTime();
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        
-        // Se já passaram 30 dias de retenção, conclui a liberação do dinheiro
-        if (diffDays >= 30) {
-          changed = true;
-          return {
-            ...s,
-            status: 'completed' as const
-          };
-        }
+      const currentStatus = s.status || 'pending';
+      if (currentStatus === 'refunded') {
+        return s;
+      }
+
+      const saleDate = new Date(s.date + 'T12:00:00');
+      saleDate.setHours(0, 0, 0, 0);
+      const diffTime = now.getTime() - saleDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+      
+      const expectedStatus = diffDays < 30 ? 'pending' : 'completed';
+      
+      if (currentStatus !== expectedStatus) {
+        changed = true;
+        return {
+          ...s,
+          status: expectedStatus
+        };
       }
       return s;
     });
@@ -488,8 +551,9 @@ export default function App() {
     const discount = newSale.discount || 0;
     
     // Cálculo do Lucro Bruto e Líquido exato (deduzindo descontos)
-    const grossProfit = totalSaleValue - totalCostValue - discount;
-    const netProfit = totalSaleValue - totalCostValue - newSale.mlFee - newSale.shippingCost - discount;
+    const grossProfit = newSale.status === 'refunded' ? 0 : totalSaleValue - totalCostValue;
+    const shipRev = newSale.shippingRevenue || 0;
+    const netProfit = newSale.status === 'refunded' ? -newSale.shippingCost : (totalSaleValue - newSale.mlFee - newSale.shippingCost + shipRev - totalCostValue);
 
     // Calcular se a data da venda está acima de 30 dias atrás
     const saleDate = new Date(newSale.date + 'T12:00:00');
@@ -499,7 +563,7 @@ export default function App() {
     
     const diffTime = now.getTime() - saleDate.getTime();
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    const status = diffDays >= 30 ? 'completed' : 'pending';
+    const status = newSale.status === 'refunded' ? 'refunded' : (diffDays >= 30 ? 'completed' : 'pending');
 
     const freshSale: Sale = {
       ...newSale,
@@ -591,11 +655,52 @@ export default function App() {
     const totalCostValue = updatedSale.purchasePrice * updatedSale.quantity;
     const discount = updatedSale.discount || 0;
     
-    const grossProfit = totalSaleValue - totalCostValue - discount;
-    const netProfit = updatedSale.status === 'refunded' ? 0 : (totalSaleValue - totalCostValue - updatedSale.mlFee - updatedSale.shippingCost - discount);
+    let grossProfit = 0;
+    let netProfit = 0;
+    let shipRev = updatedSale.shippingRevenue || 0;
+
+    if (updatedSale.isMlSale || updatedSale.mlSaleId) {
+      const idToSearch = (updatedSale.mlSaleId || updatedSale.id || '').split('_')[0];
+      const originalRecord = mlRecords.find(r => {
+        if (r.id !== idToSearch) return false;
+        const adTitleLower = (r.adTitle || '').toLowerCase();
+        const pNameLower = (updatedSale.productName || '').toLowerCase();
+        
+        if (pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto')) {
+          return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
+        }
+        if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º') || pNameLower.includes('hrebos')) {
+          return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('90º') || adTitleLower.includes('hrebos') || adTitleLower.includes('90graus');
+        }
+        return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower) || normalizeName(adTitleLower).includes(normalizeName(pNameLower)) || normalizeName(pNameLower).includes(normalizeName(adTitleLower));
+      });
+      
+      if (originalRecord) {
+        shipRev = updatedSale.status === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
+        if (updatedSale.status === 'refunded') {
+          netProfit = -updatedSale.shippingCost;
+          grossProfit = 0;
+        } else {
+          netProfit = totalSaleValue - updatedSale.mlFee - updatedSale.shippingCost + shipRev - totalCostValue;
+          grossProfit = totalSaleValue - totalCostValue;
+        }
+      } else {
+        if (updatedSale.status === 'refunded') {
+          netProfit = -updatedSale.shippingCost;
+          grossProfit = 0;
+        } else {
+          netProfit = totalSaleValue - updatedSale.mlFee - updatedSale.shippingCost + shipRev - totalCostValue;
+          grossProfit = totalSaleValue - totalCostValue;
+        }
+      }
+    } else {
+      grossProfit = updatedSale.status === 'refunded' ? 0 : totalSaleValue - totalCostValue;
+      netProfit = updatedSale.status === 'refunded' ? -updatedSale.shippingCost : (totalSaleValue - updatedSale.mlFee - updatedSale.shippingCost + shipRev - totalCostValue);
+    }
 
     const freshSale: Sale = {
       ...updatedSale,
+      shippingRevenue: shipRev,
       grossProfit: Number(grossProfit.toFixed(2)),
       netProfit: Number(netProfit.toFixed(2))
     };
@@ -617,56 +722,16 @@ export default function App() {
     }
   };
 
-  const handleImportMLRecords = (records: MLImportRecord[]) => {
-    setMlRecords(records);
+  const handleImportMLRecords = async (records: MLImportRecord[]) => {
+    // Calcular localmente o novo estoque de produtos e novas vendas em variáveis temporárias
+    let updatedProducts = [...products];
+    let updatedSales = [...sales];
     
-    // Atualizar e sincronizar automaticamente com produtos (estoque) e vendas locais
-    setProducts(prevProducts => {
-      // Criar cópia dos produtos para podermos abater do estoque de novas vendas
-      const updatedProducts = [...prevProducts];
-      
-      setSales(prevSales => {
-        const updatedSales = [...prevSales];
-        
-        records.forEach(r => {
-          // 1. Identificar o produto correspondente no estoque (procura inteligente por nome)
-          let matchingProduct = updatedProducts.find(p => {
-            const adTitleLower = r.adTitle.toLowerCase();
-            const pNameLower = p.name.toLowerCase();
-            const pSkuLower = (p.sku || '').toLowerCase();
-            
-            // Regra específica para os dois cabos do usuário do vídeo:
-            // "Cabo USB C 20cm" -> se o título contém "20 Cm" ou "20cm" ou "curto"
-            // "Cabo USB C 90graus" -> se o título contém "90" ou "90°" ou "hrebos"
-            if (pNameLower.includes('20cm') || pNameLower.includes('20 cm')) {
-              return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
-            }
-            if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°')) {
-              return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('hrebos') || adTitleLower.includes('90graus');
-            }
-            
-            // Fallback: correspondência parcial genérica
-            return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower) || 
-                   (pSkuLower && adTitleLower.includes(pSkuLower));
-          });
-          
-          // Se não achar, vamos associar ao primeiro produto disponível como padrão
-          if (!matchingProduct && updatedProducts.length > 0) {
-            matchingProduct = updatedProducts[0];
-          }
+    records.forEach(r => {
+          // 1. Identificar o produto correspondente no estoque (busca inteligente priorizando SKU)
+          let matchingProduct = findMatchingProduct(r, updatedProducts);
           
           if (!matchingProduct) return; // Se ainda não houver produtos, ignorar
-          
-          // 2. Mapear status do ML para status da venda
-          let saleStatus: 'completed' | 'pending' | 'refunded' = 'completed';
-          if (r.status.toLowerCase().includes('cancelad') || r.status.toLowerCase().includes('devol')) {
-            saleStatus = 'refunded';
-          } else if (r.status.toLowerCase().includes('caminho') || r.status.toLowerCase().includes('prepara')) {
-            saleStatus = 'pending';
-          }
-          
-          // 3. Verificar se essa venda já existe na nossa base de vendas (pelo ID do ML)
-          const existingSaleIdx = updatedSales.findIndex(s => s.id === r.id || s.mlSaleId === r.id);
           
           // Formatar data da venda (de "6 de julho de 2026 20:02" para "2026-07-06")
           let formattedDate = new Date().toISOString().split('T')[0];
@@ -691,15 +756,49 @@ export default function App() {
               }
             }
           }
+
+          // 2. Mapear status do ML para status da venda com base estrita no período de 30 dias se não for reembolsada
+          let saleStatus: 'completed' | 'pending' | 'refunded' = 'completed';
+          const statusLower = (r.status || '').toLowerCase();
+          const descLower = (r.statusDescription || '').toLowerCase();
+          const isRefunded = 
+            statusLower.includes('cancelad') || 
+            statusLower.includes('devol') || 
+            statusLower.includes('reembols') || 
+            statusLower.includes('refund') || 
+            statusLower.includes('estorn') ||
+            descLower.includes('cancelad') || 
+            descLower.includes('devol') || 
+            descLower.includes('reembols') || 
+            descLower.includes('refund') || 
+            descLower.includes('estorn');
+
+          if (isRefunded) {
+            saleStatus = 'refunded';
+          } else {
+            const saleDateObj = new Date(formattedDate + 'T12:00:00');
+            const nowObj = new Date();
+            saleDateObj.setHours(0, 0, 0, 0);
+            nowObj.setHours(0, 0, 0, 0);
+            const diffTime = nowObj.getTime() - saleDateObj.getTime();
+            const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+            saleStatus = diffDays < 30 ? 'pending' : 'completed';
+          }
+          
+          // 3. Verificar se essa venda já existe na nossa base de vendas (pelo ID do ML e produto)
+          const uniqueSaleId = `${r.id}_${matchingProduct.id}`;
+          const existingSaleIdx = updatedSales.findIndex(s => s.id === uniqueSaleId || (s.mlSaleId === r.id && s.productId === matchingProduct.id));
           
           const totalSaleValue = r.productRevenue;
           const totalCostValue = matchingProduct.purchasePrice * r.units;
           const discount = r.discountsAndBonuses || 0;
-          const mlFee = Math.abs(r.saleFeeAndTaxes);
-          const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+          const mlFee = saleStatus === 'refunded' ? 0 : Math.abs(r.saleFeeAndTaxes);
+          const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 6.55;
+          const shippingCost = saleStatus === 'refunded' ? defaultShipping * r.units : Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+          const shippingRevenue = saleStatus === 'refunded' ? 0 : Math.abs(r.shippingRevenue || 0);
           
-          const grossProfit = totalSaleValue - totalCostValue - discount;
-          const netProfit = saleStatus === 'refunded' ? 0 : (r.totalBrl - Math.abs(discount) - totalCostValue);
+          const grossProfit = saleStatus === 'refunded' ? 0 : totalSaleValue - totalCostValue;
+          const netProfit = saleStatus === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost + shippingRevenue - totalCostValue);
           
           // Determinar tipo de logística
           let shippingType: 'full' | 'flex' | 'transportadora' = 'transportadora';
@@ -739,14 +838,16 @@ export default function App() {
             
             updatedSales[existingSaleIdx] = {
               ...oldSale,
+              id: uniqueSaleId,
               status: saleStatus,
               quantity: r.units,
-              salePrice: r.adUnitPrice || (r.productRevenue / r.units),
+              salePrice: r.productRevenue / r.units,
               purchasePrice: matchingProduct.purchasePrice,
               grossProfit: Number(grossProfit.toFixed(2)),
               netProfit: Number(netProfit.toFixed(2)),
               mlFee: Number(mlFee.toFixed(2)),
               shippingCost: Number(shippingCost.toFixed(2)),
+              shippingRevenue,
               discount,
               shippingType,
               buyerName: r.buyerName,
@@ -772,16 +873,17 @@ export default function App() {
             }
             
             updatedSales.push({
-              id: r.id, // Usamos o ID do Mercado Livre diretamente como ID da venda para nunca duplicar!
+              id: uniqueSaleId,
               productId: matchingProduct.id,
               productName: matchingProduct.name,
               quantity: r.units,
-              salePrice: r.adUnitPrice || (r.productRevenue / r.units),
+              salePrice: r.productRevenue / r.units,
               purchasePrice: matchingProduct.purchasePrice,
               date: formattedDate,
               discount,
               mlFee: Number(mlFee.toFixed(2)),
               shippingCost: Number(shippingCost.toFixed(2)),
+              shippingRevenue,
               grossProfit: Number(grossProfit.toFixed(2)),
               netProfit: Number(netProfit.toFixed(2)),
               status: saleStatus,
@@ -797,13 +899,20 @@ export default function App() {
             });
           }
         });
-        
-        return updatedSales;
-      });
-      
-      return updatedProducts;
-    });
+
+    setSales(updatedSales);
+    setProducts(updatedProducts);
     
+    setMlRecords(prev => {
+      const newRecords = [...prev];
+      records.forEach(r => {
+        if (!newRecords.some(nr => nr.id === r.id)) {
+          newRecords.push(r);
+        }
+      });
+      return newRecords;
+    });
+
     setHasPendingWrite(true);
   };
 
@@ -892,7 +1001,7 @@ export default function App() {
   }
 
   // Se estiver carregando o banco de dados pela primeira vez na inicialização após o login
-  if (!hasFetchedFromCloud && isFetchingFromCloud && activeTab !== 'sheets') {
+  if (!hasFetchedFromCloud && isFetchingFromCloud) {
     return (
       <div className="min-h-screen bg-[#070707] text-white flex flex-col items-center justify-center p-4 font-sans">
         <div className="flex flex-col items-center max-w-sm text-center space-y-6">
@@ -978,6 +1087,7 @@ export default function App() {
         {activeTab === 'stock' && (
           <StockControl
             products={products}
+            sales={sales}
             onAddProduct={handleAddProduct}
             onEditProduct={handleEditProduct}
             onDeleteProduct={handleDeleteProduct}
@@ -1007,6 +1117,7 @@ export default function App() {
             onUpdateWebAppUrl={setWebAppUrl}
             onPullFromCloud={handlePullFromCloud}
             initialCapital={initialCapital}
+            mlRecords={mlRecords}
           />
         )}
 

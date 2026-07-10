@@ -41,6 +41,8 @@ export interface Sale {
   customMlFee?: number;   // Comissão unitária customizada na venda
   customShippingCost?: number; // Frete unitário customizado na venda
   mlSaleId?: string;      // ID da venda do Mercado Livre
+  isMlSale?: boolean;     // Se é uma venda vinda do Mercado Livre
+  shippingRevenue?: number; // Receita por envio / bônus
 }
 
 export interface GoogleSheetsConfig {
@@ -90,5 +92,76 @@ export interface MLImportRecord {
   isClaimOpen: boolean; // Reclamação aberta
   isClaimClosed: boolean; // Reclamação encerrada
   isInMediation: boolean; // Em mediação
+  sku?: string; // SKU do anúncio/venda
+}
+
+export function findMatchingProduct(r: MLImportRecord, products: Product[]): Product | undefined {
+  if (!products || products.length === 0) return undefined;
+
+  // 1. Prioridade absoluta: SKU exato (ignorando maiúsculas/minúsculas e espaços)
+  if (r.sku) {
+    const rSkuClean = String(r.sku).trim().toLowerCase();
+    if (rSkuClean) {
+      const matchBySku = products.find(p => {
+        const pSkuClean = (p.sku || '').trim().toLowerCase();
+        return pSkuClean && (pSkuClean === rSkuClean || rSkuClean.includes(pSkuClean) || pSkuClean.includes(rSkuClean));
+      });
+      if (matchBySku) return matchBySku;
+    }
+  }
+
+  // 2. Busca por id do anúncio (adId) na SKU do produto
+  if (r.adId) {
+    const rAdIdClean = String(r.adId).trim().toLowerCase();
+    if (rAdIdClean) {
+      const matchByAdIdInSku = products.find(p => {
+        const pSkuClean = (p.sku || '').trim().toLowerCase();
+        return pSkuClean && pSkuClean.includes(rAdIdClean);
+      });
+      if (matchByAdIdInSku) return matchByAdIdInSku;
+    }
+  }
+
+  // 3. Fallback: Busca inteligente por nome e regras de distinção estrita dos cabos
+  const matchByName = products.find(p => {
+    const adTitleLower = r.adTitle.toLowerCase();
+    const pNameLower = p.name.toLowerCase();
+    const pSkuLower = (p.sku || '').toLowerCase();
+
+    // Caso o título do anúncio contenha a SKU do produto
+    if (pSkuLower && adTitleLower.includes(pSkuLower)) {
+      return true;
+    }
+
+    const isAdCurto = adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
+    const isAd90 = adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('90º') || adTitleLower.includes('90graus');
+
+    const isProdCurto = pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto');
+    const isProd90 = pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º');
+
+    // Se o produto for do tipo curto (20cm)
+    if (isProdCurto) {
+      return isAdCurto;
+    }
+
+    // Se o produto for do tipo 90 graus
+    if (isProd90) {
+      return isAd90 && !isAdCurto;
+    }
+
+    // Se o produto for o cabo simples (Hrebos simples - contém hrebos mas não é 90 nem curto)
+    if (pNameLower.includes('hrebos')) {
+      return adTitleLower.includes('hrebos') && !isAd90 && !isAdCurto;
+    }
+
+    // Normalização básica de caracteres especiais como ordinal ou grau
+    const normAdTitle = adTitleLower.replace(/[°ºª]/g, '');
+    const normPName = pNameLower.replace(/[°ºª]/g, '');
+
+    // Correspondência parcial genérica
+    return normAdTitle.includes(normPName) || normPName.includes(normAdTitle);
+  });
+
+  return matchByName;
 }
 

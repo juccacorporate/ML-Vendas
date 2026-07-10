@@ -307,4 +307,19 @@ export function getReleaseDateStr(dateStr: string): string {
   return `${day}/${month}`;
 }
 
+/**
+ * Normaliza nomes de produtos para comparação insensível a caracteres especiais como ordinal ou grau
+ */
+export function normalizeName(name: string): string {
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "") // remove acentos
+    .replace(/[°ºª]/g, '') // remove degree and ordinal indicators
+    .replace(/[^a-z0-9]/g, '') // remove non-alphanumeric
+    .trim();
+}
+
+
 
