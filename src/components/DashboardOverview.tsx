@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Product, Sale } from '../types';
-import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr, calculateMLFee } from '../utils';
-import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle } from 'lucide-react';
+import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr, calculateMLFee, calculateCurrentStock } from '../utils';
+import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle, Receipt, FileText } from 'lucide-react';
 
 interface DashboardOverviewProps {
   products: Product[];
@@ -35,28 +35,71 @@ export default function DashboardOverview({
 
   const [selectedTimeframe, setSelectedTimeframe] = useState<'all' | '30days' | '7days' | 'custom'>('all');
 
-  // Encontrar limites para o período customizado (slider de data)
-  const salesDates = uniqueSales.map(s => new Date(s.date).getTime()).sort();
-  const oldestTime = salesDates.length > 0 ? salesDates[0] : new Date('2026-03-01').getTime();
-  const todayTime = new Date('2026-06-17').getTime(); // Hoje baseado nos registros
-  const totalDays = Math.max(1, Math.ceil((todayTime - oldestTime) / (1000 * 60 * 60 * 24)));
+  // Extrair lista ordenada e única de datas de vendas no formato YYYY-MM-DD
+  const salesDateStrings = Array.from(new Set(uniqueSales.map(s => s.date).filter(Boolean))).sort();
+  
+  const todayStr = new Date().toISOString().split('T')[0];
+  const minDateStr = salesDateStrings.length > 0 ? salesDateStrings[0] : '2024-01-01';
+  const maxDateStr = salesDateStrings.length > 0 
+    ? (salesDateStrings[salesDateStrings.length - 1] > todayStr ? salesDateStrings[salesDateStrings.length - 1] : todayStr)
+    : todayStr;
+
+  const parseLocalDate = (dateStr: string) => {
+    if (!dateStr) return new Date();
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+      return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    }
+    return new Date();
+  };
+
+  const formatLocalDate = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  };
+
+  const minDateTime = parseLocalDate(minDateStr).getTime();
+  const maxDateTime = parseLocalDate(maxDateStr).getTime();
+  const totalDays = Math.max(1, Math.ceil((maxDateTime - minDateTime) / (1000 * 60 * 60 * 24)));
 
   const [startOffset, setStartOffset] = useState<number>(0);
   const [endOffset, setEndOffset] = useState<number>(totalDays);
   const [isEditingCapital, setIsEditingCapital] = useState<boolean>(false);
   const [capitalInput, setCapitalInput] = useState<string>(String(initialCapital));
+  const [selectedPredictionProduct, setSelectedPredictionProduct] = useState<string>('all');
 
-  // Converter offsets em strings de data YYYY-MM-DD
+  // Atualizar endOffset quando totalDays muda
+  useEffect(() => {
+    setEndOffset(totalDays);
+  }, [totalDays]);
+
+  // Converter offsets em strings de data YYYY-MM-DD sem distorção de fuso horário
   const getCustomDateStr = (offset: number) => {
-    const d = new Date(oldestTime);
+    const d = parseLocalDate(minDateStr);
     d.setDate(d.getDate() + offset);
-    return d.toISOString().split('T')[0];
+    return formatLocalDate(d);
   };
 
   const customStartDate = getCustomDateStr(startOffset);
   const customEndDate = getCustomDateStr(endOffset);
 
-  // Filtrar todas as vendas pelo período selecionado (sem distinção de status para filtros iniciais)
+  const handleStartDateChange = (dateVal: string) => {
+    if (!dateVal) return;
+    const t = parseLocalDate(dateVal).getTime();
+    const offset = Math.max(0, Math.min(totalDays, Math.round((t - minDateTime) / (1000 * 60 * 60 * 24))));
+    setStartOffset(Math.min(offset, endOffset));
+  };
+
+  const handleEndDateChange = (dateVal: string) => {
+    if (!dateVal) return;
+    const t = parseLocalDate(dateVal).getTime();
+    const offset = Math.max(0, Math.min(totalDays, Math.round((t - minDateTime) / (1000 * 60 * 60 * 24))));
+    setEndOffset(Math.max(offset, startOffset));
+  };
+
+  // Filtrar todas as vendas pelo período selecionado
   const filteredAllSales = uniqueSales.filter(sale => {
     if (selectedTimeframe === 'all') return true;
     
@@ -64,8 +107,8 @@ export default function DashboardOverview({
       return sale.date >= customStartDate && sale.date <= customEndDate;
     }
     
-    const saleDate = new Date(sale.date);
-    const now = new Date('2026-06-18'); // Hoje simulado como 2026-06-18 pelo relógio local de metadados
+    const saleDate = parseLocalDate(sale.date);
+    const now = parseLocalDate(todayStr);
     const diffTime = Math.abs(now.getTime() - saleDate.getTime());
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
     
@@ -96,13 +139,23 @@ export default function DashboardOverview({
   const totalCompletedShipping = filteredCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
   const totalCostOfGoodsSold = filteredCompletedSales.reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
 
+  // Vendas com margem de lucro negativa (onde o lucro líquido unitário é menor que zero)
+  const negativeMarginSales = filteredAllSales.filter(s => s.status !== 'refunded' && s.netProfit < 0);
+  const totalNegativeMarginLoss = negativeMarginSales.reduce((acc, s) => acc + Math.abs(s.netProfit), 0);
+
   // Custos de reembolso e prejuízos imprevistos no período filtrado
   const totalRefundedShipping = filteredRefundedSales.reduce((acc, s) => acc + s.shippingCost, 0);
-  // O prejuízo imprevisto total do estorno engloba o prejuízo físico/extra informado pelo usuário + o frete pago na devolução/cancelamento
-  const totalUnforeseenLosses = filteredRefundedSales.reduce((acc, s) => acc + (s.lossAmount || 0) + s.shippingCost, 0);
+  const totalRefundedLosses = filteredRefundedSales.reduce((acc, s) => acc + (s.lossAmount || 0) + s.shippingCost, 0);
 
-  // Lucro líquido do período = faturamento das vendas de fato concluídas menos os seus custos e taxas (garante que fique zerado se não houver vendas concluídas)
-  const totalNetProfit = Math.max(0, totalSalesRevenue - totalCostOfGoodsSold - totalCompletedMLFees - totalCompletedShipping);
+  // Prejuízos e imprevistos englobam tanto estornos/devoluções quanto perdas decorrentes de vendas com margem negativa
+  const totalUnforeseenLosses = totalRefundedLosses + totalNegativeMarginLoss;
+
+  // Impostos calculados sobre o faturamento de saídas do período selecionado (4% alíquota Simples/Padrão)
+  const totalTaxesForPeriod = filteredAllSales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.salePrice * s.quantity * 0.04), 0);
+
+  // Lucro líquido do período = soma do lucro líquido das vendas concluídas - Impostos de 4% - Prejuízos e Imprevistos
+  const rawCompletedNetProfit = filteredCompletedSales.reduce((acc, s) => acc + s.netProfit, 0);
+  const totalNetProfit = Math.max(0, rawCompletedNetProfit - totalTaxesForPeriod - totalUnforeseenLosses);
 
   // Custos totais operacionais de todas as vendas do período (concluídas e pendentes) para exibição no card de custos
   // Comissão ML só é cobrada em vendas não reembolsadas
@@ -167,7 +220,8 @@ export default function DashboardOverview({
     const product = products.find(p => p.id === s.productId);
     if (product) {
       const defaultMlFeeUnit = calculateMLFee(product.salePrice, product.mlFeeType, product.customFeePercent);
-      const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost;
+      const taxUnit = product.salePrice * 0.04;
+      const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost - taxUnit;
       const realNetProfitUnit = s.netProfit / s.quantity;
 
       const varianceUnit = realNetProfitUnit - defaultEstimatedNetProfitUnit;
@@ -182,14 +236,15 @@ export default function DashboardOverview({
   });
 
   // Valor total bloqueado/investido em estoque
-  const totalStockCost = products.reduce((acc, p) => acc + (p.purchasePrice * p.stock), 0);
-  const totalPotentialSaleValue = products.reduce((acc, p) => acc + (p.salePrice * p.stock), 0);
+  const totalStockCost = products.reduce((acc, p) => acc + (p.purchasePrice * calculateCurrentStock(p, uniqueSales)), 0);
+  const totalPotentialSaleValue = products.reduce((acc, p) => acc + (p.salePrice * calculateCurrentStock(p, uniqueSales)), 0);
 
   // Faturamento líquido acumulado de TODAS as vendas concluídas (sem limite de período, para calcular Caixa)
   const allCompletedSales = uniqueSales.filter(s => s.status === 'completed');
   const allSalesRevenue = allCompletedSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
   const allMLFees = allCompletedSales.reduce((acc, s) => acc + s.mlFee, 0);
   const allShipping = allCompletedSales.reduce((acc, s) => acc + s.shippingCost, 0);
+  const allTaxes = allCompletedSales.reduce((acc, s) => acc + (s.salePrice * s.quantity * 0.04), 0);
 
   // Custos de frete e prejuízos de TODAS as vendas reembolsadas na base (para cálculo do Caixa)
   const allRefundedSales = uniqueSales.filter(s => s.status === 'refunded');
@@ -201,8 +256,8 @@ export default function DashboardOverview({
   const costOfGoodsAllSales = uniqueSales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.purchasePrice * s.quantity), 0);
   const totalStockInvestment = totalStockCost + costOfGoodsAllSales;
 
-  // Caixa Disponível Atual (Apenas recursos de vendas concluídas/liberadas, deduzindo custos de frete refund e prejuízos)
-  const liquidCash = initialCapital - totalStockInvestment + (allSalesRevenue - allMLFees - allShipping) - allRefundedShipping - allUnforeseenLosses;
+  // Caixa Disponível Atual (Apenas recursos de vendas concluídas/liberadas, deduzindo comissão, frete, imposto de 4% e prejuízos)
+  const liquidCash = initialCapital - totalStockInvestment + (allSalesRevenue - allMLFees - allShipping - allTaxes) - allRefundedShipping - allUnforeseenLosses;
 
   // Função auxiliar interna para simular o preço líquido unitário do produto (descontadas as taxas ML e frete)
   const calculateProductNetPrice = (p: Product) => {
@@ -224,7 +279,7 @@ export default function DashboardOverview({
     return Math.max(0, netPrice);
   };
 
-  const totalPotentialNetSaleValue = products.reduce((acc, p) => acc + (calculateProductNetPrice(p) * p.stock), 0);
+  const totalPotentialNetSaleValue = products.reduce((acc, p) => acc + (calculateProductNetPrice(p) * calculateCurrentStock(p, uniqueSales)), 0);
 
   // Acumulado de Dinheiro Congelado (Líquido a receber de Mercado Pago - vendas pendentes)
   const allPendingSales = uniqueSales.filter(s => s.status === 'pending');
@@ -237,17 +292,20 @@ export default function DashboardOverview({
   const totalBusinessEquity = liquidCash + cumulativeFrozenNetValue + totalStockCost;
 
   // Alertas de Estoque Baixo ou Crítico
-  const lowStockItems = products.filter(p => p.stock <= p.minimalStock);
-  const idleStockItems = products.filter(p => p.stock > 0 && calculateDaysInStock(p.addedDate) >= 30);
+  const lowStockItems = products.filter(p => calculateCurrentStock(p, uniqueSales) <= p.minimalStock);
+  const idleStockItems = products.filter(p => calculateCurrentStock(p, uniqueSales) > 0 && calculateDaysInStock(p.addedDate) >= 30);
 
-  // Previsibilidade de saídas para os próximos 30 dias (Simulador inteligente baseado no histórico)
-  // Calculamos a velocidade média de vendas por dia de cada item
-  const totalUnitsSold = filteredAllSales.reduce((acc, s) => acc + s.quantity, 0);
+  // Previsibilidade de saídas para os próximos 30 dias (Simulador inteligente baseado no histórico - INDIVIDUAL E GERAL)
   const uniqueSalesDays = Array.from(new Set(filteredAllSales.map(s => s.date))).length || 1;
+  const activePredSales = selectedPredictionProduct === 'all'
+    ? filteredAllSales.filter(s => s.status !== 'refunded')
+    : filteredAllSales.filter(s => s.status !== 'refunded' && (s.productId === selectedPredictionProduct || products.find(p => p.id === selectedPredictionProduct)?.name === s.productName));
+
+  const totalUnitsSold = activePredSales.reduce((acc, s) => acc + s.quantity, 0);
   const unitsSoldPerDay = totalUnitsSold / Math.max(uniqueSalesDays, 1);
   const salesPrediction30Days = unitsSoldPerDay * 30;
-  const projectedRevenue30Days = (filteredAllSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0) / Math.max(uniqueSalesDays, 1)) * 30;
-  const projectedNetProfit30Days = (filteredAllSales.reduce((acc, s) => acc + s.netProfit, 0) / Math.max(uniqueSalesDays, 1)) * 30;
+  const projectedRevenue30Days = (activePredSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0) / Math.max(uniqueSalesDays, 1)) * 30;
+  const projectedNetProfit30Days = (activePredSales.reduce((acc, s) => acc + s.netProfit, 0) / Math.max(uniqueSalesDays, 1)) * 30;
 
   // Preparar dados para o gráfico de saídas (últimos 7 dias baseados em datas de vendas)
   const salesByDate: { [key: string]: { amount: number, quantity: number, net: number } } = {};
@@ -288,20 +346,38 @@ export default function DashboardOverview({
 
   const maxChartValue = Math.max(...chartData.map(d => Math.max(d.faturamento, d.lucroLiquido)), 100);
 
-  // Preparar os dados de evolução patrimonial correspondendo exatamente às datas do chartData
-  // De forma que o patrimônio acompanhe os mesmos dias do gráfico de saídas.
+  // Preparar os dados de evolução do Lucro Líquido correspondendo às datas do chartData
   const equityChartData = chartData.map((d, index) => {
     // Reconstruir a data ISO YYYY-MM-DD da chave correspondente
     const dateEntry = Object.keys(salesByDate).sort((a,b) => a.localeCompare(b))[index];
     
-    // Lucro acumulado de todas as vendas (não reembolsadas) na base até esta data
-    const cumulativeProfit = uniqueSales
+    // Lucro bruto de saídas não estornadas até esta data
+    const rawProfitUpToDate = uniqueSales
       .filter(s => s.status !== 'refunded' && s.date <= dateEntry)
       .reduce((acc, s) => acc + s.netProfit, 0);
 
+    // Impostos de 4% acumulados até esta data
+    const taxesUpToDate = uniqueSales
+      .filter(s => s.status !== 'refunded' && s.date <= dateEntry)
+      .reduce((acc, s) => acc + (s.salePrice * s.quantity * 0.04), 0);
+
+    // Estornos e prejuízos acumulados até esta data
+    const lossesUpToDate = uniqueSales
+      .filter(s => s.date <= dateEntry)
+      .reduce((acc, s) => {
+        if (s.status === 'refunded') {
+          return acc + (s.lossAmount || 0) + s.shippingCost;
+        } else if (s.netProfit < 0) {
+          return acc + Math.abs(s.netProfit);
+        }
+        return acc;
+      }, 0);
+
+    const cumulativeNetProfit = rawProfitUpToDate - taxesUpToDate - lossesUpToDate;
+
     return {
       date: d.date,
-      patrimonio: initialCapital + cumulativeProfit
+      patrimonio: Math.max(0, cumulativeNetProfit)
     };
   });
 
@@ -418,9 +494,14 @@ export default function DashboardOverview({
 
           <div className="flex-1 space-y-4 bg-white/5 p-4 rounded-xl border border-white/5">
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px] text-white/40">
+              <div className="flex justify-between items-center text-[11px] text-white/40">
                 <span className="font-bold">Início:</span>
-                <span className="text-white font-mono font-bold bg-white/5 px-1.5 py-0.5 rounded border border-white/5">{customStartDate.split('-').reverse().join('/')}</span>
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => handleStartDateChange(e.target.value)}
+                  className="bg-black/40 text-[#FFE600] font-mono font-bold text-xs px-2 py-0.5 rounded border border-white/10 outline-none focus:border-[#FFE600]"
+                />
               </div>
               <input
                 type="range"
@@ -428,14 +509,19 @@ export default function DashboardOverview({
                 max={totalDays}
                 value={startOffset}
                 onChange={(e) => setStartOffset(Math.min(Number(e.target.value), endOffset))}
-                className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#FFE600]"
+                className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#FFE600]"
               />
             </div>
 
             <div className="space-y-1">
-              <div className="flex justify-between text-[11px] text-white/40">
+              <div className="flex justify-between items-center text-[11px] text-white/40">
                 <span className="font-bold">Fim:</span>
-                <span className="text-white font-mono font-bold bg-white/5 px-1.5 py-0.5 rounded border border-white/5">{customEndDate.split('-').reverse().join('/')}</span>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => handleEndDateChange(e.target.value)}
+                  className="bg-black/40 text-[#FFE600] font-mono font-bold text-xs px-2 py-0.5 rounded border border-white/10 outline-none focus:border-[#FFE600]"
+                />
               </div>
               <input
                 type="range"
@@ -443,14 +529,14 @@ export default function DashboardOverview({
                 max={totalDays}
                 value={endOffset}
                 onChange={(e) => setEndOffset(Math.max(Number(e.target.value), startOffset))}
-                className="w-full h-1 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#FFE600]"
+                className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-[#FFE600]"
               />
             </div>
           </div>
         </div>
       )}
 
-      {/* Grid de KPIs Financeiros - Linha Superior (Cards Largos) */}
+      {/* Grid de KPIs Financeiros - Linha Superior (2 Cards Largos) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         
         {/* Faturamento Previsto */}
@@ -505,58 +591,7 @@ export default function DashboardOverview({
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-[#FFE600]" />
         </div>
 
-        {/* Custo Total de Taxas ML & Fretes */}
-        <div id="kpi-custos" className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
-          <div>
-            <div className="flex justify-between items-start">
-              <div>
-                <p className="text-xs font-bold text-white/40 uppercase tracking-wider">Custos ML & Frete</p>
-                <h3 className="text-xl font-black text-amber-500 mt-1.5">{formatCurrency(totalMLFees + totalShipping)}</h3>
-              </div>
-              <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 text-amber-400">
-                <Percent className="w-4 h-4" />
-              </div>
-            </div>
-
-            {costsGroupedList.length > 0 ? (
-              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
-                <p className="text-[9px] font-bold text-amber-500 uppercase tracking-wider">Custos por Produto:</p>
-                <div className="max-h-[85px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
-                  {costsGroupedList.map(item => (
-                    <div key={item.productName} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
-                      <div className="flex justify-between items-center text-[10.5px] font-bold text-white/80">
-                        <span className="truncate max-w-[130px]" title={`${item.quantity}x ${item.productName}`}>{item.quantity}x {item.productName}</span>
-                        <span className="font-mono text-red-400">-{formatCurrency(item.total)}</span>
-                      </div>
-                      <div className="flex gap-3 text-[9px] text-white/40 font-medium">
-                        <span>Taxa ML: <strong className="font-mono text-white/60">{formatCurrency(item.mlFee)}</strong></span>
-                        <span>Frete: <strong className="font-mono text-white/60">{formatCurrency(item.shippingCost)}</strong></span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-1.5 mt-1 text-white/50 bg-white/5 px-2 py-1 rounded">
-                  <span>Custos Totais (Soma):</span>
-                  <span className="text-amber-500 font-mono font-bold">{formatCurrency(totalMLFees + totalShipping)}</span>
-                </div>
-              </div>
-            ) : (
-              <p className="text-xs text-white/40 mt-4">Sem custos operacionais registrados no período.</p>
-            )}
-          </div>
-          <p className="text-[11px] text-white/50 mt-4 flex justify-between">
-            <span>Diferença bruta:</span>
-            <span className="font-mono text-white/70">{formatCurrency(totalSalesRevenue - totalCostOfGoodsSold)}</span>
-          </p>
-          <span className="absolute bottom-0 left-0 right-0 h-1 bg-amber-500" />
-        </div>
-
-      </div>
-
-      {/* Grid de KPIs Financeiros - Linha Inferior (3 Cards Lado a Lado) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
-
-        {/* Ganho Líquido */}
+        {/* Lucro Líquido Realizado (PASSADO PARA O LUGAR DE CUSTOS ML & FRETE NO TOPO) */}
         <div id="kpi-lucro" className="bg-[#141414] p-5 rounded-2xl border border-emerald-500/20 shadow-sm relative overflow-hidden transition-all hover:border-emerald-500/30 bg-gradient-to-b from-[#141414] to-emerald-950/15 flex flex-col justify-between min-h-[148px]">
           <div>
             <div className="flex justify-between items-start">
@@ -605,28 +640,171 @@ export default function DashboardOverview({
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-emerald-400" />
         </div>
 
-        {/* Patrimônio (Estoque Líquido de Venda) */}
-        <div id="kpi-patrimonio" className="bg-[#141414] p-5 rounded-2xl border border-[#FFE600]/20 shadow-sm relative overflow-hidden transition-all hover:bg-white/5 bg-gradient-to-b from-[#141414] to-yellow-950/10 flex flex-col justify-between min-h-[148px]">
+      </div>
+
+      {/* Grid de KPIs Financeiros - Linha Inferior (3 Cards Lado a Lado) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-4">
+
+        {/* Custos ML & Frete (MOVIDO PARA BAIXO) */}
+        <div id="kpi-custos" className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-sm relative overflow-hidden transition-all hover:border-white/10 flex flex-col justify-between min-h-[148px]">
           <div>
             <div className="flex justify-between items-start">
               <div>
-                <p className="text-xs font-bold text-[#FFE600] uppercase tracking-wider font-sans">Estoque Líquido de Venda</p>
-                <h3 className="text-xl font-black text-white mt-1.5" title="Valor do estoque active com as comissões e fretes do ML já descontados">{formatCurrency(totalPotentialNetSaleValue)}</h3>
+                <p className="text-xs font-bold text-white/40 uppercase tracking-wider">Custos ML & Frete</p>
+                <h3 className="text-xl font-black text-amber-500 mt-1.5">{formatCurrency(totalMLFees + totalShipping)}</h3>
               </div>
-              <div className="bg-[#FFE600]/15 p-2 rounded-xl border border-[#FFE600]/25 text-[#FFE600]">
-                <PackageCheck className="w-4 h-4" />
+              <div className="bg-amber-500/10 p-2 rounded-xl border border-amber-500/20 text-amber-400">
+                <Percent className="w-4 h-4" />
               </div>
             </div>
-            <p className="text-[10px] text-white/40 mt-1">
-              Patrimônio Negócio: <strong className="text-white/70" title="Caixa Livre + Congelado + Estoque a Custo">{formatCurrency(totalBusinessEquity)}</strong>
-            </p>
+
+            {costsGroupedList.length > 0 ? (
+              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
+                <p className="text-[9px] font-bold text-amber-500 uppercase tracking-wider">Custos por Produto:</p>
+                <div className="max-h-[85px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                  {costsGroupedList.map(item => (
+                    <div key={item.productName} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
+                      <div className="flex justify-between items-center text-[10.5px] font-bold text-white/80">
+                        <span className="truncate max-w-[130px]" title={`${item.quantity}x ${item.productName}`}>{item.quantity}x {item.productName}</span>
+                        <span className="font-mono text-red-400">-{formatCurrency(item.total)}</span>
+                      </div>
+                      <div className="flex gap-3 text-[9px] text-white/40 font-medium">
+                        <span>Taxa ML: <strong className="font-mono text-white/60">{formatCurrency(item.mlFee)}</strong></span>
+                        <span>Frete: <strong className="font-mono text-white/60">{formatCurrency(item.shippingCost)}</strong></span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-1.5 mt-1 text-white/50 bg-white/5 px-2 py-1 rounded">
+                  <span>Custos Totais (Soma):</span>
+                  <span className="text-amber-500 font-mono font-bold">{formatCurrency(totalMLFees + totalShipping)}</span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-white/40 mt-4">Sem custos operacionais registrados no período.</p>
+            )}
+          </div>
+          <p className="text-[11px] text-white/50 mt-4 flex justify-between">
+            <span>Diferença bruta:</span>
+            <span className="font-mono text-white/70">{formatCurrency(totalSalesRevenue - totalCostOfGoodsSold)}</span>
+          </p>
+          <span className="absolute bottom-0 left-0 right-0 h-1 bg-amber-500" />
+        </div>
+
+        {/* Impostos a Pagar (4%) - SUBSTITUI ESTOQUE LÍQUIDO E INTEGRA AO FILTRO DE DATAS */}
+        <div id="kpi-impostos" className="bg-[#141414] p-5 rounded-2xl border border-blue-500/20 shadow-sm relative overflow-hidden transition-all hover:border-blue-500/30 bg-gradient-to-b from-[#141414] to-blue-950/15 flex flex-col justify-between min-h-[148px]">
+          <div>
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-xs font-bold text-blue-400 uppercase tracking-wider font-sans">Impostos a serem pagos (4%)</p>
+                <h3 className="text-xl font-black text-white mt-1.5" title="Soma de 4% sobre o faturamento de todas as saídas no período selecionado">{formatCurrency(totalTaxesForPeriod)}</h3>
+              </div>
+              <div className="bg-blue-500/15 p-2 rounded-xl border border-blue-500/25 text-blue-400">
+                <Receipt className="w-4 h-4" />
+              </div>
+            </div>
+
+            {/* Controle de Filtro e Intervalo de Datas Direto no Card */}
+            <div className="mt-3 bg-blue-950/30 p-2.5 rounded-xl border border-blue-500/20 space-y-2">
+              <div className="flex items-center justify-between gap-1 text-[10px]">
+                <span className="text-blue-300 font-bold uppercase tracking-wider">Intervalo de Apuração:</span>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setSelectedTimeframe('all')}
+                    className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold transition-all ${selectedTimeframe === 'all' ? 'bg-blue-500 text-white' : 'text-blue-300/60 hover:text-white'}`}
+                  >
+                    Tudo
+                  </button>
+                  <button
+                    onClick={() => setSelectedTimeframe('30days')}
+                    className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold transition-all ${selectedTimeframe === '30days' ? 'bg-blue-500 text-white' : 'text-blue-300/60 hover:text-white'}`}
+                  >
+                    30d
+                  </button>
+                  <button
+                    onClick={() => setSelectedTimeframe('7days')}
+                    className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold transition-all ${selectedTimeframe === '7days' ? 'bg-blue-500 text-white' : 'text-blue-300/60 hover:text-white'}`}
+                  >
+                    7d
+                  </button>
+                  <button
+                    onClick={() => setSelectedTimeframe('custom')}
+                    className={`px-1.5 py-0.5 rounded text-[9.5px] font-bold transition-all ${selectedTimeframe === 'custom' ? 'bg-blue-500 text-white' : 'text-blue-300/60 hover:text-white'}`}
+                  >
+                    Custom
+                  </button>
+                </div>
+              </div>
+
+              {selectedTimeframe === 'custom' ? (
+                <div className="space-y-1.5 pt-1 border-t border-blue-500/10">
+                  <div className="flex justify-between items-center text-[9.5px]">
+                    <span className="text-white/50">De:</span>
+                    <input
+                      type="date"
+                      value={customStartDate}
+                      onChange={(e) => handleStartDateChange(e.target.value)}
+                      className="bg-black/60 text-blue-300 font-mono text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30"
+                    />
+                    <span className="text-white/50">Até:</span>
+                    <input
+                      type="date"
+                      value={customEndDate}
+                      onChange={(e) => handleEndDateChange(e.target.value)}
+                      className="bg-black/60 text-blue-300 font-mono text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30"
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max={totalDays}
+                    value={endOffset}
+                    onChange={(e) => setEndOffset(Math.max(Number(e.target.value), startOffset))}
+                    className="w-full h-1 bg-blue-500/30 rounded-lg appearance-none cursor-pointer accent-blue-400"
+                    title="Ajustar fim do intervalo de impostos"
+                  />
+                </div>
+              ) : (
+                <p className="text-[10px] text-white/50">
+                  Faturamento apurado: <strong className="text-white/90 font-mono">{formatCurrency(totalSalesRevenue)}</strong>
+                </p>
+              )}
+            </div>
+
+            {filteredAllSales.filter(s => s.status !== 'refunded').length > 0 ? (
+              <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
+                <p className="text-[9px] font-bold text-blue-400 uppercase tracking-wider">Impostos por Venda (4%):</p>
+                <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
+                  {filteredAllSales.filter(s => s.status !== 'refunded').map(s => {
+                    const product = products.find(p => p.id === s.productId);
+                    const displayName = product ? product.name : s.productName;
+                    const taxVal = (s.salePrice * s.quantity) * 0.04;
+                    return (
+                      <div key={s.id} className="flex justify-between items-center text-[10.5px] font-medium leading-relaxed">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-[9px] font-mono font-bold bg-white/5 px-1 py-0.5 rounded text-white/50">{formatShortDate(s.date)}</span>
+                          <span className="truncate text-white/70 font-semibold max-w-[110px]" title={`${s.quantity}x ${displayName}`}>{s.quantity}x {displayName}</span>
+                        </div>
+                        <span className="font-mono text-blue-400 font-bold shrink-0">-{formatCurrency(taxVal)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between text-[10px] font-bold border-t border-white/5 pt-1.5 mt-1 text-white/50 bg-white/5 px-2 py-1 rounded">
+                  <span>Total Imposto (4%):</span>
+                  <span className="text-blue-400 font-mono font-bold">{formatCurrency(totalTaxesForPeriod)}</span>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-white/40 mt-4">Nenhuma venda registrada no período selecionado.</p>
+            )}
           </div>
           
-            <p className="text-[10.5px] text-white/40 mt-3 border-t border-white/5 pt-2 flex justify-between">
-              <span>Custo total de estoque:</span>
-              <strong className="text-white/70 font-mono font-bold">{formatCurrency(totalStockCost)}</strong>
-            </p>
-          <span className="absolute bottom-0 left-0 right-0 h-1 bg-[#FFE600]" />
+          <p className="text-[10.5px] text-white/40 mt-3 border-t border-white/5 pt-2 flex justify-between items-center">
+            <span>Alíquota tributária:</span>
+            <span className="text-blue-400 font-mono font-bold bg-blue-500/10 px-1.5 py-0.5 rounded border border-blue-500/20">4.0%</span>
+          </p>
+          <span className="absolute bottom-0 left-0 right-0 h-1 bg-blue-500" />
         </div>
 
         {/* Prejuízos e Imprevistos */}
@@ -642,10 +820,11 @@ export default function DashboardOverview({
               </div>
             </div>
 
-            {filteredRefundedSales.length > 0 ? (
+            {(filteredRefundedSales.length > 0 || negativeMarginSales.length > 0) ? (
               <div className="mt-3.5 space-y-1.5 border-t border-white/5 pt-3">
-                <p className="text-[9px] font-bold text-red-400 uppercase tracking-wider">Relação de Estornos:</p>
-                <div className="max-h-[110px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                <p className="text-[9px] font-bold text-red-400 uppercase tracking-wider">Relação de Estornos e Margens Negativas:</p>
+                <div className="max-h-[120px] overflow-y-auto space-y-2 pr-1 scrollbar-thin">
+                  {/* Estornos / Cancelamentos */}
                   {filteredRefundedSales.map(s => {
                     const product = products.find(p => p.id === s.productId);
                     const displayName = product ? product.name : s.productName;
@@ -657,11 +836,28 @@ export default function DashboardOverview({
                             <span className="font-mono text-red-400 font-bold block">-{formatCurrency((s.lossAmount || 0) + s.shippingCost)}</span>
                           </div>
                         </div>
-                        {s.lossReason && (
-                          <p className="text-[9.5px] text-red-400 font-medium bg-red-500/10 px-1.5 py-0.5 rounded mt-1 border border-red-500/10 truncate max-w-full" title={s.lossReason}>
-                            Motivo: {s.lossReason}
-                          </p>
-                        )}
+                        <p className="text-[9.5px] text-red-400 font-medium bg-red-500/10 px-1.5 py-0.5 rounded mt-0.5 border border-red-500/10 truncate max-w-full">
+                          Estorno / Cancelamento {s.lossReason ? `(${s.lossReason})` : ''}
+                        </p>
+                      </div>
+                    );
+                  })}
+                  {/* Vendas com Margem Negativa */}
+                  {negativeMarginSales.map(s => {
+                    const product = products.find(p => p.id === s.productId);
+                    const displayName = product ? product.name : s.productName;
+                    const lossAmount = Math.abs(s.netProfit);
+                    return (
+                      <div key={s.id} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
+                        <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
+                          <span className="truncate max-w-[120px] text-amber-300 font-bold" title={`${s.quantity}x ${displayName}`}>{s.quantity}x {displayName}</span>
+                          <div className="text-right">
+                            <span className="font-mono text-red-400 font-bold block">-{formatCurrency(lossAmount)}</span>
+                          </div>
+                        </div>
+                        <p className="text-[9.5px] text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded mt-0.5 border border-amber-500/15 truncate max-w-full">
+                          ⚠️ Venda com margem negativa
+                        </p>
                       </div>
                     );
                   })}
@@ -672,8 +868,8 @@ export default function DashboardOverview({
             )}
           </div>
           <p className="text-[11px] text-white/50 mt-4 flex justify-between">
-            <span>Soma dos estornos:</span>
-            <span className="font-mono text-white/70">{formatCurrency(totalUnforeseenLosses)}</span>
+            <span>Soma dos prejuízos:</span>
+            <span className="font-mono text-red-400 font-bold">{formatCurrency(totalUnforeseenLosses)}</span>
           </p>
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-red-500" />
         </div>
@@ -814,7 +1010,7 @@ export default function DashboardOverview({
             </p>
           </div>
           <div className="mt-4 flex gap-2 border-t border-white/5 pt-3">
-            <span className="text-[11px] text-white/40">Quantidade Total em Estoque: <strong className="text-[#FFE600]">{products.reduce((acc, p) => acc + p.stock, 0)} unidades</strong></span>
+            <span className="text-[11px] text-white/40">Quantidade Total em Estoque: <strong className="text-[#FFE600]">{products.reduce((acc, p) => acc + calculateCurrentStock(p, uniqueSales), 0)} unidades</strong></span>
           </div>
         </div>
 
@@ -938,21 +1134,21 @@ export default function DashboardOverview({
           </div>
         </div>
 
-        {/* Novo Gráfico de Evolução Patrimonial (Linha & Bolinhas) */}
+        {/* Gráfico de Evolução do Lucro Líquido Acumulado */}
         <div id="grafico-patrimonio" className="bg-[#141414] p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between relative">
           <div className="flex items-center justify-between mb-6">
             <div>
               <h3 className="text-base font-light text-white flex items-center gap-2">
                 <TrendingUp className="w-4 h-4 text-[#10B981]" />
-                Gráfico de Evolução Patrimonial
+                Gráfico de Evolução do Lucro Líquido Acumulado
               </h3>
-              <p className="text-xs text-white/50 mt-0.5">Evolução do Patrimônio Líquido total (Capital + Lucros Acumulados) ao longo do tempo</p>
+              <p className="text-xs text-white/50 mt-0.5">Evolução do Lucro Líquido acumulado das saídas ao longo do tempo (descontando impostos e prejuízos)</p>
             </div>
             <div className="flex items-center gap-1.5 text-xs">
               <span className="w-3 h-3 rounded-full border border-[#10B981] bg-[#141414] flex items-center justify-center">
                 <span className="w-1 h-1 rounded-full bg-[#FFE600]"></span>
               </span>
-              <span className="text-white/60 font-medium text-[11px]">Patrimônio Líquido</span>
+              <span className="text-white/60 font-medium text-[11px]">Lucro Líquido Acumulado</span>
             </div>
           </div>
 
@@ -1108,43 +1304,67 @@ export default function DashboardOverview({
       {/* Seção de Alertas, Projeções e Recomendações Críticas (Bento Grid de 3 Colunas) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         
-        {/* Bloco de Previsibilidade & Estimativa (Bento Coluna 1) */}
-        <div id="bento-provisoes" className="bg-[#141414] text-white p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between">
+        {/* Bloco de Previsibilidade & Estimativa (Bento Coluna 1 - PAINEL TABELA POR PRODUTO) */}
+        <div id="bento-provisoes" className="bg-[#141414] text-white p-6 rounded-2xl border border-white/5 shadow-md flex flex-col justify-between col-span-1 lg:col-span-1">
           <div>
-            <div className="bg-[#FFE600]/10 text-[#FFE600] px-3 py-1 rounded-full text-xs font-bold w-fit mb-4 border border-[#FFE600]/20 flex items-center gap-1">
-              <Zap className="w-3.5 h-3.5 animate-pulse" />
-              Previsibilidade & Projeção
+            <div className="flex items-center justify-between gap-2 mb-3">
+              <div className="bg-[#FFE600]/10 text-[#FFE600] px-3 py-1 rounded-full text-xs font-bold w-fit border border-[#FFE600]/20 flex items-center gap-1">
+                <Zap className="w-3.5 h-3.5 animate-pulse" />
+                Painel de Previsibilidade por Produto
+              </div>
             </div>
-            <h3 className="text-sm font-bold text-white mb-1">Próximos 30 Dias Estimados</h3>
-            <p className="text-xs text-white/50">Estimativa de fluxo com base no ritmo atual de vendas de <span className="text-white font-bold">{unitsSoldPerDay.toFixed(1)}</span> unidades/dia.</p>
 
-            <div className="mt-5 space-y-3.5">
-              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
-                <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Ritmo de Saída Estimado</p>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-2xl font-black text-[#FFE600]">{Math.ceil(salesPrediction30Days)}</span>
-                  <span className="text-xs text-white/60 font-medium font-mono">unidades / mês</span>
-                </div>
-              </div>
+            <h3 className="text-sm font-bold text-white mb-1">Projeção Individual para Próximos 30 Dias</h3>
+            <p className="text-xs text-white/50 mb-3">Tabela técnica com estimativa de vendas, faturamento e lucro por produto.</p>
 
-              <div className="bg-white/5 p-3 rounded-xl border border-white/5">
-                <p className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Faturamento Projetado</p>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-lg font-bold text-white/90">{formatCurrency(projectedRevenue30Days)}</span>
-                </div>
-              </div>
+            <div className="space-y-2 max-h-60 overflow-y-auto pr-1 scrollbar-thin border-t border-white/5 pt-3">
+              {products.length === 0 ? (
+                <p className="text-xs text-white/40 text-center py-6">Nenhum produto cadastrado no estoque.</p>
+              ) : (
+                products.map(p => {
+                  const prodSales = filteredAllSales.filter(s => s.status !== 'refunded' && (s.productId === p.id || s.productName === p.name));
+                  const prodUnitsSold = prodSales.reduce((acc, s) => acc + s.quantity, 0);
+                  const prodUnitsPerDay = prodUnitsSold / Math.max(uniqueSalesDays, 1);
+                  const prodPred30Days = Math.ceil(prodUnitsPerDay * 30);
+                  const prodProjRev30Days = (prodSales.reduce((acc, s) => acc + (s.salePrice * s.quantity), 0) / Math.max(uniqueSalesDays, 1)) * 30;
+                  const prodProjProfit30Days = (prodSales.reduce((acc, s) => acc + s.netProfit, 0) / Math.max(uniqueSalesDays, 1)) * 30;
 
-              <div className="bg-emerald-950/20 p-3 rounded-xl border border-emerald-500/20">
-                <p className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest">Ganho Líquido Projetado</p>
-                <div className="flex items-baseline gap-2 mt-1">
-                  <span className="text-lg font-extrabold text-emerald-400">{formatCurrency(projectedNetProfit30Days)}</span>
-                </div>
-              </div>
+                  return (
+                    <div key={p.id} className="bg-white/5 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
+                      <div className="flex justify-between items-start gap-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-white truncate max-w-[170px]" title={p.name}>{p.name}</p>
+                          <span className="text-[9.5px] font-mono text-white/40 bg-white/5 px-1.5 py-0.2 rounded border border-white/5">
+                            SKU: {p.sku || 'Sem SKU'}
+                          </span>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="text-xs font-extrabold text-[#FFE600] font-mono block">
+                            ~{prodPred30Days} un / mês
+                          </span>
+                          <span className="text-[9px] text-white/40 font-mono">({prodUnitsPerDay.toFixed(1)} un/dia)</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-white/5 text-[10.5px]">
+                        <div>
+                          <span className="text-white/40 block text-[9px] font-bold uppercase">Fat. Projetado (30d)</span>
+                          <span className="font-bold text-white font-mono">{formatCurrency(prodProjRev30Days)}</span>
+                        </div>
+                        <div className="text-right">
+                          <span className="text-emerald-400/70 block text-[9px] font-bold uppercase">Lucro Líq. Projetado</span>
+                          <span className="font-extrabold text-emerald-400 font-mono">{formatCurrency(prodProjProfit30Days)}</span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
 
-          <div className="mt-5 pt-4 border-t border-white/5 text-[10px] text-white/40 text-center">
-            Adicione mais vendas para aumentar a precisão estatística da projeção.
+          <div className="mt-4 pt-3 border-t border-white/5 text-[10px] text-white/40 text-center">
+            Exibindo painel individual de projeção para {products.length} produtos em estoque.
           </div>
         </div>
 
@@ -1165,20 +1385,23 @@ export default function DashboardOverview({
               </div>
             ) : (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
-                {lowStockItems.map((prod) => (
-                  <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors">
-                    <div>
-                      <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
-                      <p className="text-[10px] text-white/40 font-mono mt-0.5">SKU: {prod.sku}</p>
+                {lowStockItems.map((prod) => {
+                  const currentStock = calculateCurrentStock(prod, uniqueSales);
+                  return (
+                    <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors">
+                      <div>
+                        <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
+                        <p className="text-[10px] text-white/40 font-mono mt-0.5">SKU: {prod.sku}</p>
+                      </div>
+                      <div className="text-right">
+                        <span className="text-xs font-extrabold text-red-400 bg-red-500/10 px-2 py-0.5 rounded block border border-red-500/25">
+                          Restam {currentStock} un.
+                        </span>
+                        <span className="text-[9px] text-white/40 block mt-0.5">Mínimo: {prod.minimalStock}</span>
+                      </div>
                     </div>
-                    <div className="text-right">
-                      <span className="text-xs font-extrabold text-red-400 bg-red-500/10 px-2 py-0.5 rounded block border border-red-500/25">
-                        Restam {prod.stock} un.
-                      </span>
-                      <span className="text-[9px] text-white/40 block mt-0.5">Mínimo: {prod.minimalStock}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -1211,17 +1434,18 @@ export default function DashboardOverview({
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {idleStockItems.map((prod) => {
                   const days = calculateDaysInStock(prod.addedDate);
+                  const currentStock = calculateCurrentStock(prod, uniqueSales);
                   return (
                     <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/10 hover:bg-amber-500/10 transition-colors">
                       <div>
                         <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
-                        <p className="text-[10px] text-white/40 font-mono mt-0.5 font-semibold">Custo em caixa: {formatCurrency(prod.purchasePrice * prod.stock)}</p>
+                        <p className="text-[10px] text-white/40 font-mono mt-0.5 font-semibold">Custo em caixa: {formatCurrency(prod.purchasePrice * currentStock)}</p>
                       </div>
                       <div className="text-right">
                         <span className="text-xs font-extrabold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded block border border-amber-500/25">
                           {days} dias
                         </span>
-                        <span className="text-[9px] text-white/40 block mt-0.5">Estoque: {prod.stock} un.</span>
+                        <span className="text-[9px] text-white/40 block mt-0.5">Estoque: {currentStock} un.</span>
                       </div>
                     </div>
                   );

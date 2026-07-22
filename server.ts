@@ -15,7 +15,7 @@ async function startServer() {
   app.use(express.json({ limit: '20mb' }));
 
   // Helper para realizar fetch com timeout nativo robusto e limpar o temporizador de forma segura
-  async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 12000) {
+  async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 45000) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);
     try {
@@ -44,10 +44,14 @@ async function startServer() {
 
     try {
       console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
-      const response = await fetchWithTimeout(webAppUrl, {}, 12000);
+      const response = await fetchWithTimeout(webAppUrl, {}, 45000);
 
       if (!response.ok) {
-        throw new Error(`Google Sheets API retornou status HTTP ${response.status}`);
+        let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
+        if (response.status === 500) {
+          msg += ` Isso geralmente significa que há um erro interno de execução no seu código do Apps Script (como uma coluna ausente ou uma fórmula inválida na planilha). Por favor, verifique no menu "Execuções" do seu Apps Script para ver o log de erro detalhado.`;
+        }
+        throw new Error(msg);
       }
 
       const responseText = await response.text();
@@ -73,7 +77,7 @@ async function startServer() {
       console.error('Erro de Sincronização no Servidor Proxy (GET):', error);
       let errorMsg = error.message || String(error);
       if (error.name === 'AbortError') {
-        errorMsg = 'A planilha do Google Sheets demorou demais para responder (Tempo Limite de 12s Excedido). Certifique-se de que o link do Web App do Apps Script está correto, ativo e que sua planilha não possui centenas de milhares de linhas vazias que atrasam a resposta.';
+        errorMsg = 'A planilha do Google Sheets demorou demais para responder (Tempo Limite de 45s Excedido). Certifique-se de que o link do Web App do Apps Script está correto, ativo e que sua planilha não possui centenas de milhares de linhas vazias que atrasam a resposta.';
       }
       return res.status(500).json({
         status: 'error',
@@ -103,10 +107,14 @@ async function startServer() {
           'Content-Type': 'text/plain;charset=utf-8'
         },
         body: JSON.stringify({ products, sales, initialCapital, mlRecords })
-      }, 15000);
+      }, 45000);
 
       if (!response.ok) {
-        throw new Error(`Google Sheets API retornou status HTTP ${response.status}`);
+        let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
+        if (response.status === 500) {
+          msg += ` Isso geralmente indica erro de código ou formato incorreto no seu Apps Script ao gravar. Por favor, cheque a aba "Execuções" no painel do Google Apps Script.`;
+        }
+        throw new Error(msg);
       }
 
       const responseText = await response.text();
@@ -132,7 +140,7 @@ async function startServer() {
       console.error('Erro de Sincronização no Servidor Proxy:', error);
       let errorMsg = error.message || String(error);
       if (error.name === 'AbortError') {
-        errorMsg = 'O envio demorou demais para responder (Tempo Limite de 15s Excedido). Verifique o Web App do Apps Script.';
+        errorMsg = 'O envio demorou demais para responder (Tempo Limite de 45s Excedido). Verifique o Web App do Apps Script.';
       }
       return res.status(500).json({
         status: 'error',

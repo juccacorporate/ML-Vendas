@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { X, Calculator, ArrowRight, TrendingUp, Maximize2, Minimize2 } from 'lucide-react';
 import { formatCurrency } from '../utils';
 
@@ -14,12 +14,12 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
   // Common inputs
   const [purchasePrice, setPurchasePrice] = useState<number | ''>('');
   const [shippingCost, setShippingCost] = useState<number | ''>('');
+  const [taxPercent, setTaxPercent] = useState<number | ''>(4); // Imposto da venda (padrão 4%)
   
   // Profit mode inputs
   const [salePrice, setSalePrice] = useState<number | ''>('');
   const [mlCategory, setMlCategory] = useState<'classic' | 'premium' | 'manual'>('classic');
   const [manualMlFeePercent, setManualMlFeePercent] = useState<number | ''>(12);
-  const [manualMlFixedFee, setManualMlFixedFee] = useState<number | ''>(6);
 
   // Price mode inputs
   const [desiredProfit, setDesiredProfit] = useState<number | ''>('');
@@ -30,59 +30,69 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
   const numShipping = Number(shippingCost) || 0;
   const numSale = Number(salePrice) || 0;
   const numDesiredProfit = Number(desiredProfit) || 0;
+  const numTaxPercent = Number(taxPercent) || 0;
 
   const numManualPercent = Number(manualMlFeePercent) || 0;
-  const numManualFixed = Number(manualMlFixedFee) || 0;
 
   // Calculos
   let calculatedSalePrice = 0;
   let calculatedMlFee = 0;
+  let autoFixedFee = 0;
+  let calculatedTax = 0;
   let grossProfit = 0;
   let netProfit = 0;
 
+  const percentRate = (
+    mlCategory === 'classic' ? 12 :
+    mlCategory === 'premium' ? 17 :
+    numManualPercent
+  ) / 100;
+
+  const taxRate = numTaxPercent / 100;
+
   if (mode === 'profit') {
     calculatedSalePrice = numSale;
-    if (mlCategory === 'classic') {
-      calculatedMlFee = (calculatedSalePrice * 0.12) + (calculatedSalePrice < 79 && calculatedSalePrice > 0 ? 6.00 : 0);
-    } else if (mlCategory === 'premium') {
-      calculatedMlFee = (calculatedSalePrice * 0.17) + (calculatedSalePrice < 79 && calculatedSalePrice > 0 ? 6.00 : 0);
+
+    // Regra matemática oficial do Mercado Livre: produtos < R$ 79,00 possuem taxa fixa de R$ 6.00 por unidade
+    if (calculatedSalePrice > 0 && calculatedSalePrice < 79) {
+      autoFixedFee = 6.00;
     } else {
-      calculatedMlFee = (calculatedSalePrice * (numManualPercent / 100)) + numManualFixed;
+      autoFixedFee = 0.00;
     }
 
+    calculatedMlFee = (calculatedSalePrice * percentRate) + autoFixedFee;
+    calculatedTax = (calculatedSalePrice * taxRate);
     grossProfit = calculatedSalePrice - numPurchase;
-    netProfit = grossProfit - numShipping - calculatedMlFee;
+    netProfit = grossProfit - numShipping - calculatedMlFee - calculatedTax;
   } else {
-    // Mode 'price'
-    if (mlCategory === 'manual') {
-      const percent = numManualPercent / 100;
-      const fixed = numManualFixed;
-      
-      // Formula: S = (DesiredProfit + PurchasePrice + ShippingCost + FixedFee) / (1 - %)
-      const s = (numDesiredProfit + numPurchase + numShipping + fixed) / (1 - percent);
-      calculatedSalePrice = s > 0 ? s : 0;
-      calculatedMlFee = (calculatedSalePrice * percent) + fixed;
-      grossProfit = calculatedSalePrice - numPurchase;
-      netProfit = numDesiredProfit;
-    } else {
-      const percent = mlCategory === 'premium' ? 0.17 : 0.12;
-      
-      // Testa primeiro sem a taxa fixa (assumindo >= 79)
-      let s = (numDesiredProfit + numPurchase + numShipping) / (1 - percent);
-      
+    // Mode 'price' (Sugestão de Preço para obter o Lucro Líquido Desejado)
+    const divider = 1 - percentRate - taxRate;
+
+    if (divider > 0) {
+      // 1. Tenta calcular sem taxa fixa de R$ 6.00 (assumindo Preço >= R$79)
+      let s = (numDesiredProfit + numPurchase + numShipping) / divider;
+
+      // 2. Se a venda for menor que R$ 79,00, a taxa fixa de R$ 6.00 incide automaticamente
       if (s > 0 && s < 79) {
-        // Se deu menor que 79, precisa adicionar os R$ 6 fixos
-        s = (numDesiredProfit + numPurchase + numShipping + 6) / (1 - percent);
+        autoFixedFee = 6.00;
+        s = (numDesiredProfit + numPurchase + numShipping + autoFixedFee) / divider;
+      } else {
+        autoFixedFee = 0.00;
       }
 
-      calculatedSalePrice = s > 0 ? s : 0;
-      calculatedMlFee = (calculatedSalePrice * percent) + (calculatedSalePrice < 79 && calculatedSalePrice > 0 ? 6 : 0);
-      grossProfit = calculatedSalePrice - numPurchase;
-      netProfit = numDesiredProfit;
+      calculatedSalePrice = Math.max(0, s);
+    } else {
+      calculatedSalePrice = 0;
+      autoFixedFee = 0;
     }
+
+    calculatedMlFee = (calculatedSalePrice * percentRate) + autoFixedFee;
+    calculatedTax = (calculatedSalePrice * taxRate);
+    grossProfit = calculatedSalePrice - numPurchase;
+    netProfit = numDesiredProfit;
   }
 
-  const totalExpenses = numShipping + calculatedMlFee;
+  const totalExpenses = numShipping + calculatedMlFee + calculatedTax;
   const netMargin = numPurchase > 0 ? (netProfit / numPurchase) * 100 : 0;
 
   // Renderização reduzida (Balãozinho minimizado)
@@ -202,32 +212,45 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
           </div>
         )}
 
-        {/* Custo de Compra e Custo de Frete */}
-        <div className="grid grid-cols-2 gap-3">
+        {/* Custo de Compra, Custo de Frete e Imposto da Venda */}
+        <div className="grid grid-cols-3 gap-2.5">
           <div>
-            <label className="text-[10px] font-bold text-white/60 block mb-1 uppercase tracking-wider">Custo de Compra</label>
+            <label className="text-[10px] font-bold text-white/60 block mb-1 uppercase tracking-wider">Custo Compra</label>
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 text-xs font-bold">R$</span>
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 text-[11px] font-bold">R$</span>
               <input
                 type="number"
                 value={purchasePrice}
                 onChange={e => setPurchasePrice(e.target.value === '' ? '' : Number(e.target.value))}
                 placeholder="0.00"
-                className="w-full bg-black/40 border border-white/10 rounded-xl pl-8 pr-4 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
+                className="w-full bg-black/40 border border-white/10 rounded-xl pl-7 pr-2 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
               />
             </div>
           </div>
           <div>
-            <label className="text-[10px] font-bold text-white/60 block mb-1 uppercase tracking-wider">Custo de Frete</label>
+            <label className="text-[10px] font-bold text-white/60 block mb-1 uppercase tracking-wider">Custo Frete</label>
             <div className="relative">
-              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-white/40 text-xs font-bold">R$</span>
+              <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 text-[11px] font-bold">R$</span>
               <input
                 type="number"
                 value={shippingCost}
                 onChange={e => setShippingCost(e.target.value === '' ? '' : Number(e.target.value))}
                 placeholder="0.00"
-                className="w-full bg-black/40 border border-white/10 rounded-xl pl-8 pr-4 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-red-500/30"
+                className="w-full bg-black/40 border border-white/10 rounded-xl pl-7 pr-2 py-2 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-red-500/30"
               />
+            </div>
+          </div>
+          <div>
+            <label className="text-[10px] font-bold text-blue-400 block mb-1 uppercase tracking-wider">Imposto Venda</label>
+            <div className="relative">
+              <input
+                type="number"
+                value={taxPercent}
+                onChange={e => setTaxPercent(e.target.value === '' ? '' : Number(e.target.value))}
+                placeholder="4"
+                className="w-full bg-blue-500/10 border border-blue-500/20 rounded-xl pr-6 pl-2.5 py-2 text-xs text-blue-300 font-mono font-bold focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+              />
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-blue-400/60 text-xs font-bold">%</span>
             </div>
           </div>
         </div>
@@ -264,16 +287,10 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
                 </div>
               </div>
               <div>
-                <label className="text-[9px] font-black text-white/40 block mb-1 uppercase tracking-widest">Taxa Fixa (R$)</label>
-                <div className="relative">
-                  <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 text-xs font-bold">R$</span>
-                  <input
-                    type="number"
-                    value={manualMlFixedFee}
-                    onChange={e => setManualMlFixedFee(e.target.value === '' ? '' : Number(e.target.value))}
-                    placeholder="6.00"
-                    className="w-full bg-black/40 border border-white/10 rounded-xl pl-7 pr-3 py-1.5 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
-                  />
+                <label className="text-[9px] font-black text-white/40 block mb-1 uppercase tracking-widest">Taxa Fixa (Automático)</label>
+                <div className="bg-black/50 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-amber-400 font-mono font-bold flex items-center justify-between">
+                  <span>{formatCurrency(autoFixedFee)}</span>
+                  <span className="text-[8px] text-white/40 font-normal">{autoFixedFee > 0 ? '< R$79' : '≥ R$79'}</span>
                 </div>
               </div>
             </div>
@@ -298,8 +315,13 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
           </div>
           
           <div className="flex justify-between items-center text-xs">
-            <span className="text-white/50 font-medium">Despesas (Frete + Taxa Canal)</span>
-            <span className="font-mono font-bold text-red-400">-{formatCurrency(totalExpenses)}</span>
+            <span className="text-white/50 font-medium">Comissão ML + Frete</span>
+            <span className="font-mono font-bold text-red-400">-{formatCurrency(calculatedMlFee + numShipping)}</span>
+          </div>
+
+          <div className="flex justify-between items-center text-xs">
+            <span className="text-blue-400 font-medium">Imposto da Venda ({numTaxPercent}%)</span>
+            <span className="font-mono font-bold text-blue-400">-{formatCurrency(calculatedTax)}</span>
           </div>
 
           <div className={`flex items-center justify-between p-3.5 rounded-xl border mt-2 ${mode === 'profit' ? 'bg-[#FFE600]/10 border-[#FFE600]/20' : 'bg-emerald-500/10 border-emerald-500/20'}`}>

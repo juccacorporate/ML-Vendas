@@ -5,11 +5,72 @@
 
 import { Product, Sale } from './types';
 
-// Taxas padrão do Mercado Livre
+// Taxas padrão do Mercado Livre e Impostos
 export const ML_CLASSIC_PERCENT = 12; // 12% de comissão
 export const ML_PREMIUM_PERCENT = 17; // 17% de comissão (permite parcelamento sem juros)
 export const ML_FIXED_FEE_LIMIT = 79; // Produtos abaixo de R$ 79 têm taxa fixa
 export const ML_FIXED_FEE_AMOUNT = 6.00; // Taxa fixa de R$ 6.00 por unidade
+export const TAX_PERCENT = 4; // Imposto padrão de 4% sobre a venda
+
+/**
+ * Normaliza textos para comparação flexível (remove acentos, pontuação e caixa alta/baixa)
+ */
+export function normalizeName(name: string): string {
+  if (!name) return '';
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Calcula o estoque atual restante de um produto descontando todas as vendas registradas e ativas
+ */
+export function calculateCurrentStock(product: Product, sales: Sale[]): number {
+  if (!sales || sales.length === 0) return product.stock;
+
+  const normProdName = normalizeName(product.name);
+  const prodSkuClean = (product.sku || '').trim().toLowerCase();
+
+  const totalSold = sales
+    .filter(s => s.status !== 'refunded')
+    .reduce((acc, s) => {
+      // 1. Correspondência exata por ID do produto
+      if (s.productId && s.productId === product.id) {
+        return acc + (s.quantity || 1);
+      }
+
+      const sNameClean = (s.productName || '').trim();
+      const normSaleName = normalizeName(sNameClean);
+
+      // 2. Correspondência por comparação inteligente de nome
+      const isNameMatch = normSaleName.length > 0 && normProdName.length > 0 && (
+        normSaleName === normProdName ||
+        normSaleName.includes(normProdName) ||
+        normProdName.includes(normSaleName)
+      );
+
+      // 3. Correspondência por SKU
+      const isSkuMatch = prodSkuClean.length > 2 && sNameClean.toLowerCase().includes(prodSkuClean);
+
+      if (isNameMatch || isSkuMatch) {
+        return acc + (s.quantity || 1);
+      }
+      return acc;
+    }, 0);
+
+  return Math.max(0, product.stock - totalSold);
+}
+
+/**
+ * Calcula o imposto (4%) incidente sobre o preço total de venda
+ */
+export function calculateTax(salePrice: number, quantity: number = 1): number {
+  return Number(((salePrice * quantity * TAX_PERCENT) / 100).toFixed(2));
+}
 
 /**
  * Calcula a taxa cobrada pelo Mercado Livre para um produto
@@ -307,19 +368,7 @@ export function getReleaseDateStr(dateStr: string): string {
   return `${day}/${month}`;
 }
 
-/**
- * Normaliza nomes de produtos para comparação insensível a caracteres especiais como ordinal ou grau
- */
-export function normalizeName(name: string): string {
-  if (!name) return '';
-  return name
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "") // remove acentos
-    .replace(/[°ºª]/g, '') // remove degree and ordinal indicators
-    .replace(/[^a-z0-9]/g, '') // remove non-alphanumeric
-    .trim();
-}
+
 
 
 

@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product, Sale } from '../types';
-import { calculateMLFee, calculateDaysInStock, formatCurrency } from '../utils';
+import { calculateMLFee, calculateTax, calculateDaysInStock, formatCurrency, calculateCurrentStock } from '../utils';
 import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers } from 'lucide-react';
 
 interface StockControlProps {
@@ -60,10 +60,11 @@ export default function StockControl({
   const filteredProducts = products.filter(p => {
     const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
+    const currentStock = calculateCurrentStock(p, sales);
     
     let matchesStatus = true;
     if (stockStatusFilter === 'low') {
-      matchesStatus = p.stock <= p.minimalStock;
+      matchesStatus = currentStock <= p.minimalStock;
     } else if (stockStatusFilter === 'idle') {
       // Calcular dias sem giro reais
       const lastSale = sales
@@ -252,6 +253,7 @@ export default function StockControl({
                 <th className="py-4 px-4 text-center">Venda ML</th>
                 <th className="py-4 px-4 text-center text-[#FFE600] font-black">Lucro & Margem Líq.</th>
                 <th className="py-4 px-4 text-center">Previsão Comissão ML</th>
+                <th className="py-4 px-4 text-center">Imposto (4%)</th>
                 <th className="py-4 px-4 text-center">Frete</th>
                 <th className="py-4 px-4 text-center">Estoque Atual</th>
                 <th className="py-4 px-4 text-center">Dias sem Giro</th>
@@ -261,7 +263,7 @@ export default function StockControl({
             <tbody className="divide-y divide-white/5 text-white/95 text-xs font-semibold">
               {filteredProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-16 text-center text-white/40 text-xs bg-white/5">
+                  <td colSpan={10} className="py-16 text-center text-white/40 text-xs bg-white/5">
                     Nenhum produto cadastrado com os filtros ativos.
                   </td>
                 </tr>
@@ -282,12 +284,15 @@ export default function StockControl({
                     days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
                   }
 
-                  const isCritical = p.stock <= p.minimalStock;
+                  const currentStock = calculateCurrentStock(p, sales);
+                  const totalSoldForProd = p.stock - currentStock;
+                  const isCritical = currentStock <= p.minimalStock;
                   
-                  // Lucro Esperado (comissão padrão estimativa)
+                  // Lucro Esperado (comissão padrão + imposto de 4% estimativa)
                   const mlFee = calculateMLFee(p.salePrice, p.mlFeeType, p.customFeePercent);
+                  const taxAmount = calculateTax(p.salePrice);
                   const difference = p.salePrice - p.purchasePrice;
-                  const estimatedNetProfit = p.salePrice - p.purchasePrice - mlFee - p.shippingCost;
+                  const estimatedNetProfit = p.salePrice - p.purchasePrice - mlFee - p.shippingCost - taxAmount;
                   const netMargin = p.purchasePrice > 0 ? (estimatedNetProfit / p.purchasePrice) * 100 : 0;
 
                   return (
@@ -352,6 +357,12 @@ export default function StockControl({
                         </span>
                       </td>
 
+                      {/* Imposto (4%) */}
+                      <td className="py-4 px-4 text-center">
+                        <span className="text-blue-400 font-semibold">{formatCurrency(taxAmount)}</span>
+                        <span className="text-[9px] block text-white/40 font-medium">4% sobre Venda</span>
+                      </td>
+
                       {/* Frete */}
                       <td className="py-4 px-4 text-center text-white/50">
                         {p.shippingCost > 0 ? formatCurrency(p.shippingCost) : 'Grátis'}
@@ -360,16 +371,22 @@ export default function StockControl({
                       {/* Estoque */}
                       <td className="py-4 px-4 text-center">
                         <div className="inline-block">
-                          <span className={`px-2 py-1 rounded text-xs font-bold font-mono block ${
-                            p.stock === 0 
+                          <span className={`px-2.5 py-1 rounded text-xs font-bold font-mono block ${
+                            currentStock === 0 
                               ? 'bg-red-500 text-white' 
                               : isCritical 
                               ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
-                              : 'bg-emerald-500/20 text-emerald-450 text-emerald-400 border border-emerald-555 border-emerald-500/30'
+                              : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                           }`}>
-                            {p.stock} un.
+                            {currentStock} un.
                           </span>
-                          <span className="text-[9px] text-white/40 mt-1 block">Min: {p.minimalStock}</span>
+                          {totalSoldForProd > 0 ? (
+                            <span className="text-[9px] text-amber-400 font-bold mt-1 block">
+                              -{totalSoldForProd} vendida{totalSoldForProd > 1 ? 's' : ''}
+                            </span>
+                          ) : (
+                            <span className="text-[9px] text-white/40 mt-1 block">Min: {p.minimalStock}</span>
+                          )}
                         </div>
                       </td>
 

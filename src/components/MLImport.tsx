@@ -74,187 +74,286 @@ export default function MLImport({
   const [statusFilter, setStatusFilter] = useState('todos');
   const [adFilter, setAdFilter] = useState('todos');
 
-  // Lógica de Parser Inteligente de Planilha (Ctrl+V ou CSV)
-  const handleParse = (text: string): boolean => {
+  // Limpeza e Helpers de Dados
+  const cleanNum = (val: any) => {
+    if (val === undefined || val === null || val === '') return 0;
+    if (typeof val === 'number') return isNaN(val) ? 0 : val;
+    let str = String(val).trim();
+    let clean = str.replace(/r\$\s?/i, '').trim();
+    if (clean.includes('.') && clean.includes(',')) {
+      clean = clean.replace(/\./g, '').replace(',', '.');
+    } else if (clean.includes(',')) {
+      clean = clean.replace(',', '.');
+    }
+    const num = parseFloat(clean);
+    return isNaN(num) ? 0 : num;
+  };
+
+  const cleanBool = (val: any) => {
+    if (!val) return false;
+    if (typeof val === 'boolean') return val;
+    const v = String(val).toLowerCase().trim();
+    return v === 'sim' || v === 'yes' || v === 'true' || v === '1' || v === 'autorizada';
+  };
+
+  const cleanStr = (val: any) => {
+    if (val === undefined || val === null) return '';
+    return String(val).trim();
+  };
+
+  // Parser Inteligente para Matriz 2D (vindo de Excel ou Texto CSV/Tabela)
+  const handleMatrixParse = (matrix: any[][]): boolean => {
     setParseError(null);
     setImportSuccess(null);
-    if (!text.trim()) {
-      setParseError('Cole os dados ou insira um relatório válido.');
+
+    if (!matrix || matrix.length < 2) {
+      setParseError('A tabela fornecida não possui dados suficientes ou está vazia.');
       return false;
     }
 
-    try {
-      const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
-      if (lines.length < 2) {
-        setParseError('A tabela fornecida não possui dados suficientes ou está sem cabeçalhos.');
-        return false;
+    const normalizeStr = (s: any) => 
+      String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+
+    // Palavras-chave para localizar a linha de cabeçalho na planilha
+    const keyHeaderWords = [
+      'venda', 'id', 'data', 'status', 'estado', 'unidades', 'quantidade', 'receita', 
+      'produto', 'anuncio', 'comissao', 'tarifa', 'frete', 'sku', 'comprador', 'cliente', 'total'
+    ];
+
+    let bestHeaderRowIndex = -1;
+    let maxMatches = 0;
+
+    for (let r = 0; r < Math.min(matrix.length, 20); r++) {
+      const row = matrix[r];
+      if (!Array.isArray(row)) continue;
+      let matches = 0;
+      for (const cell of row) {
+        const normCell = normalizeStr(cell);
+        if (normCell && keyHeaderWords.some(k => normCell.includes(k))) {
+          matches++;
+        }
+      }
+      if (matches > maxMatches) {
+        maxMatches = matches;
+        bestHeaderRowIndex = r;
+      }
+    }
+
+    if (bestHeaderRowIndex === -1 || maxMatches < 1) {
+      bestHeaderRowIndex = 0;
+    }
+
+    const headers = (matrix[bestHeaderRowIndex] || []).map(h => cleanStr(h));
+
+    const getIndex = (keywords: string[], excludeKeywords: string[] = []) => {
+      // 1. Tentar encontrar correspondência exata primeiro
+      for (const k of keywords) {
+        const normK = normalizeStr(k);
+        const exactIdx = headers.findIndex(h => {
+          const normH = normalizeStr(h);
+          if (excludeKeywords.some(ex => normH.includes(normalizeStr(ex)))) return false;
+          return normH === normK;
+        });
+        if (exactIdx !== -1) return exactIdx;
       }
 
-      // Detectar o delimitador (tabulação para planilhas coladas, ponto e vírgula ou vírgula para CSV)
-      let delimiter = '\t';
-      const firstLine = lines[0];
-      if (firstLine.includes(';')) delimiter = ';';
-      else if (firstLine.includes(',') && !firstLine.includes('\t')) delimiter = ',';
+      // 2. Tentar correspondência parcial (includes)
+      for (const k of keywords) {
+        const normK = normalizeStr(k);
+        const partialIdx = headers.findIndex(h => {
+          const normH = normalizeStr(h);
+          if (excludeKeywords.some(ex => normH.includes(normalizeStr(ex)))) return false;
+          return normH.includes(normK);
+        });
+        if (partialIdx !== -1) return partialIdx;
+      }
 
-      // Parser inteligente para uma única linha de CSV respeitando aspas
-      const parseCSVLine = (lineStr: string, delim: string): string[] => {
-        const res: string[] = [];
-        let curr = '';
-        let inQuotes = false;
-        for (let i = 0; i < lineStr.length; i++) {
-          const char = lineStr[i];
-          if (char === '"') {
-            inQuotes = !inQuotes;
-          } else if (char === delim && !inQuotes) {
-            res.push(curr.trim());
-            curr = '';
-          } else {
-            curr += char;
+      return -1;
+    };
+
+    const idxId = getIndex(['n.º de venda', 'n.º venda', 'nº de venda', 'id venda', 'id da venda', 'numero de venda', 'número de venda', 'id de venda', 'id de compra', 'pack_id', 'order_id'], ['publicidade', 'anuncio']);
+    const idxDate = getIndex(['data da venda', 'data de criação', 'data venda', 'data_venda', 'data de criacao']);
+    const idxStatus = getIndex(['estado do envio', 'estado', 'status da venda', 'status']);
+    const idxStatusDesc = getIndex(['descricao do status', 'descrição do status', 'detalhe do status', 'status_desc']);
+    const idxMulti = getIndex(['pacote de diversos produtos', 'pacote com diversos produtos', 'multi_produto', 'diversos produtos']);
+    const idxKit = getIndex(['pertence a um kit', 'e_kit']);
+    const idxUnits = getIndex(['unidades', 'quantidade', 'qtd', 'unidades vendidas']);
+    const idxProductRevenue = getIndex(['receita por produtos', 'receita do produto', 'receita_produto', 'valor produto', 'preço venda', 'preco venda', 'receita (brl)'], ['acrescimo', 'envio', 'frete', 'parcelamento', 'tarifa', 'desconto', 'total']);
+    const idxSurcharge = getIndex(['receita por acrescimo', 'receita por acréscimo', 'acrescimo no preco', 'acrescimo', 'acréscimo']);
+    const idxInstallment = getIndex(['taxa de parcelamento', 'tarifa parcelamento', 'custo parcelamento']);
+    const idxSaleFee = getIndex(['tarifa de venda e impostos', 'tarifa de venda', 'tarifas de venda', 'comissao', 'comissão', 'taxa ml', 'comissão ml', 'tarifa_venda']);
+    const idxShipRevenue = getIndex(['receita por envio', 'receita envio', 'frete comprador', 'receita de envio']);
+    const idxShipFee = getIndex(['tarifas de envio', 'tarifa de envio', 'custo frete ml', 'frete cobrado', 'custo frete', 'custo_frete']);
+    const idxWeightCost = getIndex(['custo de envio com base', 'custo por peso', 'medidas e peso']);
+    const idxDiffCost = getIndex(['custo por diferencas', 'custo por diferenças', 'diferenca de frete', 'diferença de frete', 'diferenca peso']);
+    const idxDiscount = getIndex(['descontos e bonus', 'descontos e bônus', 'descontos', 'bonus', 'bônus', 'desconto no frete']);
+    const idxRefund = getIndex(['cancelamentos e reembolsos', 'reembolsos', 'estorno', 'cancelamentos']);
+    const idxTotal = getIndex(['total (brl)', 'total brl', 'total'], ['subtotal', 'desconto']);
+    const idxBillingMonth = getIndex(['mes de faturamento', 'mês de faturamento', 'mes faturamento', 'mes_tarifas']);
+    const idxAdSale = getIndex(['venda por publicidade', 'publicidade', 'ads', 'ads_venda']);
+    const idxAdId = getIndex(['# de anuncio', '# de anúncio', 'id do anuncio', 'id do anúncio', 'id anuncio', 'id anúncio', '# anuncio', '# anúncio'], ['compra', 'venda', 'pacote']);
+    const idxSku = getIndex(['sku', 'codigo sku', 'código sku', 'codigo de barras', 'ref', 'sku do produto']);
+    const idxAdTitle = getIndex(['titulo do anuncio', 'título do anúncio', 'titulo anuncio', 'título anúncio', 'nome do anuncio', 'nome do produto', 'titulo do produto', 'título do produto', 'titulo', 'título'], ['pacote', 'kit', 'publicidade', 'tipo', 'tarifa', 'receita', 'valor', 'custo', 'reclamacao', 'mediação', 'dados', 'comprador', 'estado', 'envio']);
+    const idxVariation = getIndex(['variacao', 'variação', 'cor', 'tamanho']);
+    const idxUnitPrice = getIndex(['preco unitario', 'preço unitário', 'valor unitario', 'valor unitário', 'preco unitario de venda']);
+    const idxAdType = getIndex(['tipo de anuncio', 'tipo de anúncio', 'tipo anuncio', 'tipo_anuncio']);
+    const idxInvoice = getIndex(['nf-e', 'nota fiscal', 'nfe']);
+    const idxBuyerName = getIndex(['dados pessoais', 'comprador', 'nome do comprador', 'cliente', 'nome do cliente']);
+    const idxBuyerDoc = getIndex(['documento', 'cpf', 'cnpj', 'tipo e numero do documento']);
+    const idxAddress = getIndex(['endereco', 'endereço', 'rua', 'cep', 'cidade', 'uf']);
+    const idxShipMethod = getIndex(['forma de entrega', 'metodo de entrega', 'método de entrega', 'tipo de envio', 'tipo de frete']);
+    const idxDateGo = getIndex(['data a caminho', 'data_caminho']);
+    const idxDateDel = getIndex(['data de entrega', 'data_entrega']);
+    const idxCarrier = getIndex(['transportador', 'transportadora', 'logistica', 'logística']);
+    const idxTrackNum = getIndex(['numero de rastreamento', 'número de rastreamento', 'codigo de rastreio', 'código de rastreio', 'rastreamento']);
+    const idxTrackUrl = getIndex(['url de acompanhamento', 'link de rastreio', 'url_rastreio']);
+    const idxClaimOpen = getIndex(['reclamacao aberta', 'reclamação aberta', 'reclamacao_aberta']);
+    const idxClaimClose = getIndex(['reclamacao encerrada', 'reclamação encerrada', 'reclamacao_encerrada']);
+    const idxMediation = getIndex(['em mediacao', 'em mediação', 'mediacao', 'mediação']);
+
+    if (idxId === -1 && idxAdTitle === -1 && idxProductRevenue === -1 && idxSku === -1 && idxBuyerName === -1) {
+      setParseError('Não conseguimos identificar os cabeçalhos das colunas Mercado Livre. Verifique se copiou a tabela inteira com os títulos.');
+      return false;
+    }
+
+    const importedRecords: MLImportRecord[] = [];
+
+    for (let i = bestHeaderRowIndex + 1; i < matrix.length; i++) {
+      const row = matrix[i];
+      if (!row || !Array.isArray(row) || row.length === 0) continue;
+
+      const hasSomeData = row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
+      if (!hasSomeData) continue;
+
+      const rawId = idxId !== -1 ? cleanStr(row[idxId]) : '';
+      let rawTitle = idxAdTitle !== -1 ? cleanStr(row[idxAdTitle]) : '';
+      const rawRevenue = idxProductRevenue !== -1 ? cleanNum(row[idxProductRevenue]) : 0;
+      const rawSku = idxSku !== -1 ? cleanStr(row[idxSku]) : '';
+
+      // Se rawTitle for apenas um indicador booleano ("sim" ou "não"), descarta
+      if (['sim', 'não', 'nao', 'true', 'false'].includes(rawTitle.trim().toLowerCase())) {
+        rawTitle = '';
+      }
+
+      // Se rawTitle estiver vazio mas rawSku contiver texto real de produto, usa rawSku como rawTitle
+      if (!rawTitle && rawSku && rawSku.length > 3 && !['sim', 'não', 'nao', 'true', 'false'].includes(rawSku.trim().toLowerCase())) {
+        rawTitle = rawSku;
+      }
+
+      // Se rawTitle não foi encontrado pela coluna, faz varredura de segurança nas células da linha
+      if (!rawTitle) {
+        for (let col = 0; col < row.length; col++) {
+          const cellStr = cleanStr(row[col]);
+          const normCell = cellStr.toLowerCase();
+          if (
+            cellStr.length > 5 &&
+            !['sim', 'não', 'nao', 'true', 'false', 'entregue', 'chegou', 'cancelado'].includes(normCell) &&
+            !normCell.includes('mercado envios') &&
+            !normCell.includes('classico') &&
+            !normCell.includes('premium') &&
+            !/^\d+$/.test(cellStr) &&
+            !cellStr.includes('http') &&
+            !cellStr.includes('@') &&
+            !cellStr.includes('r$')
+          ) {
+            rawTitle = cellStr;
+            break;
           }
         }
-        res.push(curr.trim());
-        return res.map(cell => cell.replace(/^"|"$/g, '').trim());
-      };
-
-      // Extrair colunas
-      const headers = parseCSVLine(firstLine, delimiter);
-      
-      // Mapear índices dos cabeçalhos por proximidade/palavras-chave
-      const getIndex = (keywords: string[]) => {
-        return headers.findIndex(h => 
-          keywords.some(k => h.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(k.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")))
-        );
-      };
-
-      const idxId = getIndex(['n.º de venda', 'n.º venda', 'nº de venda', 'id venda', 'id da venda', 'numero de venda']);
-      const idxDate = getIndex(['data da venda', 'data venda', 'data original', 'data_venda']);
-      const idxStatus = getIndex(['estado', 'status', 'situacao']);
-      const idxStatusDesc = getIndex(['descricao do status', 'descricao status', 'detalhe do status']);
-      const idxMulti = getIndex(['pacote de diversos produtos', 'multi_produto', 'diversos produtos']);
-      const idxKit = getIndex(['pertence a um kit', 'e_kit', 'kit']);
-      const idxUnits = getIndex(['unidades', 'quantidade', 'qtd']);
-      const idxProductRevenue = getIndex(['receita por produtos', 'receita do produto', 'receita_produto', 'valor produto']);
-      const idxSurcharge = getIndex(['receita por acrescimo', 'acrescimo no preco', 'acrescimo']);
-      const idxInstallment = getIndex(['taxa de parcelamento', 'tarifa parcelamento', 'custo parcelamento']);
-      const idxSaleFee = getIndex(['tarifa de venda', 'comissao', 'tarifas de venda']);
-      const idxShipRevenue = getIndex(['receita por envio', 'receita envio', 'frete comprador']);
-      const idxShipFee = getIndex(['tarifas de envio', 'tarifa de envio', 'custo frete ml', 'frete cobrado']);
-      const idxWeightCost = getIndex(['custo de envio com base', 'custo por peso', 'medidas e peso']);
-      const idxDiffCost = getIndex(['custo por diferencas', 'diferenca de frete', 'diferenca peso']);
-      const idxDiscount = getIndex(['descontos e bonus', 'descontos', 'bonus', 'desconto no frete', 'desconto no frete modificado pelo comprador']);
-      const idxRefund = getIndex(['cancelamentos e reembolsos', 'reembolsos', 'estorno']);
-      const idxTotal = getIndex(['total (brl)', 'total brl', 'total', 'liquido ml']);
-      const idxBillingMonth = getIndex(['mes de faturamento', 'mes faturamento', 'mes_tarifas']);
-      const idxAdSale = getIndex(['venda por publicidade', 'publicidade', 'ads', 'ads_venda']);
-      const idxAdId = getIndex(['# de anuncio', 'id anuncio', 'id_anuncio', 'numero de anuncio']);
-      const idxSku = getIndex(['sku', 'codigo sku', 'codigo de barras', 'ref']);
-      const idxAdTitle = getIndex(['titulo do anuncio', 'titulo anuncio', 'nome do anuncio']);
-      const idxVariation = getIndex(['variacao', 'cor', 'tamanho']);
-      const idxUnitPrice = getIndex(['preco unitario', 'valor unitario', 'preco unitario de venda']);
-      const idxAdType = getIndex(['tipo de anuncio', 'tipo anuncio', 'tipo_anuncio']);
-      const idxInvoice = getIndex(['nf-e', 'nota fiscal', 'nfe']);
-      const idxBuyerName = getIndex(['dados pessoais', 'comprador', 'nome do comprador', 'cliente']);
-      const idxBuyerDoc = getIndex(['documento', 'cpf', 'cnpj', 'tipo e numero do documento']);
-      const idxAddress = getIndex(['endereco', 'rua', 'cep']);
-      const idxShipMethod = getIndex(['forma de entrega', 'metodo de entrega', 'tipo de envio']);
-      const idxDateGo = getIndex(['data a caminho', 'data_caminho']);
-      const idxDateDel = getIndex(['data de entrega', 'data_entrega']);
-      const idxCarrier = getIndex(['transportador', 'transportadora', 'logistica']);
-      const idxTrackNum = getIndex(['numero de rastreamento', 'codigo de rastreio', 'rastreamento']);
-      const idxTrackUrl = getIndex(['url de acompanhamento', 'link de rastreio', 'url_rastreio']);
-      const idxClaimOpen = getIndex(['reclamacao aberta', 'reclamacao_aberta']);
-      const idxClaimClose = getIndex(['reclamacao encerrada', 'reclamacao_encerrada']);
-      const idxMediation = getIndex(['em mediacao', 'mediacao']);
-
-      // Validar se achamos pelo menos colunas básicas essenciais como ID ou Anúncio
-      if (idxId === -1 && idxAdTitle === -1) {
-        setParseError('Não conseguimos identificar os cabeçalhos das colunas Mercado Livre. Verifique se copiou a tabela inteira com os títulos.');
-        return false;
       }
 
-      const cleanNum = (val: string) => {
-        if (!val) return 0;
-        // Limpar pontos de milhar, trocar vírgula por ponto, remover R$ e espaços
-        let clean = val.replace(/r\$\s?/i, '').trim();
-        // Se contiver ponto e vírgula como separadores decimais (ex: 2.450,50 ou -2,47)
-        if (clean.includes('.') && clean.includes(',')) {
-          clean = clean.replace(/\./g, '').replace(',', '.');
-        } else if (clean.includes(',')) {
-          clean = clean.replace(',', '.');
-        }
-        const num = parseFloat(clean);
-        return isNaN(num) ? 0 : num;
-      };
+      if (!rawId && !rawTitle && !rawRevenue && !rawSku) continue;
 
-      const cleanBool = (val: string) => {
-        if (!val) return false;
-        const v = val.toLowerCase().trim();
-        return v === 'sim' || v === 'yes' || v === 'true' || v === '1' || v === 'autorizada';
-      };
+      importedRecords.push({
+        id: rawId || `ml_v_${i}`,
+        dateStr: idxDate !== -1 && row[idxDate] ? cleanStr(row[idxDate]) : new Date().toLocaleDateString('pt-BR'),
+        status: idxStatus !== -1 && row[idxStatus] ? cleanStr(row[idxStatus]) : 'Entregue',
+        statusDescription: idxStatusDesc !== -1 && row[idxStatusDesc] ? cleanStr(row[idxStatusDesc]) : 'Chegou',
+        multiProduct: idxMulti !== -1 ? cleanBool(row[idxMulti]) : false,
+        isKit: idxKit !== -1 ? cleanBool(row[idxKit]) : false,
+        units: idxUnits !== -1 ? (parseInt(cleanStr(row[idxUnits]), 10) || 1) : 1,
+        productRevenue: rawRevenue,
+        surchargeRevenue: idxSurcharge !== -1 ? cleanNum(row[idxSurcharge]) : 0,
+        installmentFee: idxInstallment !== -1 ? cleanNum(row[idxInstallment]) : 0,
+        saleFeeAndTaxes: idxSaleFee !== -1 ? cleanNum(row[idxSaleFee]) : 0,
+        shippingRevenue: idxShipRevenue !== -1 ? cleanNum(row[idxShipRevenue]) : 0,
+        shippingFee: idxShipFee !== -1 ? cleanNum(row[idxShipFee]) : 0,
+        shippingWeightCost: idxWeightCost !== -1 ? cleanNum(row[idxWeightCost]) : 0,
+        shippingDiffCost: idxDiffCost !== -1 ? cleanNum(row[idxDiffCost]) : 0,
+        discountsAndBonuses: idxDiscount !== -1 ? cleanNum(row[idxDiscount]) : 0,
+        refundsAndCancellations: idxRefund !== -1 ? cleanNum(row[idxRefund]) : 0,
+        totalBrl: idxTotal !== -1 ? cleanNum(row[idxTotal]) : 0,
+        billingMonth: idxBillingMonth !== -1 ? cleanStr(row[idxBillingMonth]) : 'N/A',
+        isAdSale: idxAdSale !== -1 ? cleanBool(row[idxAdSale]) : false,
+        adId: idxAdId !== -1 ? cleanStr(row[idxAdId]) : '',
+        adTitle: rawTitle || (rawSku ? `SKU: ${rawSku}` : 'Produto Mercado Livre'),
+        variation: idxVariation !== -1 ? cleanStr(row[idxVariation]) : 'Padrão',
+        adUnitPrice: idxUnitPrice !== -1 ? cleanNum(row[idxUnitPrice]) : 0,
+        adType: idxAdType !== -1 ? cleanStr(row[idxAdType]) : 'Clássico',
+        invoiceStatus: idxInvoice !== -1 ? cleanStr(row[idxInvoice]) : 'Não emitida',
+        buyerName: idxBuyerName !== -1 ? cleanStr(row[idxBuyerName]) : 'Comprador Anônimo',
+        buyerDocument: idxBuyerDoc !== -1 ? cleanStr(row[idxBuyerDoc]) : '',
+        buyerAddress: idxAddress !== -1 ? cleanStr(row[idxAddress]) : 'Endereço não disponível',
+        shippingMethod: idxShipMethod !== -1 ? cleanStr(row[idxShipMethod]) : 'Mercado Envios',
+        shippingDateGo: idxDateGo !== -1 ? cleanStr(row[idxDateGo]) : '',
+        shippingDateDelivery: idxDateDel !== -1 ? cleanStr(row[idxDateDel]) : '',
+        carrier: idxCarrier !== -1 ? cleanStr(row[idxCarrier]) : 'Mercado Envios',
+        trackingNumber: idxTrackNum !== -1 ? cleanStr(row[idxTrackNum]) : '',
+        trackingUrl: idxTrackUrl !== -1 ? cleanStr(row[idxTrackUrl]) : '',
+        isClaimOpen: idxClaimOpen !== -1 ? cleanBool(row[idxClaimOpen]) : false,
+        isClaimClosed: idxClaimClose !== -1 ? cleanBool(row[idxClaimClose]) : false,
+        isInMediation: idxMediation !== -1 ? cleanBool(row[idxMediation]) : false,
+        sku: rawSku
+      });
+    }
 
-      const importedRecords: MLImportRecord[] = [];
-
-      for (let i = 1; i < lines.length; i++) {
-        const row = parseCSVLine(lines[i], delimiter);
-        if (row.length < 2 || !row[idxId === -1 ? 0 : idxId]) continue;
-
-        importedRecords.push({
-          id: idxId !== -1 ? row[idxId] : `ml_v_${i}`,
-          dateStr: idxDate !== -1 ? row[idxDate] : new Date().toLocaleDateString('pt-BR'),
-          status: idxStatus !== -1 ? row[idxStatus] : 'Entregue',
-          statusDescription: idxStatusDesc !== -1 ? row[idxStatusDesc] : 'Chegou',
-          multiProduct: idxMulti !== -1 ? cleanBool(row[idxMulti]) : false,
-          isKit: idxKit !== -1 ? cleanBool(row[idxKit]) : false,
-          units: idxUnits !== -1 ? parseInt(row[idxUnits], 10) || 1 : 1,
-          productRevenue: idxProductRevenue !== -1 ? cleanNum(row[idxProductRevenue]) : 0,
-          surchargeRevenue: idxSurcharge !== -1 ? cleanNum(row[idxSurcharge]) : 0,
-          installmentFee: idxInstallment !== -1 ? cleanNum(row[idxInstallment]) : 0,
-          saleFeeAndTaxes: idxSaleFee !== -1 ? cleanNum(row[idxSaleFee]) : 0,
-          shippingRevenue: idxShipRevenue !== -1 ? cleanNum(row[idxShipRevenue]) : 0,
-          shippingFee: idxShipFee !== -1 ? cleanNum(row[idxShipFee]) : 0,
-          shippingWeightCost: idxWeightCost !== -1 ? cleanNum(row[idxWeightCost]) : 0,
-          shippingDiffCost: idxDiffCost !== -1 ? cleanNum(row[idxDiffCost]) : 0,
-          discountsAndBonuses: idxDiscount !== -1 ? cleanNum(row[idxDiscount]) : 0,
-          refundsAndCancellations: idxRefund !== -1 ? cleanNum(row[idxRefund]) : 0,
-          totalBrl: idxTotal !== -1 ? cleanNum(row[idxTotal]) : 0,
-          billingMonth: idxBillingMonth !== -1 ? row[idxBillingMonth] : 'N/A',
-          isAdSale: idxAdSale !== -1 ? cleanBool(row[idxAdSale]) : false,
-          adId: idxAdId !== -1 ? row[idxAdId] : '',
-          adTitle: idxAdTitle !== -1 ? row[idxAdTitle] : 'Produto Mercado Livre',
-          variation: idxVariation !== -1 ? row[idxVariation] : 'Padrão',
-          adUnitPrice: idxUnitPrice !== -1 ? cleanNum(row[idxUnitPrice]) : 0,
-          adType: idxAdType !== -1 ? row[idxAdType] : 'Clássico',
-          invoiceStatus: idxInvoice !== -1 ? row[idxInvoice] : 'Não emitida',
-          buyerName: idxBuyerName !== -1 ? row[idxBuyerName] : 'Comprador Anônimo',
-          buyerDocument: idxBuyerDoc !== -1 ? row[idxBuyerDoc] : '',
-          buyerAddress: idxAddress !== -1 ? row[idxAddress] : 'Endereço não disponível',
-          shippingMethod: idxShipMethod !== -1 ? row[idxShipMethod] : 'Mercado Envios',
-          shippingDateGo: idxDateGo !== -1 ? row[idxDateGo] : '',
-          shippingDateDelivery: idxDateDel !== -1 ? row[idxDateDel] : '',
-          carrier: idxCarrier !== -1 ? row[idxCarrier] : 'Mercado Envios',
-          trackingNumber: idxTrackNum !== -1 ? row[idxTrackNum] : '',
-          trackingUrl: idxTrackUrl !== -1 ? row[idxTrackUrl] : '',
-          isClaimOpen: idxClaimOpen !== -1 ? cleanBool(row[idxClaimOpen]) : false,
-          isClaimClosed: idxClaimClose !== -1 ? cleanBool(row[idxClaimClose]) : false,
-          isInMediation: idxMediation !== -1 ? cleanBool(row[idxMediation]) : false,
-          sku: idxSku !== -1 ? row[idxSku] : ''
-        });
-      }
-
-      if (importedRecords.length === 0) {
-        setParseError('Nenhuma linha de venda válida foi identificada.');
-        return false;
-      }
-
-      onImportRecords(importedRecords);
-      setImportSuccess(`Sucesso! ${importedRecords.length} transações do Mercado Livre importadas e integradas com sucesso.`);
-      setPasteArea('');
-      return true;
-    } catch (err: any) {
-      console.error(err);
-      setParseError(`Erro crítico no parser de planilha: ${err.message || err}`);
+    if (importedRecords.length === 0) {
+      setParseError('Nenhuma linha de venda válida foi identificada.');
       return false;
     }
+
+    onImportRecords(importedRecords);
+    setImportSuccess(`Sucesso! ${importedRecords.length} transações do Mercado Livre importadas e integradas com sucesso.`);
+    setPasteArea('');
+    return true;
+  };
+
+  const parseTextToMatrix = (text: string): any[][] => {
+    if (!text || !text.trim()) return [];
+    const lines = text.split(/\r?\n/).filter(line => line.trim() !== '');
+    if (lines.length === 0) return [];
+
+    let delimiter = '\t';
+    const sample = lines.slice(0, 10).join('\n');
+    if (sample.includes('\t')) delimiter = '\t';
+    else if (sample.includes(';')) delimiter = ';';
+    else if (sample.includes(',')) delimiter = ',';
+
+    const parseLine = (lineStr: string, delim: string): string[] => {
+      const res: string[] = [];
+      let curr = '';
+      let inQuotes = false;
+      for (let i = 0; i < lineStr.length; i++) {
+        const char = lineStr[i];
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === delim && !inQuotes) {
+          res.push(curr.trim());
+          curr = '';
+        } else {
+          curr += char;
+        }
+      }
+      res.push(curr.trim());
+      return res.map(cell => cell.replace(/^"|"$/g, '').trim());
+    };
+
+    return lines.map(line => parseLine(line, delimiter));
+  };
+
+  const handleParse = (text: string): boolean => {
+    const matrix = parseTextToMatrix(text);
+    return handleMatrixParse(matrix);
   };
 
   const handleFile = (file: File) => {
@@ -271,23 +370,25 @@ export default function MLImport({
           const workbook = XLSX.read(data, { type: 'array' });
           const sheetName = workbook.SheetNames[0];
           const sheet = workbook.Sheets[sheetName];
-          const csvText = XLSX.utils.sheet_to_csv(sheet);
-          handleParse(csvText);
+          const rawMatrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
+          handleMatrixParse(rawMatrix);
         } catch (err: any) {
-          console.error(err);
+          console.error('Erro no parser Excel:', err);
           setParseError(`Erro ao processar planilha Excel: ${err.message || err}`);
         }
       };
+      reader.onerror = () => {
+        setParseError('Falha ao ler o arquivo selecionado.');
+      };
       reader.readAsArrayBuffer(file);
     } else {
-      // É um arquivo de texto (CSV/TXT). Vamos tentar ler como UTF-8 primeiro
       const readWithEncoding = (enc: string) => {
         const reader = new FileReader();
         reader.onload = (event) => {
           const text = event.target?.result as string;
-          const parsedSuccessfully = handleParse(text);
-          if (!parsedSuccessfully && enc === 'UTF-8') {
-            // Se falhou no UTF-8, tentar ler como ISO-8859-1 (Windows-1252)
+          const matrix = parseTextToMatrix(text);
+          const success = handleMatrixParse(matrix);
+          if (!success && enc === 'UTF-8') {
             readWithEncoding('ISO-8859-1');
           }
         };
@@ -323,6 +424,7 @@ export default function MLImport({
     if (e.target.files && e.target.files[0]) {
       handleFile(e.target.files[0]);
     }
+    e.target.value = '';
   };
 
   // Consolidação de Métricas do Mercado Livre
@@ -361,7 +463,8 @@ export default function MLImport({
       const saleFee = Math.abs(r.saleFeeAndTaxes);
       const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
       const discount = Math.abs(r.discountsAndBonuses || 0);
-      netProfitML += (r.productRevenue - saleFee - shippingCost - discount + (r.shippingRevenue || 0));
+      const taxML = r.productRevenue * 0.04;
+      netProfitML += (r.productRevenue - saleFee - shippingCost - taxML - discount + (r.shippingRevenue || 0));
       
       if (r.isAdSale) {
         totalAdSales += r.productRevenue;
@@ -703,11 +806,21 @@ export default function MLImport({
               </div>
 
               {parseError && (
-                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3">
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3 animate-fade-in">
                   <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
                   <div className="space-y-1">
                     <p className="text-xs font-bold text-red-400">Falha ao processar tabela</p>
                     <p className="text-[11px] text-white/60 leading-relaxed">{parseError}</p>
+                  </div>
+                </div>
+              )}
+
+              {importSuccess && (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-xl p-4 flex items-start gap-3 animate-fade-in">
+                  <Check className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <p className="text-xs font-bold text-emerald-400">Importação Concluída</p>
+                    <p className="text-[11px] text-white/60 leading-relaxed">{importSuccess}</p>
                   </div>
                 </div>
               )}

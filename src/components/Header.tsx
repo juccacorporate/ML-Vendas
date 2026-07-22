@@ -7,6 +7,8 @@ import { useState } from 'react';
 import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut, Calculator } from 'lucide-react';
 import MLCalculatorModal from './MLCalculatorModal';
 
+import { Product } from '../types';
+
 interface HeaderProps {
   activeTab: string;
   setActiveTab: (tab: string) => void;
@@ -17,6 +19,7 @@ interface HeaderProps {
   isFetchingFromCloud?: boolean;
   cloudSyncError?: string | null;
   onLogout?: () => void;
+  products?: Product[];
 }
 
 export default function Header({
@@ -28,7 +31,8 @@ export default function Header({
   isCloudSyncing = false,
   isFetchingFromCloud = false,
   cloudSyncError = null,
-  onLogout
+  onLogout,
+  products = []
 }: HeaderProps) {
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
 

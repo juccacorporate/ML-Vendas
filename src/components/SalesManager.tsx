@@ -35,6 +35,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   });
   const [discount, setDiscount] = useState<number>(0);
   const [formError, setFormError] = useState<string | null>(null);
+  const [completeSuccessMsg, setCompleteSuccessMsg] = useState<string | null>(null);
   const [cancellingSaleId, setCancellingSaleId] = useState<string | null>(null);
 
   // Novos Estados: Personalização de Envio (Transportadora vs Full) e Taxas Customizadas
@@ -101,6 +102,16 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setEditLossReason(sale.lossReason || '');
     setEditMlSaleId(sale.mlSaleId || '');
     setIsEditModalOpen(true);
+  };
+
+  const handleCompleteWithFeedback = (saleId: string, pName: string) => {
+    if (onCompleteSale) {
+      onCompleteSale(saleId);
+      setCompleteSuccessMsg(`A venda de "${pName}" foi baixada/concluída manualmente! Os valores migraram do Previsto para o Lucro Realizado. 🚀`);
+      setTimeout(() => {
+        setCompleteSuccessMsg(null);
+      }, 7000);
+    }
   };
 
   const handleSaveEdit = (e: React.FormEvent) => {
@@ -482,11 +493,12 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                   </div>
 
                   <div className="bg-[#1a1a1a] p-3 rounded-xl border border-white/5">
-                    <p className="text-[10px] text-white/50 font-bold uppercase">Encargos Totais ML</p>
+                    <p className="text-[10px] text-white/50 font-bold uppercase">Encargos Totais ML + Imposto</p>
                     <p className="text-sm font-extrabold text-red-400 mt-0.5">
                       {formatCurrency(
                         manualMlFee * quantity + 
-                        (shippingCostType === 'unit' ? customShipping * quantity : customShipping)
+                        (shippingCostType === 'unit' ? customShipping * quantity : customShipping) +
+                        ((customSalePrice * quantity) * 0.04)
                       )}
                     </p>
                   </div>
@@ -497,6 +509,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       {formatCurrency(
                         (customSalePrice - selectedProduct.purchasePrice - manualMlFee) * quantity - 
                         (shippingCostType === 'unit' ? customShipping * quantity : customShipping) -
+                        ((customSalePrice * quantity) * 0.04) -
                         discount
                       )}
                     </p>
@@ -614,6 +627,12 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
       {/* Histórico Consolidado de Transações */}
       <div className="bg-[#141414] rounded-2xl border border-white/5 shadow-md overflow-hidden">
+        {completeSuccessMsg && (
+          <div className="mx-5 mt-4 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl text-emerald-400 text-xs font-bold flex items-center gap-2.5 animate-fadeIn">
+            <span className="bg-emerald-500 text-black px-1.5 py-0.5 rounded text-[10px] font-black uppercase shrink-0">BAIXA CONCLUÍDA</span>
+            <span>{completeSuccessMsg}</span>
+          </div>
+        )}
         <div className="p-5 border-b border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div>
             <h3 className="text-base font-light text-white">Histórico de Transações de Venda</h3>
@@ -824,7 +843,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                         )}
                       </td>
 
-                      {/* Comissão + Frete */}
+                      {/* Comissão + Frete + Imposto */}
                       <td className="py-4 px-4 text-center text-red-400 font-mono">
                         {sale.status === 'refunded' ? (
                           <div className="flex flex-col items-center">
@@ -833,10 +852,11 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                           </div>
                         ) : (
                           <>
-                            <span className="font-bold">-{formatCurrency(totalFees)}</span>
+                            <span className="font-bold">-{formatCurrency(totalFees + (sale.salePrice * sale.quantity * 0.04))}</span>
                             <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
                               <p>Taxa ML: {formatCurrency(sale.mlFee)}</p>
                               <p>Frete: {formatCurrency(sale.shippingCost)}</p>
+                              <p className="text-blue-400 font-semibold">Imposto (4%): {formatCurrency(sale.salePrice * sale.quantity * 0.04)}</p>
                               {sale.discount !== undefined && sale.discount > 0 && (
                                 <p className="text-red-400 font-bold">Desconto/Campanha: {formatCurrency(sale.discount)}</p>
                               )}
@@ -942,9 +962,10 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
                           {isPending && onCompleteSale && (
                             <button
-                              onClick={() => onCompleteSale(sale.id)}
-                              className="bg-emerald-550/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
-                              title="Concluir Venda Manualmente 🚀"
+                              onClick={() => handleCompleteWithFeedback(sale.id, product ? product.name : sale.productName)}
+                              className="bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
+                              title="Concluir Venda Manualmente (Dar Baixa) 🚀"
+                              id={`complete-sale-btn-${sale.id}`}
                             >
                               <ArrowRightCircle className="w-3.5 h-3.5" />
                             </button>
