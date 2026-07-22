@@ -20,6 +20,7 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
   const [salePrice, setSalePrice] = useState<number | ''>('');
   const [mlCategory, setMlCategory] = useState<'classic' | 'premium' | 'manual'>('classic');
   const [manualMlFeePercent, setManualMlFeePercent] = useState<number | ''>(12);
+  const [fixedFee, setFixedFee] = useState<number | ''>(0); // Taxa fixa manual (padrão 0)
 
   // Price mode inputs
   const [desiredProfit, setDesiredProfit] = useState<number | ''>('');
@@ -33,11 +34,11 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
   const numTaxPercent = Number(taxPercent) || 0;
 
   const numManualPercent = Number(manualMlFeePercent) || 0;
+  const numFixedFee = Number(fixedFee) || 0;
 
   // Calculos
   let calculatedSalePrice = 0;
   let calculatedMlFee = 0;
-  let autoFixedFee = 0;
   let calculatedTax = 0;
   let grossProfit = 0;
   let netProfit = 0;
@@ -53,14 +54,7 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
   if (mode === 'profit') {
     calculatedSalePrice = numSale;
 
-    // Regra matemática oficial do Mercado Livre: produtos < R$ 79,00 possuem taxa fixa de R$ 6.00 por unidade
-    if (calculatedSalePrice > 0 && calculatedSalePrice < 79) {
-      autoFixedFee = 6.00;
-    } else {
-      autoFixedFee = 0.00;
-    }
-
-    calculatedMlFee = (calculatedSalePrice * percentRate) + autoFixedFee;
+    calculatedMlFee = (calculatedSalePrice * percentRate) + numFixedFee;
     calculatedTax = (calculatedSalePrice * taxRate);
     grossProfit = calculatedSalePrice - numPurchase;
     netProfit = grossProfit - numShipping - calculatedMlFee - calculatedTax;
@@ -69,24 +63,13 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
     const divider = 1 - percentRate - taxRate;
 
     if (divider > 0) {
-      // 1. Tenta calcular sem taxa fixa de R$ 6.00 (assumindo Preço >= R$79)
-      let s = (numDesiredProfit + numPurchase + numShipping) / divider;
-
-      // 2. Se a venda for menor que R$ 79,00, a taxa fixa de R$ 6.00 incide automaticamente
-      if (s > 0 && s < 79) {
-        autoFixedFee = 6.00;
-        s = (numDesiredProfit + numPurchase + numShipping + autoFixedFee) / divider;
-      } else {
-        autoFixedFee = 0.00;
-      }
-
+      const s = (numDesiredProfit + numPurchase + numShipping + numFixedFee) / divider;
       calculatedSalePrice = Math.max(0, s);
     } else {
       calculatedSalePrice = 0;
-      autoFixedFee = 0;
     }
 
-    calculatedMlFee = (calculatedSalePrice * percentRate) + autoFixedFee;
+    calculatedMlFee = (calculatedSalePrice * percentRate) + numFixedFee;
     calculatedTax = (calculatedSalePrice * taxRate);
     grossProfit = calculatedSalePrice - numPurchase;
     netProfit = numDesiredProfit;
@@ -264,37 +247,68 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
               onChange={e => setMlCategory(e.target.value as any)}
               className="w-full bg-black/40 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-white font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
             >
-              <option value="classic">Clássico (~12% + Taxa Fixa se &lt; R$79)</option>
-              <option value="premium">Premium (~17% + Taxa Fixa se &lt; R$79)</option>
               <option value="manual">Manual (Definir comissão e taxa fixa)</option>
+              <option value="classic">Clássico (12%)</option>
+              <option value="premium">Premium (17%)</option>
             </select>
           </div>
 
-          {/* Campos adicionais para cálculo Manual */}
-          {mlCategory === 'manual' && (
-            <div className="grid grid-cols-2 gap-3 p-3 bg-white/[0.02] border border-white/5 rounded-xl animate-in fade-in duration-200">
-              <div>
-                <label className="text-[9px] font-black text-white/40 block mb-1 uppercase tracking-widest">Comissão (%)</label>
-                <div className="relative">
-                  <input
-                    type="number"
-                    value={manualMlFeePercent}
-                    onChange={e => setManualMlFeePercent(e.target.value === '' ? '' : Number(e.target.value))}
-                    placeholder="12"
-                    className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 text-xs font-bold">%</span>
+          {/* Configuração de Comissão e Taxa Fixa */}
+          <div className="space-y-2.5 p-3 bg-white/[0.02] border border-white/5 rounded-xl animate-in fade-in duration-200">
+            <div className="grid grid-cols-2 gap-3">
+              {mlCategory === 'manual' ? (
+                <div>
+                  <label className="text-[9px] font-black text-white/50 block mb-1 uppercase tracking-widest">Comissão (%)</label>
+                  <div className="relative">
+                    <input
+                      type="number"
+                      value={manualMlFeePercent}
+                      onChange={e => setManualMlFeePercent(e.target.value === '' ? '' : Number(e.target.value))}
+                      placeholder="13"
+                      className="w-full bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
+                    />
+                    <span className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 text-xs font-bold">%</span>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div>
+                  <label className="text-[9px] font-black text-white/50 block mb-1 uppercase tracking-widest">Comissão (%)</label>
+                  <div className="bg-black/40 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white font-mono font-bold">
+                    {(percentRate * 100).toFixed(0)}%
+                  </div>
+                </div>
+              )}
+
+              {/* Valor da Tarifa/Comissão Calculado Automaticamente em R$ */}
               <div>
-                <label className="text-[9px] font-black text-white/40 block mb-1 uppercase tracking-widest">Taxa Fixa (Automático)</label>
-                <div className="bg-black/50 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-amber-400 font-mono font-bold flex items-center justify-between">
-                  <span>{formatCurrency(autoFixedFee)}</span>
-                  <span className="text-[8px] text-white/40 font-normal">{autoFixedFee > 0 ? '< R$79' : '≥ R$79'}</span>
+                <label className="text-[9px] font-black text-[#FFE600] block mb-1 uppercase tracking-widest flex items-center justify-between">
+                  <span>Tarifa (R$)</span>
+                  <span className="text-[8px] bg-[#FFE600]/20 text-[#FFE600] px-1 py-0.2 rounded font-bold">AUTO</span>
+                </label>
+                <div className="bg-[#FFE600]/10 border border-[#FFE600]/30 rounded-xl px-3 py-1.5 text-xs text-[#FFE600] font-mono font-black flex items-center justify-between">
+                  <span>{formatCurrency(calculatedSalePrice * percentRate)}</span>
+                  <span className="text-[8px] text-[#FFE600]/60 font-sans font-medium">({(percentRate * 100).toFixed(0)}%)</span>
                 </div>
               </div>
             </div>
-          )}
+
+            {/* Taxa Fixa Extra Opcional */}
+            <div className="pt-2 border-t border-white/5 flex items-center justify-between gap-3">
+              <label className="text-[9px] font-bold text-white/40 uppercase tracking-wider whitespace-nowrap">
+                + Taxa Fixa Extra (R$):
+              </label>
+              <div className="relative w-28">
+                <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/40 text-xs font-bold">R$</span>
+                <input
+                  type="number"
+                  value={fixedFee}
+                  onChange={e => setFixedFee(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="0.00"
+                  className="w-full bg-black/40 border border-white/10 rounded-xl pl-7 pr-2 py-1 text-xs text-white font-mono font-bold focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30"
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Resumos / Resultados */}
@@ -315,7 +329,7 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
           </div>
           
           <div className="flex justify-between items-center text-xs">
-            <span className="text-white/50 font-medium">Comissão ML + Frete</span>
+            <span className="text-white/50 font-medium">Comissão + Frete + Taxa</span>
             <span className="font-mono font-bold text-red-400">-{formatCurrency(calculatedMlFee + numShipping)}</span>
           </div>
 
@@ -338,12 +352,6 @@ export default function MLCalculatorModal({ isOpen, onClose }: MLCalculatorModal
               </span>
             </div>
           </div>
-          
-          {mlCategory !== 'manual' && calculatedSalePrice > 0 && calculatedSalePrice < 79 && (
-            <p className="text-[9px] text-white/30 italic text-center">
-              * Anúncios clássico/premium abaixo de R$ 79,00 possuem R$ 6,00 de tarifa fixa.
-            </p>
-          )}
         </div>
       </div>
     </div>
