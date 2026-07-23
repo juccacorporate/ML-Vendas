@@ -144,15 +144,17 @@ export default function App() {
         }
       }
 
-      let productName = matchingProd ? matchingProd.name : s.productName;
-      if (!productName || ['sim', 'não', 'nao', 'produto mercado livre'].includes(productName.trim().toLowerCase())) {
-        if (originalRecord && originalRecord.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(originalRecord.adTitle.trim().toLowerCase())) {
-          productName = originalRecord.adTitle;
-        } else if (originalRecord && originalRecord.sku && !['sim', 'não', 'nao'].includes(originalRecord.sku.trim().toLowerCase())) {
-          productName = originalRecord.sku;
-        } else {
-          productName = 'Produto Mercado Livre';
-        }
+      let productName = '';
+      if (originalRecord && originalRecord.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(originalRecord.adTitle.trim().toLowerCase())) {
+        productName = originalRecord.adTitle;
+      } else if (!isBadName) {
+        productName = cleanSaleProductName;
+      } else if (matchingProd) {
+        productName = matchingProd.name;
+      } else if (originalRecord && originalRecord.sku && !['sim', 'não', 'nao'].includes(originalRecord.sku.trim().toLowerCase())) {
+        productName = originalRecord.sku;
+      } else {
+        productName = 'Produto Mercado Livre';
       }
 
       let productId = matchingProd ? matchingProd.id : s.productId;
@@ -192,26 +194,24 @@ export default function App() {
 
       if (isMlSale || mlSaleId) {
         const idToSearch = (mlSaleId || s.id || '').split('_')[0];
-        const originalRecord = recordsToUse.find(r => {
-          if (r.id !== idToSearch) return false;
-          const adTitleLower = (r.adTitle || '').toLowerCase();
-          const pNameLower = (s.productName || '').toLowerCase();
-          
-          if (pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto')) {
-            return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
-          }
-          if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º') || pNameLower.includes('hrebos')) {
-            return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('90º') || adTitleLower.includes('hrebos') || adTitleLower.includes('90graus');
-          }
-          return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower) || normalizeName(adTitleLower).includes(normalizeName(pNameLower)) || normalizeName(pNameLower).includes(normalizeName(adTitleLower));
-        });
+        const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
         
         if (originalRecord) {
           mlFee = s.status === 'refunded' ? 0 : Math.abs(originalRecord.saleFeeAndTaxes);
-          shippingCost = s.status === 'refunded'
-            ? (Number(s.shippingCost) || (matchingProd ? matchingProd.shippingCost : 6.55) * quantity)
-            : (Math.abs(originalRecord.shippingFee) + Math.abs(originalRecord.shippingWeightCost) + Math.abs(originalRecord.shippingDiffCost));
+          const rawShipCost = Math.abs(originalRecord.shippingFee) + Math.abs(originalRecord.shippingWeightCost) + Math.abs(originalRecord.shippingDiffCost);
           shipRev = s.status === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
+          
+          if (s.status === 'refunded') {
+            shippingCost = Number(s.shippingCost) || (matchingProd ? matchingProd.shippingCost : 0) * quantity;
+          } else if (totalSaleValue < 79 && (!s.shippingType || s.shippingType !== 'full') && !s.customShippingCost) {
+            // Vendas < R$ 79 no Mercado Livre têm frete pago pelo comprador (exceto se o vendedor oferecer frete grátis)
+            shippingCost = Math.max(0, rawShipCost - shipRev);
+            if (shipRev === 0 && rawShipCost > 0) {
+              shippingCost = 0; // O comprador pagou o frete no checkout do Mercado Livre
+            }
+          } else {
+            shippingCost = rawShipCost;
+          }
           
           const taxAmount = totalSaleValue * 0.04;
           if (s.status === 'refunded') {
@@ -228,6 +228,11 @@ export default function App() {
             netProfit = -shippingCost;
             grossProfit = 0;
           } else {
+            if (totalSaleValue < 79 && (!s.shippingType || s.shippingType !== 'full') && !s.customShippingCost) {
+              if (shippingCost > 0 && shipRev === 0) {
+                shippingCost = 0; // Vendas < R$ 79 no Mercado Livre
+              }
+            }
             netProfit = totalSaleValue - mlFee - shippingCost - taxAmount + shipRev - totalCostValue;
             grossProfit = totalSaleValue - totalCostValue;
           }
@@ -671,19 +676,7 @@ export default function App() {
 
     if (updatedSale.isMlSale || updatedSale.mlSaleId) {
       const idToSearch = (updatedSale.mlSaleId || updatedSale.id || '').split('_')[0];
-      const originalRecord = mlRecords.find(r => {
-        if (r.id !== idToSearch) return false;
-        const adTitleLower = (r.adTitle || '').toLowerCase();
-        const pNameLower = (updatedSale.productName || '').toLowerCase();
-        
-        if (pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto')) {
-          return adTitleLower.includes('20 cm') || adTitleLower.includes('20cm') || adTitleLower.includes('curto') || adTitleLower.includes('20c');
-        }
-        if (pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º') || pNameLower.includes('hrebos')) {
-          return adTitleLower.includes('90') || adTitleLower.includes('90°') || adTitleLower.includes('90º') || adTitleLower.includes('hrebos') || adTitleLower.includes('90graus');
-        }
-        return adTitleLower.includes(pNameLower) || pNameLower.includes(adTitleLower) || normalizeName(adTitleLower).includes(normalizeName(pNameLower)) || normalizeName(pNameLower).includes(normalizeName(adTitleLower));
-      });
+      const originalRecord = mlRecords.find(r => r.id === idToSearch || updatedSale.id.startsWith(r.id));
       
       if (originalRecord) {
         shipRev = updatedSale.status === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
@@ -754,12 +747,8 @@ export default function App() {
           }
           r.adTitle = cleanTitle;
 
-          // 1. Identificar o produto correspondente no estoque (busca inteligente por SKU, adId, títulos ou palavras-chave)
+          // 1. Identificar se existe produto no estoque, mas preservando o título do anúncio do ML intacto
           let matchingProduct = findMatchingProduct(r, updatedProducts);
-          
-          if (matchingProduct) {
-            r.adTitle = matchingProduct.name;
-          }
 
           if (!matchingProduct) {
             // Se o produto não estava cadastrado no Estoque, cria automaticamente usando o título do anúncio real (NUNCA "Sim" ou "Não")
@@ -783,6 +772,11 @@ export default function App() {
             updatedProducts.push(autoProd);
             matchingProduct = autoProd;
           }
+
+          // Definir o nome exato do produto da venda baseado no Título do Anúncio do Mercado Livre
+          const finalSaleTitle = (r.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(r.adTitle.trim().toLowerCase()))
+            ? r.adTitle
+            : matchingProduct.name;
           
           // Formatar data da venda (de "6 de julho de 2026 20:02" para "2026-07-06")
           let formattedDate = new Date().toISOString().split('T')[0];
@@ -844,9 +838,20 @@ export default function App() {
           const totalCostValue = matchingProduct.purchasePrice * r.units;
           const discount = r.discountsAndBonuses || 0;
           const mlFee = saleStatus === 'refunded' ? 0 : Math.abs(r.saleFeeAndTaxes);
-          const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 6.55;
-          const shippingCost = saleStatus === 'refunded' ? defaultShipping * r.units : Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+          const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
+          const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
           const shippingRevenue = saleStatus === 'refunded' ? 0 : Math.abs(r.shippingRevenue || 0);
+          
+          let shippingCost = rawShippingFee;
+          if (saleStatus === 'refunded') {
+            shippingCost = defaultShipping * r.units;
+          } else if (totalSaleValue < 79) {
+            // No Mercado Livre, vendas abaixo de R$ 79,00 têm o frete custeado pelo COMPRADOR
+            shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
+            if (shippingRevenue === 0 && rawShippingFee > 0) {
+              shippingCost = 0; // O comprador pagou o frete no checkout
+            }
+          }
           
           const grossProfit = saleStatus === 'refunded' ? 0 : totalSaleValue - totalCostValue;
           const netProfit = saleStatus === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost + shippingRevenue - totalCostValue);
@@ -891,7 +896,7 @@ export default function App() {
               ...oldSale,
               id: uniqueSaleId,
               productId: matchingProduct.id,
-              productName: matchingProduct.name,
+              productName: finalSaleTitle,
               status: saleStatus,
               quantity: r.units,
               salePrice: r.units > 0 ? Number((r.productRevenue / r.units).toFixed(2)) : r.productRevenue,
@@ -928,7 +933,7 @@ export default function App() {
             updatedSales.push({
               id: uniqueSaleId,
               productId: matchingProduct.id,
-              productName: matchingProduct.name,
+              productName: finalSaleTitle,
               quantity: r.units,
               salePrice: r.productRevenue / r.units,
               purchasePrice: matchingProduct.purchasePrice,

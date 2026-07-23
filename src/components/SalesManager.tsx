@@ -247,7 +247,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     filteredSales.forEach(s => {
       if (s.status !== 'refunded') {
         const product = products.find(p => p.id === s.productId);
-        const name = product ? product.name : s.productName;
+        const name = (s.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(s.productName.toLowerCase())) ? s.productName : (product ? product.name : s.productName);
         counts[name] = (counts[name] || 0) + s.quantity;
       }
     });
@@ -760,7 +760,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       <td className="py-4 px-4">
                         <div className="flex items-center gap-2">
                           <div>
-                            <p className="text-white/90 font-bold">{product ? product.name : sale.productName}</p>
+                            <p className="text-white/90 font-bold">{(sale.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(sale.productName.toLowerCase())) ? sale.productName : (product ? product.name : sale.productName)}</p>
                             
                             {/* Badges de Envio e Diferença de Margem em relação ao planejado */}
                             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
@@ -962,7 +962,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
                           {isPending && onCompleteSale && (
                             <button
-                              onClick={() => handleCompleteWithFeedback(sale.id, product ? product.name : sale.productName)}
+                              onClick={() => handleCompleteWithFeedback(sale.id, (sale.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(sale.productName.toLowerCase())) ? sale.productName : (product ? product.name : sale.productName))}
                               className="bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-400 p-1.5 rounded-lg transition-colors cursor-pointer flex items-center justify-center"
                               title="Concluir Venda Manualmente (Dar Baixa) 🚀"
                               id={`complete-sale-btn-${sale.id}`}

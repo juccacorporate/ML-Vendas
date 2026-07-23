@@ -219,7 +219,7 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
     }
   }
 
-  if (maxScore >= 2) {
+  if (maxScore >= 4) {
     return bestMatch;
   }
 

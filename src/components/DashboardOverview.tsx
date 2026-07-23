@@ -166,7 +166,7 @@ export default function DashboardOverview({
   // Agrupar custos por produto (SKU / linha) para exibição detalhada no card
   const costsByProduct = filteredAllSales.reduce((acc: { [key: string]: { productName: string; quantity: number; mlFee: number; shippingCost: number; total: number } }, s) => {
     const product = products.find(p => p.id === s.productId);
-    const displayName = product ? product.name : s.productName;
+    const displayName = (s.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(s.productName.toLowerCase())) ? s.productName : (product ? product.name : s.productName);
     const key = displayName;
     if (!acc[key]) {
       acc[key] = {
@@ -558,7 +558,7 @@ export default function DashboardOverview({
                 <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                   {filteredPendingSales.map(s => {
                     const product = products.find(p => p.id === s.productId);
-                    const displayName = product ? product.name : s.productName;
+                    const displayName = (s.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(s.productName.toLowerCase())) ? s.productName : (product ? product.name : s.productName);
                     return (
                       <div key={s.id} className="flex justify-between items-center text-[10.5px] font-medium leading-relaxed">
                         <div className="flex items-center gap-2 min-w-0">
@@ -777,7 +777,7 @@ export default function DashboardOverview({
                 <div className="max-h-[85px] overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                   {filteredAllSales.filter(s => s.status !== 'refunded').map(s => {
                     const product = products.find(p => p.id === s.productId);
-                    const displayName = product ? product.name : s.productName;
+                    const displayName = (s.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(s.productName.toLowerCase())) ? s.productName : (product ? product.name : s.productName);
                     const taxVal = (s.salePrice * s.quantity) * 0.04;
                     return (
                       <div key={s.id} className="flex justify-between items-center text-[10.5px] font-medium leading-relaxed">
@@ -827,7 +827,7 @@ export default function DashboardOverview({
                   {/* Estornos / Cancelamentos */}
                   {filteredRefundedSales.map(s => {
                     const product = products.find(p => p.id === s.productId);
-                    const displayName = product ? product.name : s.productName;
+                    const displayName = (s.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(s.productName.toLowerCase())) ? s.productName : (product ? product.name : s.productName);
                     return (
                       <div key={s.id} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
                         <div className="flex justify-between text-[10.5px] font-medium leading-relaxed">
@@ -845,7 +845,7 @@ export default function DashboardOverview({
                   {/* Vendas com Margem Negativa */}
                   {negativeMarginSales.map(s => {
                     const product = products.find(p => p.id === s.productId);
-                    const displayName = product ? product.name : s.productName;
+                    const displayName = (s.productName && !['sim', 'não', 'nao', 'produto mercado livre'].includes(s.productName.toLowerCase())) ? s.productName : (product ? product.name : s.productName);
                     const lossAmount = Math.abs(s.netProfit);
                     return (
                       <div key={s.id} className="border-b border-white/5 pb-1.5 last:border-0 last:pb-0">
