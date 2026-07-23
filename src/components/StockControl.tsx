@@ -368,9 +368,9 @@ export default function StockControl({
                         {p.shippingCost > 0 ? formatCurrency(p.shippingCost) : 'Grátis'}
                       </td>
 
-                      {/* Estoque */}
+                      {/* Estoque (Inicial - Saídas = Atual) */}
                       <td className="py-4 px-4 text-center">
-                        <div className="inline-block">
+                        <div className="flex flex-col items-center gap-1">
                           <span className={`px-2.5 py-1 rounded text-xs font-bold font-mono block ${
                             currentStock === 0 
                               ? 'bg-red-500 text-white' 
@@ -378,15 +378,18 @@ export default function StockControl({
                               ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
                               : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                           }`}>
-                            {currentStock} un.
+                            {currentStock} un. (Atual)
                           </span>
-                          {totalSoldForProd > 0 ? (
-                            <span className="text-[9px] text-amber-400 font-bold mt-1 block">
-                              -{totalSoldForProd} vendida{totalSoldForProd > 1 ? 's' : ''}
-                            </span>
-                          ) : (
-                            <span className="text-[9px] text-white/40 mt-1 block">Min: {p.minimalStock}</span>
-                          )}
+                          <div className="text-[9.5px] text-white/50 font-medium leading-tight flex flex-col items-center">
+                            <span>Inicial: <strong className="text-white/80 font-mono">{p.stock}</strong> un.</span>
+                            {totalSoldForProd > 0 ? (
+                              <span className="text-amber-400 font-bold">
+                                Saídas: -{totalSoldForProd} un.
+                              </span>
+                            ) : (
+                              <span className="text-white/40">Saídas: 0 un.</span>
+                            )}
+                          </div>
                         </div>
                       </td>
 

@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product, Sale } from '../types';
-import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease } from '../utils';
+import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock } from '../utils';
 import { ShoppingCart, Plus, Search, Calendar, Landmark, Info, Trash2, ArrowRightCircle, AlertCircle, TrendingUp, Clock, Edit3, X } from 'lucide-react';
 
 interface SalesManagerProps {
@@ -180,8 +180,9 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setFormError(null);
     if (!selectedProduct || quantity <= 0) return;
 
-    if (selectedProduct.stock < quantity) {
-      setFormError(`Quantidade indisponível em estoque! Estoque atual: ${selectedProduct.stock} unidades.`);
+    const currentStock = calculateCurrentStock(selectedProduct, sales);
+    if (currentStock < quantity) {
+      setFormError(`Quantidade indisponível em estoque! Estoque atual disponível: ${currentStock} unidades.`);
       return;
     }
 
@@ -294,11 +295,14 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                   className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 cursor-pointer"
                 >
                   <option value="" className="bg-[#121212] text-white">-- Escolha um produto do estoque --</option>
-                  {products.map(p => (
-                    <option key={p.id} value={p.id} disabled={p.stock === 0} className="bg-[#121212] text-white">
-                      {p.name} (SKU: {p.sku}) — Estoque: {p.stock} un. {p.stock === 0 ? '[ESGOTADO]' : ''}
-                    </option>
-                  ))}
+                  {products.map(p => {
+                    const cStock = calculateCurrentStock(p, sales);
+                    return (
+                      <option key={p.id} value={p.id} disabled={cStock === 0} className="bg-[#121212] text-white">
+                        {p.name} (SKU: {p.sku}) — Inicial: {p.stock} un. | Atual: {cStock} un. {cStock === 0 ? '[ESGOTADO]' : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -311,12 +315,12 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       type="number"
                       required
                       min="1"
-                      max={selectedProduct.stock}
+                      max={calculateCurrentStock(selectedProduct, sales)}
                       value={quantity}
-                      onChange={(e) => setQuantity(Math.min(Number(e.target.value), selectedProduct.stock))}
+                      onChange={(e) => setQuantity(Math.min(Number(e.target.value), calculateCurrentStock(selectedProduct, sales)))}
                       className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
                     />
-                    <p className="text-[10px] text-white/40 mt-1 font-medium">Limite disponível: {selectedProduct.stock} un.</p>
+                    <p className="text-[10px] text-white/40 mt-1 font-medium">Limite disponível em estoque: {calculateCurrentStock(selectedProduct, sales)} un. (Inicial: {selectedProduct.stock} un.)</p>
                   </div>
 
                   {/* Preço de Venda Praticado */}

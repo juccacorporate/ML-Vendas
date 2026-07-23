@@ -46,13 +46,14 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
     productSheet.clear();
     var prodHeaders = [
       "ID Produto", "Nome Produto", "SKU", "Preço de Compra", "Preço de Venda", 
-      "Estoque", "Estoque Mínimo", "Data de Entrada", "Categoria", "Tipo Anuncio ML", 
+      "Estoque Inicial", "Saídas", "Estoque Atual", "Estoque Mínimo", "Data de Entrada", "Categoria", "Tipo Anuncio ML", 
       "Comissão Customizada %", "Frete Padrão", "Diferença", "Taxa ML", "Dias Parados"
     ];
     productSheet.appendRow(prodHeaders);
     
     if (payload.products && payload.products.length > 0) {
-      var prodRows = payload.products.map(function(p) {
+      var prodRows = payload.products.map(function(p, index) {
+        var rNum = index + 2;
         var diff = p.salePrice - p.purchasePrice;
         
         // Calcular Taxa ML aproximada para visualização estética no Sheets
@@ -76,6 +77,8 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
           p.purchasePrice, 
           p.salePrice, 
           p.stock, 
+          '=IF(A' + rNum + '<>"", SUMIF(Vendas!B:B, A' + rNum + ', Vendas!D:D), SUMIF(Vendas!C:C, B' + rNum + ', Vendas!D:D))',
+          '=F' + rNum + '-G' + rNum,
           p.minimalStock || 0, 
           p.addedDate, 
           p.category || "Geral", 
@@ -267,7 +270,7 @@ function doGet(e) {
         var idxSku = headers.indexOf("SKU");
         var idxPurchase = headers.indexOf("Preço de Compra");
         var idxSale = headers.indexOf("Preço de Venda");
-        var idxStock = headers.indexOf("Estoque");
+        var idxStock = headers.indexOf("Estoque Inicial") !== -1 ? headers.indexOf("Estoque Inicial") : headers.indexOf("Estoque");
         var idxMinStock = headers.indexOf("Estoque Mínimo");
         var idxAddedDate = headers.indexOf("Data de Entrada");
         var idxCategory = headers.indexOf("Categoria");

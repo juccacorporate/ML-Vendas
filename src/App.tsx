@@ -588,17 +588,7 @@ export default function App() {
       status
     };
 
-    // Subtrair quantidade vendida do estoque automaticamente
-    setProducts(prev => prev.map(p => {
-      if (p.id === newSale.productId) {
-        return {
-          ...p,
-          stock: Math.max(0, p.stock - newSale.quantity)
-        };
-      }
-      return p;
-    }));
-
+    // Subtrair quantidade vendida do estoque: NÃO altera p.stock diretamente, pois o Estoque Atual é calculado dinamicamente (Estoque Inicial - Saídas)
     setSales(prev => [freshSale, ...prev]);
     setHasPendingWrite(true);
   };
@@ -607,16 +597,8 @@ export default function App() {
     const targetSale = sales.find(s => s.id === saleId);
     if (!targetSale) return;
 
-    // Devolver estoque correspondente ao produto original
-    setProducts(prev => prev.map(p => {
-      if (p.id === targetSale.productId) {
-        return {
-          ...p,
-          stock: p.stock + targetSale.quantity
-        };
-      }
-      return p;
-    }));
+    // Ao invés de deletar, atualiza o status para 'refunded', zera os lucros e venda, e salva o prejuízo extra e o motivo.
+    // O estorno automaticamente zera a dedução do Estoque Atual via calculateCurrentStock.
 
     // Ao invés de deletar, atualiza o status para 'refunded', zera os lucros e venda, e salva o prejuízo extra e o motivo
     setSales(prev => prev.map(s => {
@@ -635,35 +617,10 @@ export default function App() {
     setHasPendingWrite(true);
   };
 
-  // Editar Registro de Venda Concluído/Pendente/Cancelado com reajuste automático de estoque e lucros
+  // Editar Registro de Venda Concluído/Pendente/Cancelado
   const handleEditSale = (updatedSale: Sale) => {
     const oldSale = sales.find(s => s.id === updatedSale.id);
     if (!oldSale) return;
-
-    // 1. Reajustar estoque: se a venda antiga não era estornada, devolvemos a quantidade antiga.
-    // Se a nova venda não é estornada, subtraímos a nova quantidade.
-    // Caso contrário (se for estornada), a quantidade não é deduzida.
-    setProducts(prev => prev.map(p => {
-      let stockChange = 0;
-      
-      // Se a venda antiga deduziu estoque (não era estornada)
-      if (oldSale.status !== 'refunded' && p.id === oldSale.productId) {
-        stockChange += oldSale.quantity; // devolve ao estoque
-      }
-
-      // Se a venda atualizada vai deduzir estoque (não é estornada)
-      if (updatedSale.status !== 'refunded' && p.id === updatedSale.productId) {
-        stockChange -= updatedSale.quantity; // consome do estoque
-      }
-
-      if (stockChange !== 0) {
-        return {
-          ...p,
-          stock: Math.max(0, p.stock + stockChange)
-        };
-      }
-      return p;
-    }));
 
     // 2. Calcular lucro bruto e líquido recalculados com base em seus valores, descontando o desconto
     const totalSaleValue = updatedSale.salePrice * updatedSale.quantity;
@@ -870,28 +827,6 @@ export default function App() {
             // Se já existe, atualizamos os dados para refletir as mudanças de status, frete, produto e custo de compra
             const oldSale = updatedSales[existingSaleIdx];
             
-            // Reajustar estoque: se o status mudou para 'refunded', devolvemos a quantidade.
-            // Se mudou de 'refunded' para outro, subtraímos do estoque.
-            if (oldSale.status === 'refunded' && saleStatus !== 'refunded') {
-              // Diminui estoque
-              const pIdx = updatedProducts.findIndex(p => p.id === matchingProduct.id);
-              if (pIdx !== -1) {
-                updatedProducts[pIdx] = {
-                  ...updatedProducts[pIdx],
-                  stock: Math.max(0, updatedProducts[pIdx].stock - r.units)
-                };
-              }
-            } else if (oldSale.status !== 'refunded' && saleStatus === 'refunded') {
-              // Devolve estoque
-              const pIdx = updatedProducts.findIndex(p => p.id === matchingProduct.id);
-              if (pIdx !== -1) {
-                updatedProducts[pIdx] = {
-                  ...updatedProducts[pIdx],
-                  stock: updatedProducts[pIdx].stock + r.units
-                };
-              }
-            }
-            
             updatedSales[existingSaleIdx] = {
               ...oldSale,
               id: uniqueSaleId,
@@ -918,18 +853,7 @@ export default function App() {
               mlSaleId: r.id
             };
           } else {
-            // Se não existe, inserimos uma nova venda no histórico!
-            // E subtraímos do estoque (se não for cancelada)
-            if (saleStatus !== 'refunded') {
-              const pIdx = updatedProducts.findIndex(p => p.id === matchingProduct.id);
-              if (pIdx !== -1) {
-                updatedProducts[pIdx] = {
-                  ...updatedProducts[pIdx],
-                  stock: Math.max(0, updatedProducts[pIdx].stock - r.units)
-                };
-              }
-            }
-            
+            // Se não existe, inserimos uma nova venda no histórico
             updatedSales.push({
               id: uniqueSaleId,
               productId: matchingProduct.id,

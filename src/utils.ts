@@ -38,23 +38,24 @@ export function calculateCurrentStock(product: Product, sales: Sale[]): number {
   const totalSold = sales
     .filter(s => s.status !== 'refunded')
     .reduce((acc, s) => {
-      // 1. Correspondência exata por ID do produto
-      if (s.productId && s.productId === product.id) {
-        return acc + (s.quantity || 1);
+      // Se a venda já tem um produto associado, confia no ID para evitar duplicação cruzada
+      if (s.productId) {
+        if (s.productId === product.id) {
+          return acc + (s.quantity || 1);
+        }
+        return acc; // Não tenta buscar por nome se já está vinculada a outro produto!
       }
 
+      // 2. Fallback: Correspondência por nome exato (apenas se não houver productId)
       const sNameClean = (s.productName || '').trim();
       const normSaleName = normalizeName(sNameClean);
 
-      // 2. Correspondência por comparação inteligente de nome
       const isNameMatch = normSaleName.length > 0 && normProdName.length > 0 && (
-        normSaleName === normProdName ||
-        normSaleName.includes(normProdName) ||
-        normProdName.includes(normSaleName)
+        normSaleName === normProdName
       );
 
-      // 3. Correspondência por SKU
-      const isSkuMatch = prodSkuClean.length > 2 && sNameClean.toLowerCase().includes(prodSkuClean);
+      // 3. Fallback: Correspondência por SKU exato
+      const isSkuMatch = prodSkuClean.length > 2 && sNameClean.toLowerCase() === prodSkuClean;
 
       if (isNameMatch || isSkuMatch) {
         return acc + (s.quantity || 1);
