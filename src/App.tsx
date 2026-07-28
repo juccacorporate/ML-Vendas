@@ -5,7 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { Product, Sale, MLImportRecord, findMatchingProduct } from './types';
-import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName } from './utils';
+import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock } from './utils';
 import { Lock, Unlock, Key, LogOut } from 'lucide-react';
 
 // Importando componentes modulares
@@ -120,15 +120,13 @@ export default function App() {
       const cleanSaleProductName = (s.productName || '').trim();
       const isBadName = !cleanSaleProductName || ['sim', 'não', 'nao', 'produto mercado livre'].includes(cleanSaleProductName.toLowerCase());
 
-      // Encontrar produto correspondente por ID ou Nome para consistência absoluta e correção de desalinhamentos
-      let matchingProd: Product | undefined = sanitizedProducts.find(p => p.id === s.productId);
-      if (!matchingProd && !isBadName) {
+      // Encontrar produto correspondente priorizando o Nome (Título) do produto para consistência absoluta
+      let matchingProd: Product | undefined = undefined;
+      if (!isBadName) {
         matchingProd = sanitizedProducts.find(p => normalizeName(p.name) === normalizeName(cleanSaleProductName));
-      } else if (matchingProd && !isBadName && normalizeName(matchingProd.name) !== normalizeName(cleanSaleProductName)) {
-        const foundByName = sanitizedProducts.find(p => normalizeName(p.name) === normalizeName(cleanSaleProductName));
-        if (foundByName) {
-          matchingProd = foundByName;
-        }
+      }
+      if (!matchingProd) {
+        matchingProd = sanitizedProducts.find(p => p.id === s.productId);
       }
 
       // Tentar re-vincular usando o registro do Mercado Livre (mlRecords)
@@ -202,7 +200,7 @@ export default function App() {
           shipRev = s.status === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
           
           if (s.status === 'refunded') {
-            shippingCost = Number(s.shippingCost) || (matchingProd ? matchingProd.shippingCost : 0) * quantity;
+            shippingCost = (matchingProd && matchingProd.shippingCost > 0) ? matchingProd.shippingCost : (Number(s.shippingCost) || 6.65);
           } else if (totalSaleValue < 79 && (!s.shippingType || s.shippingType !== 'full') && !s.customShippingCost) {
             // Vendas < R$ 79 no Mercado Livre têm frete pago pelo comprador (exceto se o vendedor oferecer frete grátis)
             shippingCost = Math.max(0, rawShipCost - shipRev);
@@ -320,11 +318,13 @@ export default function App() {
         console.log('Buscando dados em tempo real da planilha do Google Sheets...', webAppUrl);
         const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
         const response = await fetch(url);
+        const result = await response.json().catch(() => null);
+        
         if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+          throw new Error(result?.message || `HTTP ${response.status}`);
         }
-        const result = await response.json();
-        if (result.status === 'success') {
+
+        if (result && result.status === 'success') {
           // Sanitização robusta contra dados corrompidos ou chaves de datas na coluna de preços
           const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
           
@@ -344,12 +344,13 @@ export default function App() {
 
           console.log('Dados em tempo real obtidos e sanitizados com sucesso do Google Sheets!');
           setHasFetchedFromCloud(true); // Habilita o auto-sync somente após download com sucesso total
-        } else if (result.status === 'error') {
+        } else if (result && result.status === 'error') {
           throw new Error(result.message || 'Erro ao carregar dados do Apps Script.');
         }
       } catch (err: any) {
         console.error('Erro ao recuperar dados iniciais da nuvem:', err);
-        setCloudSyncError('Sincronização pendente. Não foi possível conectar com a planilha para importar dados. Edições locais protegidas contra sobrescrita na nuvem.');
+        const detailMsg = err.message || String(err);
+        setCloudSyncError(`Sincronização pendente: ${detailMsg}`);
         // Se falhar o carregamento, NÃO marcamos como fetched para bloquear escrita acidental e incentivar nova tentativa manual
         setHasFetchedFromCloud(false);
       } finally {
@@ -369,11 +370,13 @@ export default function App() {
       console.log('Forçando leitura/puxada de dados do Google Sheets...', webAppUrl);
       const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
       const response = await fetch(url);
+      const result = await response.json().catch(() => null);
+
       if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
+        throw new Error(result?.message || `HTTP ${response.status}`);
       }
-      const result = await response.json();
-      if (result.status === 'success') {
+
+      if (result && result.status === 'success') {
         const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
         
         setProducts(sanitized.products);
@@ -395,7 +398,7 @@ export default function App() {
         setHasPendingWrite(false); // Como acabamos de ler, não temos alterações locais novas a gravar
         return { status: 'success', message: `Leitura concluída com sucesso! ${sanitized.products.length} produtos e ${sanitized.sales.length} vendas importados da sua planilha.` };
       } else {
-        throw new Error(result.message || 'Erro do Google Apps Script');
+        throw new Error(result?.message || 'Erro do Google Apps Script');
       }
     } catch (err: any) {
       console.error('Erro ao ler dados manuais da nuvem:', err);
@@ -474,6 +477,12 @@ export default function App() {
         if (result.status !== 'success') {
           throw new Error(result.message || 'Erro no Apps Script');
         }
+        if (result.products && Array.isArray(result.products) && result.products.length > 0) {
+          const sanitized = sanitizeCloudData(result.products, sales, mlRecords);
+          if (JSON.stringify(sanitized.products) !== JSON.stringify(products)) {
+            setProducts(sanitized.products);
+          }
+        }
         console.log('Sincronização em tempo real realizada com sucesso!');
         setHasPendingWrite(false); // Reseta a flag de alterações pendentes após sucesso
       } catch (err: any) {
@@ -537,7 +546,7 @@ export default function App() {
   };
 
   // Contar produtos com estoque crítico (abaixo do nível de segurança)
-  const lowStockCount = products.filter(p => p.stock <= p.minimalStock).length;
+  const lowStockCount = products.filter(p => calculateCurrentStock(p, sales, products) <= p.minimalStock).length;
 
   // Funções de manipulação do estoque e vendas
   const handleAddProduct = (newProduct: Omit<Product, 'id'>) => {
@@ -588,7 +597,7 @@ export default function App() {
       status
     };
 
-    // Subtrair quantidade vendida do estoque: NÃO altera p.stock diretamente, pois o Estoque Atual é calculado dinamicamente (Estoque Inicial - Saídas)
+    // O estoque atual é calculado dinamicamente no utils.ts
     setSales(prev => [freshSale, ...prev]);
     setHasPendingWrite(true);
   };
@@ -598,9 +607,7 @@ export default function App() {
     if (!targetSale) return;
 
     // Ao invés de deletar, atualiza o status para 'refunded', zera os lucros e venda, e salva o prejuízo extra e o motivo.
-    // O estorno automaticamente zera a dedução do Estoque Atual via calculateCurrentStock.
-
-    // Ao invés de deletar, atualiza o status para 'refunded', zera os lucros e venda, e salva o prejuízo extra e o motivo
+    // O estorno automaticamente devolve o estoque via calculateCurrentStock!
     setSales(prev => prev.map(s => {
       if (s.id === saleId) {
         return {
@@ -801,7 +808,7 @@ export default function App() {
           
           let shippingCost = rawShippingFee;
           if (saleStatus === 'refunded') {
-            shippingCost = defaultShipping * r.units;
+            shippingCost = defaultShipping; // O Mercado Livre cobra apenas 1 frete de devolução por pacote, independente da quantidade de itens
           } else if (totalSaleValue < 79) {
             // No Mercado Livre, vendas abaixo de R$ 79,00 têm o frete custeado pelo COMPRADOR
             shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
@@ -810,8 +817,9 @@ export default function App() {
             }
           }
           
+          const taxAmount = totalSaleValue * 0.04;
           const grossProfit = saleStatus === 'refunded' ? 0 : totalSaleValue - totalCostValue;
-          const netProfit = saleStatus === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost + shippingRevenue - totalCostValue);
+          const netProfit = saleStatus === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost + shippingRevenue - taxAmount - totalCostValue);
           
           // Determinar tipo de logística
           let shippingType: 'full' | 'flex' | 'transportadora' = 'transportadora';

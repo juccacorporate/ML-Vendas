@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { Product, Sale } from '../types';
-import { formatCurrency } from '../utils';
+import { formatCurrency, calculateCurrentStock, calculateProductSalesVolume } from '../utils';
 import { 
   FileSpreadsheet, 
   Copy, 
@@ -36,13 +36,153 @@ interface SheetsIntegrationProps {
   mlRecords: any[];
 }
 
-const APPS_SCRIPT_CODE = `function doPost(e) {
+const APPS_SCRIPT_CODE = `function normalizeNameScript(str) {
+  if (!str) return '';
+  return String(str)
+    .toLowerCase()
+    .replace(/[àáâãäå]/g, "a")
+    .replace(/[èéêë]/g, "e")
+    .replace(/[ìíîï]/g, "i")
+    .replace(/[òóôõö]/g, "o")
+    .replace(/[ùúûü]/g, "u")
+    .replace(/[ç]/g, "c")
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+function findProductForSaleScript(s, productsList) {
+  if (!productsList || productsList.length === 0) return null;
+
+  var rawName = String(s.productName || '').trim();
+  var rawNameLower = rawName.toLowerCase();
+  var isBadName = !rawName || rawNameLower === 'sim' || rawNameLower === 'não' || rawNameLower === 'nao' || rawNameLower === 'produto mercado livre' || rawNameLower === 'true' || rawNameLower === 'false';
+
+  if (!isBadName) {
+    var sNameNorm = normalizeNameScript(rawName);
+
+    for (var i = 0; i < productsList.length; i++) {
+      if (normalizeNameScript(productsList[i].name || '') === sNameNorm) {
+        return productsList[i];
+      }
+    }
+
+    var isAdCurto = rawNameLower.indexOf('20cm') !== -1 || rawNameLower.indexOf('20 cm') !== -1 || rawNameLower.indexOf('curto') !== -1;
+    var isAd90 = rawNameLower.indexOf('90') !== -1;
+    var isAd144 = rawNameLower.indexOf('144') !== -1;
+    var isAd102 = rawNameLower.indexOf('102') !== -1;
+
+    for (var j = 0; j < productsList.length; j++) {
+      var p = productsList[j];
+      var pNameLower = String(p.name || '').toLowerCase();
+      var isProdCurto = pNameLower.indexOf('20cm') !== -1 || pNameLower.indexOf('20 cm') !== -1 || pNameLower.indexOf('curto') !== -1;
+      var isProd90 = pNameLower.indexOf('90') !== -1;
+      var isProd144 = pNameLower.indexOf('144') !== -1;
+      var isProd102 = pNameLower.indexOf('102') !== -1;
+
+      if (isProdCurto && !isAdCurto) continue;
+      if (isProd90 && !isAd90) continue;
+      if (isProd144 && !isAd144) continue;
+      if (isProd102 && !isAd102) continue;
+
+      var normPName = normalizeNameScript(p.name || '');
+      if (normPName && sNameNorm && (normPName.indexOf(sNameNorm) !== -1 || sNameNorm.indexOf(normPName) !== -1)) {
+        return p;
+      }
+    }
+  }
+
+  var sPid = String(s.productId || '').trim();
+  if (sPid && sPid !== 'unknown' && sPid !== 'null' && sPid !== 'undefined' && sPid !== '') {
+    for (var k = 0; k < productsList.length; k++) {
+      if (String(productsList[k].id || '').trim() === sPid) {
+        return productsList[k];
+      }
+    }
+  }
+
+  var sSku = String(s.sku || '').trim().toLowerCase();
+  if (sSku && sSku !== 'sim' && sSku !== 'não' && sSku !== 'nao' && sSku !== 'ml') {
+    for (var l = 0; l < productsList.length; l++) {
+      if (String(productsList[l].sku || '').trim().toLowerCase() === sSku) {
+        return productsList[l];
+      }
+    }
+  }
+
+  return null;
+}
+
+function calculateProductSalesVolumeScript(product, sales, allProducts) {
+  if (!sales || sales.length === 0 || !product) return 0;
+  var productsList = (allProducts && allProducts.length > 0) ? allProducts : [product];
+  var targetId = String(product.id || '').trim();
+  var targetNameNorm = normalizeNameScript(product.name || '');
+
+  var total = 0;
+  for (var i = 0; i < sales.length; i++) {
+    var s = sales[i];
+    if (s.status === 'refunded') continue;
+
+    var matched = findProductForSaleScript(s, productsList);
+    var isMatch = false;
+
+    if (matched) {
+      if (String(matched.id || '').trim() === targetId || normalizeNameScript(matched.name || '') === targetNameNorm) {
+        isMatch = true;
+      }
+    } else {
+      var sPid = String(s.productId || '').trim();
+      var sSku = String(s.sku || '').trim().toLowerCase();
+      var targetSkuClean = String(product.sku || '').trim().toLowerCase();
+
+      if (targetId && sPid && sPid === targetId) {
+        isMatch = true;
+      } else if (targetSkuClean && targetSkuClean.length > 1 && targetSkuClean !== 'sim' && targetSkuClean !== 'nao' && targetSkuClean !== 'ml' && sSku === targetSkuClean) {
+        isMatch = true;
+      }
+    }
+
+    if (isMatch) {
+      total += (Number(s.quantity) || 1);
+    }
+  }
+  return total;
+}
+
+function doPost(e) {
   try {
     var payload = JSON.parse(e.postData.contents);
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
     // 1. Sincronizar Produtos
     var productSheet = ss.getSheetByName("Produtos") || ss.insertSheet("Produtos");
+    
+    // Ler e preservar Estoque Inicial existente na planilha para evitar sobrescrever com 0
+    var existingInitialStock = {};
+    try {
+      var oldProdData = productSheet.getDataRange().getValues();
+      if (oldProdData && oldProdData.length > 1) {
+        var oldHeaders = oldProdData[0];
+        var oIdxId = oldHeaders.indexOf("ID Produto");
+        var oIdxSku = oldHeaders.indexOf("SKU");
+        var oIdxName = oldHeaders.indexOf("Nome Produto");
+        var oIdxInitStock = oldHeaders.indexOf("Estoque Inicial");
+        if (oIdxInitStock === -1) oIdxInitStock = oldHeaders.indexOf("Estoque");
+
+        if (oIdxInitStock !== -1) {
+          for (var oRow = 1; oRow < oldProdData.length; oRow++) {
+            var rVal = oldProdData[oRow];
+            var parsedVal = Number(rVal[oIdxInitStock]);
+            if (!isNaN(parsedVal) && parsedVal > 0) {
+              if (rVal[oIdxId]) existingInitialStock[String(rVal[oIdxId]).trim()] = parsedVal;
+              if (rVal[oIdxSku]) existingInitialStock[String(rVal[oIdxSku]).trim().toLowerCase()] = parsedVal;
+              if (rVal[oIdxName]) existingInitialStock[String(rVal[oIdxName]).trim().toLowerCase()] = parsedVal;
+            }
+          }
+        }
+      }
+    } catch(eOld) {}
+
     productSheet.clear();
     var prodHeaders = [
       "ID Produto", "Nome Produto", "SKU", "Preço de Compra", "Preço de Venda", 
@@ -55,6 +195,19 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
       var prodRows = payload.products.map(function(p, index) {
         var rNum = index + 2;
         var diff = p.salePrice - p.purchasePrice;
+        
+        // Determinar estoque inicial preservando valores da planilha caso o payload venha zerado
+        var incomingStock = Number(p.stock) || 0;
+        var pIdKey = String(p.id || '').trim();
+        var pSkuKey = String(p.sku || '').trim().toLowerCase();
+        var pNameKey = String(p.name || '').trim().toLowerCase();
+
+        var savedSheetStock = existingInitialStock[pIdKey] || (pSkuKey ? existingInitialStock[pSkuKey] : undefined) || (pNameKey ? existingInitialStock[pNameKey] : undefined);
+        var effectiveInitialStock = (incomingStock > 0) ? incomingStock : (savedSheetStock !== undefined ? savedSheetStock : incomingStock);
+        p.stock = effectiveInitialStock; // Atualiza o objeto p.stock para o retorno JSON
+        
+        // Calcular total vendido (Saídas) para o produto p exatamente como no app
+        var totalSold = calculateProductSalesVolumeScript(p, payload.sales || [], payload.products || []);
         
         // Calcular Taxa ML aproximada para visualização estética no Sheets
         var percent = p.mlFeeType === 'custom' ? (p.customFeePercent || 0) : (p.mlFeeType === 'premium' ? 17 : p.mlFeeType === 'classic' ? 12 : 0);
@@ -76,8 +229,8 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
           p.sku, 
           p.purchasePrice, 
           p.salePrice, 
-          p.stock, 
-          '=IF(A' + rNum + '<>"", SUMIF(Vendas!B:B, A' + rNum + ', Vendas!D:D), SUMIF(Vendas!C:C, B' + rNum + ', Vendas!D:D))',
+          effectiveInitialStock, 
+          totalSold,
           '=F' + rNum + '-G' + rNum,
           p.minimalStock || 0, 
           p.addedDate, 
@@ -91,6 +244,14 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
         ];
       });
       productSheet.getRange(2, 1, prodRows.length, prodHeaders.length).setValues(prodRows);
+      
+      // Aplicar formatação numéricas: Inteiros sem casas decimais para Estoques e Saídas (Col F, G, H, I, Q)
+      try {
+        productSheet.getRange(2, 6, prodRows.length, 4).setNumberFormat("0");
+        productSheet.getRange(2, 17, prodRows.length, 1).setNumberFormat("0");
+        productSheet.getRange(2, 4, prodRows.length, 2).setNumberFormat("#,##0.00");
+        productSheet.getRange(2, 15, prodRows.length, 2).setNumberFormat("#,##0.00");
+      } catch(eFmt) {}
     }
     
     // 2. Sincronizar Vendas
@@ -212,7 +373,7 @@ const APPS_SCRIPT_CODE = `function doPost(e) {
       }
     }
     
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas atualizadas no Sheets, incluindo a aba Vendas Finalizadas. 🚀" }))
+    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas atualizadas no Sheets, incluindo a aba Vendas Finalizadas. 🚀", products: payload.products }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
@@ -270,7 +431,8 @@ function doGet(e) {
         var idxSku = headers.indexOf("SKU");
         var idxPurchase = headers.indexOf("Preço de Compra");
         var idxSale = headers.indexOf("Preço de Venda");
-        var idxStock = headers.indexOf("Estoque Inicial") !== -1 ? headers.indexOf("Estoque Inicial") : headers.indexOf("Estoque");
+        var idxInitStock = headers.indexOf("Estoque Inicial");
+        var idxStock = idxInitStock !== -1 ? idxInitStock : (headers.indexOf("Estoque") !== -1 ? headers.indexOf("Estoque") : headers.indexOf("Estoque Atual"));
         var idxMinStock = headers.indexOf("Estoque Mínimo");
         var idxAddedDate = headers.indexOf("Data de Entrada");
         var idxCategory = headers.indexOf("Categoria");
@@ -640,12 +802,13 @@ export default function SheetsIntegration({
   };
 
   const handleDownloadCSV = () => {
-    const headers = ['ID Produto', 'Nome Produto', 'SKU', 'Preco de Compra', 'Preco de Venda', 'Diferenca', 'Tipo Anuncio ML', 'Taxa ML', 'Frete Estimado', 'Estoque', 'Dias Parados'];
+    const headers = ['ID Produto', 'Nome Produto', 'SKU', 'Preco de Compra', 'Preco de Venda', 'Diferenca', 'Tipo Anuncio ML', 'Taxa ML', 'Frete Estimado', 'Estoque Inicial', 'Estoque Atual', 'Dias Parados'];
     
     const rows = products.map(p => {
       const diff = p.salePrice - p.purchasePrice;
       const mlFee = p.salePrice * (p.mlFeeType === 'premium' ? 0.17 : p.mlFeeType === 'classic' ? 0.12 : 0);
       const days = Math.round((new Date().getTime() - new Date(p.addedDate).getTime()) / (1000 * 3600 * 24));
+      const currentStock = sales ? calculateCurrentStock(p, sales, products) : p.stock;
       
       return [
         p.id,
@@ -658,6 +821,7 @@ export default function SheetsIntegration({
         mlFee.toFixed(2),
         p.shippingCost.toFixed(2),
         p.stock.toString(),
+        currentStock.toString(),
         days.toString()
       ];
     });

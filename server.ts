@@ -14,21 +14,45 @@ async function startServer() {
   // Middleware para JSON com limite maior para sincronização de grandes volumes se houver
   app.use(express.json({ limit: '20mb' }));
 
-  // Helper para realizar fetch com timeout nativo robusto e limpar o temporizador de forma segura
-  async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 45000) {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(url, {
-        ...options,
-        signal: controller.signal
-      });
-      clearTimeout(id);
-      return response;
-    } catch (error) {
-      clearTimeout(id);
-      throw error;
+  // Helper para realizar fetch com timeout nativo robusto, retry em caso de cold-start e limpar o temporizador de forma segura
+  async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 60000, retries = 1): Promise<Response> {
+    const defaultHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*'
+    };
+
+    const combinedOptions = {
+      redirect: 'follow',
+      ...options,
+      headers: {
+        ...defaultHeaders,
+        ...(options.headers || {})
+      }
+    };
+
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const controller = new AbortController();
+      const id = setTimeout(() => controller.abort(), timeoutMs);
+
+      try {
+        const response = await fetch(url, {
+          ...combinedOptions,
+          signal: controller.signal
+        });
+        clearTimeout(id);
+        return response;
+      } catch (error: any) {
+        clearTimeout(id);
+        const isAbort = error.name === 'AbortError' || error.code === 'ABORT_ERR' || String(error).includes('aborted');
+        if (isAbort && attempt < retries) {
+          console.warn(`[Proxy Sync] Tentativa ${attempt + 1} expirou ou foi abortada. Tentando novamente...`);
+          await new Promise(r => setTimeout(r, 1000));
+          continue;
+        }
+        throw error;
+      }
     }
+    throw new Error('Tempo limite de conexão excedido.');
   }
 
   // API Proxy para Sincronização do Google Sheets - GET para buscar dados em realtime

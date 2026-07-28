@@ -236,8 +236,8 @@ export default function DashboardOverview({
   });
 
   // Valor total bloqueado/investido em estoque
-  const totalStockCost = products.reduce((acc, p) => acc + (p.purchasePrice * calculateCurrentStock(p, uniqueSales)), 0);
-  const totalPotentialSaleValue = products.reduce((acc, p) => acc + (p.salePrice * calculateCurrentStock(p, uniqueSales)), 0);
+  const totalStockCost = products.reduce((acc, p) => acc + (p.purchasePrice * calculateCurrentStock(p, uniqueSales, products)), 0);
+  const totalPotentialSaleValue = products.reduce((acc, p) => acc + (p.salePrice * calculateCurrentStock(p, uniqueSales, products)), 0);
 
   // Faturamento líquido acumulado de TODAS as vendas concluídas (sem limite de período, para calcular Caixa)
   const allCompletedSales = uniqueSales.filter(s => s.status === 'completed');
@@ -279,12 +279,12 @@ export default function DashboardOverview({
     return Math.max(0, netPrice);
   };
 
-  const totalPotentialNetSaleValue = products.reduce((acc, p) => acc + (calculateProductNetPrice(p) * calculateCurrentStock(p, uniqueSales)), 0);
+  const totalPotentialNetSaleValue = products.reduce((acc, p) => acc + (calculateProductNetPrice(p) * calculateCurrentStock(p, uniqueSales, products)), 0);
 
-  // Acumulado de Dinheiro Congelado (Líquido a receber de Mercado Pago - vendas pendentes)
+  // Acumulado de Dinheiro Congelado (Lucro Líquido Previsto a receber de Mercado Pago - vendas pendentes)
   const allPendingSales = uniqueSales.filter(s => s.status === 'pending');
   const cumulativeFrozenNetValue = allPendingSales.reduce(
-    (acc, s) => acc + (s.salePrice * s.quantity - s.mlFee - s.shippingCost), 
+    (acc, s) => acc + s.netProfit, 
     0
   );
 
@@ -292,8 +292,8 @@ export default function DashboardOverview({
   const totalBusinessEquity = liquidCash + cumulativeFrozenNetValue + totalStockCost;
 
   // Alertas de Estoque Baixo ou Crítico
-  const lowStockItems = products.filter(p => calculateCurrentStock(p, uniqueSales) <= p.minimalStock);
-  const idleStockItems = products.filter(p => calculateCurrentStock(p, uniqueSales) > 0 && calculateDaysInStock(p.addedDate) >= 30);
+  const lowStockItems = products.filter(p => calculateCurrentStock(p, uniqueSales, products) <= p.minimalStock);
+  const idleStockItems = products.filter(p => calculateCurrentStock(p, uniqueSales, products) > 0 && calculateDaysInStock(p.addedDate) >= 30);
 
   // Previsibilidade de saídas para os próximos 30 dias (Simulador inteligente baseado no histórico - INDIVIDUAL E GERAL)
   const uniqueSalesDays = Array.from(new Set(filteredAllSales.map(s => s.date))).length || 1;
@@ -351,33 +351,14 @@ export default function DashboardOverview({
     // Reconstruir a data ISO YYYY-MM-DD da chave correspondente
     const dateEntry = Object.keys(salesByDate).sort((a,b) => a.localeCompare(b))[index];
     
-    // Lucro bruto de saídas não estornadas até esta data
-    const rawProfitUpToDate = uniqueSales
-      .filter(s => s.status !== 'refunded' && s.date <= dateEntry)
-      .reduce((acc, s) => acc + s.netProfit, 0);
-
-    // Impostos de 4% acumulados até esta data
-    const taxesUpToDate = uniqueSales
-      .filter(s => s.status !== 'refunded' && s.date <= dateEntry)
-      .reduce((acc, s) => acc + (s.salePrice * s.quantity * 0.04), 0);
-
-    // Estornos e prejuízos acumulados até esta data
-    const lossesUpToDate = uniqueSales
+    // Lucro líquido acumulado exato de todas as vendas ativas/reais até esta data
+    const cumulativeNetProfit = uniqueSales
       .filter(s => s.date <= dateEntry)
-      .reduce((acc, s) => {
-        if (s.status === 'refunded') {
-          return acc + (s.lossAmount || 0) + s.shippingCost;
-        } else if (s.netProfit < 0) {
-          return acc + Math.abs(s.netProfit);
-        }
-        return acc;
-      }, 0);
-
-    const cumulativeNetProfit = rawProfitUpToDate - taxesUpToDate - lossesUpToDate;
+      .reduce((acc, s) => acc + s.netProfit, 0);
 
     return {
       date: d.date,
-      patrimonio: Math.max(0, cumulativeNetProfit)
+      patrimonio: cumulativeNetProfit
     };
   });
 
@@ -1010,7 +991,7 @@ export default function DashboardOverview({
             </p>
           </div>
           <div className="mt-4 flex gap-2 border-t border-white/5 pt-3">
-            <span className="text-[11px] text-white/40">Quantidade Total em Estoque: <strong className="text-[#FFE600]">{products.reduce((acc, p) => acc + calculateCurrentStock(p, uniqueSales), 0)} unidades</strong></span>
+            <span className="text-[11px] text-white/40">Quantidade Total em Estoque: <strong className="text-[#FFE600]">{products.reduce((acc, p) => acc + calculateCurrentStock(p, uniqueSales, products), 0)} unidades</strong></span>
           </div>
         </div>
 
@@ -1159,20 +1140,25 @@ export default function DashboardOverview({
             <div className="absolute top-28 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
             <div className="absolute top-46 left-0 right-0 border-t border-white/5 pointer-events-none"></div>
 
-            {/* Renderização do SVG */}
+            {/* Renderização do SVG com escala vertical dinâmica completa */}
             {(() => {
-              const svgWidth = 500;
+              const svgWidth = 600;
               const svgHeight = 220;
               const paddingY = 25;
               const usableHeight = svgHeight - (paddingY * 2);
 
-              const yMin = Math.max(0, minEquityValue * 0.95);
-              const yMax = maxEquityValue * 1.05;
-              const yRange = yMax - yMin || 100;
+              const values = equityChartData.map(e => e.patrimonio);
+              const minVal = values.length > 0 ? Math.min(...values) : 0;
+              const maxVal = values.length > 0 ? Math.max(...values) : 100;
+              const diff = maxVal - minVal;
+
+              const yMin = minVal < 0 ? minVal * 1.1 : Math.max(0, minVal - (diff > 0 ? diff * 0.25 : 50));
+              const yMax = maxVal + (diff > 0 ? diff * 0.25 : 100);
+              const yRange = yMax - yMin || 1;
 
               const points = equityChartData.map((d, idx) => {
                 const x = equityChartData.length > 1 
-                  ? (idx / (equityChartData.length - 1)) * (svgWidth - 80) + 40 
+                  ? (idx / (equityChartData.length - 1)) * (svgWidth - 60) + 30 
                   : svgWidth / 2;
                 const y = svgHeight - paddingY - ((d.patrimonio - yMin) / yRange) * usableHeight;
                 return { x, y, ...d };
@@ -1386,7 +1372,7 @@ export default function DashboardOverview({
             ) : (
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {lowStockItems.map((prod) => {
-                  const currentStock = calculateCurrentStock(prod, uniqueSales);
+                  const currentStock = calculateCurrentStock(prod, uniqueSales, products);
                   return (
                     <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors">
                       <div>
@@ -1434,7 +1420,7 @@ export default function DashboardOverview({
               <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
                 {idleStockItems.map((prod) => {
                   const days = calculateDaysInStock(prod.addedDate);
-                  const currentStock = calculateCurrentStock(prod, uniqueSales);
+                  const currentStock = calculateCurrentStock(prod, uniqueSales, products);
                   return (
                     <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/10 hover:bg-amber-500/10 transition-colors">
                       <div>

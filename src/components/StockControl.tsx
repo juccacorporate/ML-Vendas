@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product, Sale } from '../types';
-import { calculateMLFee, calculateTax, calculateDaysInStock, formatCurrency, calculateCurrentStock } from '../utils';
+import { calculateMLFee, calculateTax, calculateDaysInStock, formatCurrency, calculateCurrentStock, calculateProductSalesVolume } from '../utils';
 import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers } from 'lucide-react';
 
 interface StockControlProps {
@@ -60,7 +60,7 @@ export default function StockControl({
   const filteredProducts = products.filter(p => {
     const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
-    const currentStock = calculateCurrentStock(p, sales);
+    const currentStock = calculateCurrentStock(p, sales, products);
     
     let matchesStatus = true;
     if (stockStatusFilter === 'low') {
@@ -255,7 +255,7 @@ export default function StockControl({
                 <th className="py-4 px-4 text-center">Previsão Comissão ML</th>
                 <th className="py-4 px-4 text-center">Imposto (4%)</th>
                 <th className="py-4 px-4 text-center">Frete</th>
-                <th className="py-4 px-4 text-center">Estoque Atual</th>
+                <th className="py-4 px-4 text-center text-[#FFE600] font-black">Estoque (Inicial / Saídas / Atual)</th>
                 <th className="py-4 px-4 text-center">Dias sem Giro</th>
                 <th className="py-4 px-5 text-right font-medium">Ações</th>
               </tr>
@@ -284,8 +284,8 @@ export default function StockControl({
                     days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
                   }
 
-                  const currentStock = calculateCurrentStock(p, sales);
-                  const totalSoldForProd = p.stock - currentStock;
+                  const totalSoldForProd = calculateProductSalesVolume(p, sales, products);
+                  const currentStock = calculateCurrentStock(p, sales, products);
                   const isCritical = currentStock <= p.minimalStock;
                   
                   // Lucro Esperado (comissão padrão + imposto de 4% estimativa)
@@ -368,7 +368,7 @@ export default function StockControl({
                         {p.shippingCost > 0 ? formatCurrency(p.shippingCost) : 'Grátis'}
                       </td>
 
-                      {/* Estoque (Inicial - Saídas = Atual) */}
+                      {/* Estoque */}
                       <td className="py-4 px-4 text-center">
                         <div className="flex flex-col items-center gap-1">
                           <span className={`px-2.5 py-1 rounded text-xs font-bold font-mono block ${

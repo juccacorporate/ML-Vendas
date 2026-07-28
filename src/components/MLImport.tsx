@@ -455,40 +455,55 @@ export default function MLImport({
       if (r.isClaimOpen) openClaims++;
       refunds += Math.abs(r.refundsAndCancellations);
       
-      if (isCanceled) return;
-
-      totalRevenue += r.productRevenue;
-      totalSaleFee += Math.abs(r.saleFeeAndTaxes); // Convertemos tarifa em custo positivo
-      totalShippingFee += Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
-      const saleFee = Math.abs(r.saleFeeAndTaxes);
-      const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
-      const discount = Math.abs(r.discountsAndBonuses || 0);
-      const taxML = r.productRevenue * 0.04;
-      netProfitML += (r.productRevenue - saleFee - shippingCost - taxML - discount + (r.shippingRevenue || 0));
-      
-      if (r.isAdSale) {
-        totalAdSales += r.productRevenue;
-        adUnitsSold += r.units;
-      }
-      
-      const methodLower = (r.shippingMethod || '').toLowerCase();
-      const carrierLower = (r.carrier || '').toLowerCase();
-      if (methodLower.includes('full') || carrierLower.includes('full')) {
-        totalFullSales += r.productRevenue;
-        fullUnitsSold += r.units;
-      } else if (methodLower.includes('flex') || carrierLower.includes('flex')) {
-        totalFlexSales += r.productRevenue;
-        flexUnitsSold += r.units;
-      } else {
-        totalCarrierSales += r.productRevenue;
-        carrierUnitsSold += r.units;
-      }
-      
-      // Encontrar produto correspondente no estoque para computar o custo real de aquisição usando a nova busca inteligente por SKU
       const matchingProduct = findMatchingProduct(r, products);
+      const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
+      const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const shippingRevenue = isCanceled ? 0 : Math.abs(r.shippingRevenue || 0);
+
+      let shippingCost = rawShippingFee;
+      if (isCanceled) {
+        shippingCost = defaultShipping; // O Mercado Livre cobra apenas 1 frete de devolução por pacote
+      } else if (r.productRevenue < 79) {
+        shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
+        if (shippingRevenue === 0 && rawShippingFee > 0) {
+          shippingCost = 0;
+        }
+      }
+
+      const saleFee = isCanceled ? 0 : Math.abs(r.saleFeeAndTaxes);
+      const taxML = r.productRevenue * 0.04;
+      const discount = Math.abs(r.discountsAndBonuses || 0);
       
-      if (matchingProduct) {
+      if (matchingProduct && !isCanceled) {
         totalProductCost += matchingProduct.purchasePrice * r.units;
+      }
+
+      if (isCanceled) {
+        netProfitML -= shippingCost; // Prejuízo do frete de devolução
+      } else {
+        totalRevenue += r.productRevenue;
+        totalSaleFee += Math.abs(r.saleFeeAndTaxes);
+        totalShippingFee += shippingCost;
+        
+        netProfitML += (r.productRevenue - saleFee - shippingCost - taxML - discount + shippingRevenue);
+        
+        if (r.isAdSale) {
+          totalAdSales += r.productRevenue;
+          adUnitsSold += r.units;
+        }
+        
+        const methodLower = (r.shippingMethod || '').toLowerCase();
+        const carrierLower = (r.carrier || '').toLowerCase();
+        if (methodLower.includes('full') || carrierLower.includes('full')) {
+          totalFullSales += r.productRevenue;
+          fullUnitsSold += r.units;
+        } else if (methodLower.includes('flex') || carrierLower.includes('flex')) {
+          totalFlexSales += r.productRevenue;
+          flexUnitsSold += r.units;
+        } else {
+          totalCarrierSales += r.productRevenue;
+          carrierUnitsSold += r.units;
+        }
       }
     });
 
@@ -515,9 +530,9 @@ export default function MLImport({
     };
   }, [mlRecords, products]);
 
-  // Gráficos Diários de Faturamento ML
+  // Gráficos Diários de Faturamento & Saídas ML
   const dailyChartData = useMemo(() => {
-    const dailyMap: { [key: string]: { date: string; receita: number; tarifas: number; fretes: number } } = {};
+    const dailyMap: { [key: string]: { date: string; receita: number; lucroLiquido: number; unidades: number } } = {};
     
     mlRecords.forEach(r => {
       // Extrair apenas o dia e mês da string (Ex: "6 de julho de 2026 20:02" -> "06/07")
@@ -541,12 +556,39 @@ export default function MLImport({
         }
       }
 
-      if (!dailyMap[dateKey]) {
-        dailyMap[dateKey] = { date: dateKey, receita: 0, tarifas: 0, fretes: 0 };
+      const statusLower = r.status.toLowerCase();
+      const descLower = (r.statusDescription || '').toLowerCase();
+      const isCanceled = statusLower.includes('cancelad') || statusLower.includes('devol') || statusLower.includes('reembols') || statusLower.includes('refund') || statusLower.includes('estorn') || descLower.includes('cancelad') || descLower.includes('devol') || descLower.includes('reembols') || descLower.includes('refund') || descLower.includes('estorn');
+
+      const matchingProduct = findMatchingProduct(r, products);
+      const productCost = matchingProduct && !isCanceled ? (matchingProduct.purchasePrice * r.units) : 0;
+      const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
+      const saleFee = isCanceled ? 0 : Math.abs(r.saleFeeAndTaxes);
+      const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const shippingRevenue = isCanceled ? 0 : Math.abs(r.shippingRevenue || 0);
+
+      let shippingCost = rawShippingFee;
+      if (isCanceled) {
+        shippingCost = defaultShipping; // 1 frete de devolução por pacote
+      } else if (r.productRevenue < 79) {
+        shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
+        if (shippingRevenue === 0 && rawShippingFee > 0) {
+          shippingCost = 0;
+        }
       }
-      dailyMap[dateKey].receita += r.productRevenue;
-      dailyMap[dateKey].tarifas += Math.abs(r.saleFeeAndTaxes);
-      dailyMap[dateKey].fretes += Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost);
+
+      const discount = Math.abs(r.discountsAndBonuses || 0);
+      const taxML = r.productRevenue * 0.04;
+      const rowNetProfit = isCanceled ? -shippingCost : (r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue);
+
+      if (!dailyMap[dateKey]) {
+        dailyMap[dateKey] = { date: dateKey, receita: 0, lucroLiquido: 0, unidades: 0 };
+      }
+      if (!isCanceled) {
+        dailyMap[dateKey].receita += r.productRevenue;
+        dailyMap[dateKey].unidades += r.units;
+      }
+      dailyMap[dateKey].lucroLiquido += rowNetProfit;
     });
 
     // Converter para array e ordenar pela data do mais antigo para o mais novo
@@ -559,7 +601,7 @@ export default function MLImport({
       return dateA.getTime() - dateB.getTime();
     });
     return arr.slice(-15); // Mostrar últimos 15 pontos de dados
-  }, [mlRecords]);
+  }, [mlRecords, products]);
 
   // Filtros e listagem de registros
   const filteredRecords = useMemo(() => {
@@ -595,11 +637,25 @@ export default function MLImport({
       if (!r.adId || isCanceled) return;
 
       const matchingProduct = findMatchingProduct(r, products);
-      const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
-      const saleFee = Math.abs(r.saleFeeAndTaxes);
-      const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const productCost = matchingProduct && !isCanceled ? (matchingProduct.purchasePrice * r.units) : 0;
+      const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
+      const saleFee = isCanceled ? 0 : Math.abs(r.saleFeeAndTaxes);
+      const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const shippingRevenue = isCanceled ? 0 : Math.abs(r.shippingRevenue || 0);
+
+      let shippingCost = rawShippingFee;
+      if (isCanceled) {
+        shippingCost = defaultShipping; // O Mercado Livre cobra apenas 1 frete de devolução por pacote
+      } else if (r.productRevenue < 79) {
+        shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
+        if (shippingRevenue === 0 && rawShippingFee > 0) {
+          shippingCost = 0;
+        }
+      }
+
       const discount = Math.abs(r.discountsAndBonuses || 0);
-      const rowNetProfit = r.productRevenue - saleFee - shippingCost - productCost - discount + (r.shippingRevenue || 0);
+      const taxML = r.productRevenue * 0.04;
+      const rowNetProfit = isCanceled ? -shippingCost : (r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue);
 
       const titleKey = r.adTitle || r.adId; if (!adMap[titleKey]) {
         adMap[titleKey] = { id: r.adId, title: r.adTitle, qty: 0, total: 0 };
@@ -627,11 +683,25 @@ export default function MLImport({
       if (isCanceled) return;
 
       const matchingProduct = findMatchingProduct(r, products);
-      const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
-      const saleFee = Math.abs(r.saleFeeAndTaxes);
-      const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const productCost = matchingProduct && !isCanceled ? (matchingProduct.purchasePrice * r.units) : 0;
+      const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
+      const saleFee = isCanceled ? 0 : Math.abs(r.saleFeeAndTaxes);
+      const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+      const shippingRevenue = isCanceled ? 0 : Math.abs(r.shippingRevenue || 0);
+
+      let shippingCost = rawShippingFee;
+      if (isCanceled) {
+        shippingCost = defaultShipping; // O Mercado Livre cobra apenas 1 frete de devolução por pacote
+      } else if (r.productRevenue < 79) {
+        shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
+        if (shippingRevenue === 0 && rawShippingFee > 0) {
+          shippingCost = 0;
+        }
+      }
+
       const discount = Math.abs(r.discountsAndBonuses || 0);
-      const rowNetProfit = r.productRevenue - saleFee - shippingCost - productCost - discount + (r.shippingRevenue || 0);
+      const taxML = r.productRevenue * 0.04;
+      const rowNetProfit = isCanceled ? -shippingCost : (r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue);
 
       let detectedState = 'Outros';
       const address = (r.buyerAddress || '').toUpperCase();
@@ -1035,13 +1105,13 @@ export default function MLImport({
             <div className="lg:col-span-8 bg-[#121212] border border-white/5 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
               <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-white/5 pb-4">
                 <div className="space-y-1">
-                  <h3 className="text-xs font-black tracking-widest text-white/40 uppercase">Evolução de Faturamento Diário</h3>
-                  <p className="text-sm font-light text-white">Curva de Receitas vs Despesas de Logística & Tarifas do Mercado Livre</p>
+                  <h3 className="text-xs font-black tracking-widest text-white/40 uppercase">Evolução de Faturamento & Saídas Diárias</h3>
+                  <p className="text-sm font-light text-white">Volume de Saídas (Unidades) vs Faturamento Bruto vs Lucro Líquido Previsto</p>
                 </div>
                 <div className="flex items-center gap-3 text-[10px] font-bold">
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#FFE600]"></span> Receita</span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-400"></span> Tarifas</span>
-                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-sky-400"></span> Logística</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-[#FFE600]"></span> Faturamento</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-400"></span> Lucro Líquido</span>
+                  <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-sky-400"></span> Volume Saídas</span>
                 </div>
               </div>
 
@@ -1053,9 +1123,9 @@ export default function MLImport({
                         <stop offset="5%" stopColor="#FFE600" stopOpacity={0.25}/>
                         <stop offset="95%" stopColor="#FFE600" stopOpacity={0}/>
                       </linearGradient>
-                      <linearGradient id="colorTarifas" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor="#ef4444" stopOpacity={0.15}/>
-                        <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                      <linearGradient id="colorLucro" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10B981" stopOpacity={0.25}/>
+                        <stop offset="95%" stopColor="#10B981" stopOpacity={0}/>
                       </linearGradient>
                     </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="#222" />
@@ -1065,10 +1135,14 @@ export default function MLImport({
                       contentStyle={{ backgroundColor: '#18181b', borderColor: '#3f3f46', borderRadius: '12px' }}
                       labelStyle={{ color: '#fff', fontSize: '12px', fontWeight: 'bold' }}
                       itemStyle={{ fontSize: '11px' }}
+                      formatter={(value: any, name: string) => {
+                        if (name.includes('Saídas') || name.includes('Unidades')) return [`${value} un.`, name];
+                        return [formatCurrency(Number(value)), name];
+                      }}
                     />
-                    <Area type="monotone" dataKey="receita" stroke="#FFE600" strokeWidth={2.5} fillOpacity={1} fill="url(#colorReceita)" name="Receita Bruta" />
-                    <Area type="monotone" dataKey="tarifas" stroke="#f87171" strokeWidth={1.5} fillOpacity={1} fill="url(#colorTarifas)" name="Tarifas" />
-                    <Area type="monotone" dataKey="fretes" stroke="#38bdf8" strokeWidth={1.5} fill="none" name="Frete & Logística" />
+                    <Area type="monotone" dataKey="receita" stroke="#FFE600" strokeWidth={2.5} fillOpacity={1} fill="url(#colorReceita)" name="Faturamento Bruto" />
+                    <Area type="monotone" dataKey="lucroLiquido" stroke="#10B981" strokeWidth={2.5} fillOpacity={1} fill="url(#colorLucro)" name="Lucro Líquido Previsto" />
+                    <Area type="monotone" dataKey="unidades" stroke="#38bdf8" strokeWidth={2} fill="none" name="Volume de Saídas (Qtd)" />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
@@ -1169,22 +1243,22 @@ export default function MLImport({
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
-                  className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30 cursor-pointer font-bold"
+                  className="bg-[#18181b] text-white border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30 cursor-pointer font-bold"
                 >
-                  <option value="todos">Todos Envios</option>
-                  <option value="entregue">Entregues</option>
-                  <option value="caminho">A Caminho</option>
-                  <option value="reclamacao">Reclamações</option>
+                  <option value="todos" className="bg-[#18181b] text-white">Todos Envios</option>
+                  <option value="entregue" className="bg-[#18181b] text-white">Entregues</option>
+                  <option value="caminho" className="bg-[#18181b] text-white">A Caminho</option>
+                  <option value="reclamacao" className="bg-[#18181b] text-white">Reclamações</option>
                 </select>
 
                 <select
                   value={adFilter}
                   onChange={(e) => setAdFilter(e.target.value)}
-                  className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30 cursor-pointer font-bold"
+                  className="bg-[#18181b] text-white border border-white/10 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-[#FFE600]/30 cursor-pointer font-bold"
                 >
-                  <option value="todos">Todas Origens</option>
-                  <option value="publicidade">Via Ads</option>
-                  <option value="normal">Orgânica</option>
+                  <option value="todos" className="bg-[#18181b] text-white">Todas Origens</option>
+                  <option value="publicidade" className="bg-[#18181b] text-white">Via Ads</option>
+                  <option value="normal" className="bg-[#18181b] text-white">Orgânica</option>
                 </select>
               </div>
             </div>
@@ -1327,11 +1401,6 @@ export default function MLImport({
 
                       {/* Lucro Líquido Previsto por transação */}
                       {(() => {
-                        const matchingProduct = findMatchingProduct(r, products);
-                        const productCost = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
-                        const saleFee = Math.abs(r.saleFeeAndTaxes);
-                        const shippingCost = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
-                        const discount = Math.abs(r.discountsAndBonuses || 0);
                         const statusLower = r.status.toLowerCase();
                         const descLower = (r.statusDescription || '').toLowerCase();
                         const isRefunded = 
@@ -1345,9 +1414,30 @@ export default function MLImport({
                           descLower.includes('reembols') || 
                           descLower.includes('refund') || 
                           descLower.includes('estorn');
+
+                        const matchingProduct = findMatchingProduct(r, products);
+                        const productCost = matchingProduct && !isRefunded ? (matchingProduct.purchasePrice * r.units) : 0;
+                        const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
+                        const saleFee = isRefunded ? 0 : Math.abs(r.saleFeeAndTaxes);
+                        const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+                        const shippingRevenue = isRefunded ? 0 : Math.abs(r.shippingRevenue || 0);
+
+                        let shippingCost = rawShippingFee;
+                        if (isRefunded) {
+                          shippingCost = defaultShipping; // O Mercado Livre cobra apenas 1 frete de devolução por pacote
+                        } else if (r.productRevenue < 79) {
+                          shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
+                          if (shippingRevenue === 0 && rawShippingFee > 0) {
+                            shippingCost = 0;
+                          }
+                        }
+
+                        const discount = Math.abs(r.discountsAndBonuses || 0);
+                        const taxML = r.productRevenue * 0.04;
+                        
                         const rowNetProfit = isRefunded
                           ? -shippingCost
-                          : r.productRevenue - saleFee - shippingCost - productCost - discount + (r.shippingRevenue || 0);
+                          : r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue;
                         const marginPercent = ((rowNetProfit / (productCost || 1)) * 100).toFixed(0);
                         
                         return (

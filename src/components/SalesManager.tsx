@@ -148,6 +148,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
   // Produto selecionado no dropdown
   const selectedProduct = products.find(p => p.id === selectedProductId);
+  const selectedCurrentStock = selectedProduct ? calculateCurrentStock(selectedProduct, sales, products) : 0;
 
   // Auto-calcular taxa do ML sugerida quando o preço de venda mudar
   React.useEffect(() => {
@@ -180,7 +181,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setFormError(null);
     if (!selectedProduct || quantity <= 0) return;
 
-    const currentStock = calculateCurrentStock(selectedProduct, sales);
+    const currentStock = calculateCurrentStock(selectedProduct, sales, products);
     if (currentStock < quantity) {
       setFormError(`Quantidade indisponível em estoque! Estoque atual disponível: ${currentStock} unidades.`);
       return;
@@ -296,7 +297,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                 >
                   <option value="" className="bg-[#121212] text-white">-- Escolha um produto do estoque --</option>
                   {products.map(p => {
-                    const cStock = calculateCurrentStock(p, sales);
+                    const cStock = calculateCurrentStock(p, sales, products);
                     return (
                       <option key={p.id} value={p.id} disabled={cStock === 0} className="bg-[#121212] text-white">
                         {p.name} (SKU: {p.sku}) — Inicial: {p.stock} un. | Atual: {cStock} un. {cStock === 0 ? '[ESGOTADO]' : ''}
@@ -315,12 +316,12 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       type="number"
                       required
                       min="1"
-                      max={calculateCurrentStock(selectedProduct, sales)}
+                      max={selectedCurrentStock}
                       value={quantity}
-                      onChange={(e) => setQuantity(Math.min(Number(e.target.value), calculateCurrentStock(selectedProduct, sales)))}
+                      onChange={(e) => setQuantity(Math.min(Number(e.target.value), selectedCurrentStock))}
                       className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-extrabold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
                     />
-                    <p className="text-[10px] text-white/40 mt-1 font-medium">Limite disponível em estoque: {calculateCurrentStock(selectedProduct, sales)} un. (Inicial: {selectedProduct.stock} un.)</p>
+                    <p className="text-[10px] text-white/40 mt-1 font-medium">Limite disponível em estoque: {selectedCurrentStock} un. (Inicial: {selectedProduct.stock} un.)</p>
                   </div>
 
                   {/* Preço de Venda Praticado */}

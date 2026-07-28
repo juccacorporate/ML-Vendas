@@ -27,43 +27,115 @@ export function normalizeName(name: string): string {
 }
 
 /**
- * Calcula o estoque atual restante de um produto descontando todas as vendas registradas e ativas
+ * Encontra o produto correspondente para uma venda no catálogo de produtos
  */
-export function calculateCurrentStock(product: Product, sales: Sale[]): number {
-  if (!sales || sales.length === 0) return product.stock;
+export function findProductForSale(s: Sale, productsList: Product[]): Product | undefined {
+  if (!productsList || productsList.length === 0) return undefined;
 
-  const normProdName = normalizeName(product.name);
-  const prodSkuClean = (product.sku || '').trim().toLowerCase();
+  const rawName = (s.productName || '').trim();
+  const rawNameLower = rawName.toLowerCase();
+  const isBadName = !rawName || ['sim', 'não', 'nao', 'produto mercado livre', 'true', 'false'].includes(rawNameLower);
 
-  const totalSold = sales
+  // 1. Se o nome do produto na venda for válido, tentar casar pelo nome do produto
+  if (!isBadName) {
+    const sNameNorm = normalizeName(rawName);
+
+    // Exact match
+    const exactMatch = productsList.find(p => normalizeName(p.name) === sNameNorm);
+    if (exactMatch) return exactMatch;
+
+    // Spec distinction match (evitar que 20cm cante em 90º, ou 144 cante em 102/192)
+    const isAdCurto = rawNameLower.includes('20cm') || rawNameLower.includes('20 cm') || rawNameLower.includes('curto');
+    const isAd90 = rawNameLower.includes('90') || rawNameLower.includes('90º') || rawNameLower.includes('90°') || rawNameLower.includes('90graus');
+    const isAd144 = rawNameLower.includes('144');
+    const isAd102 = rawNameLower.includes('102');
+
+    for (const p of productsList) {
+      const pNameLower = p.name.toLowerCase();
+      const isProdCurto = pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto');
+      const isProd90 = pNameLower.includes('90') || pNameLower.includes('90º') || pNameLower.includes('90°') || pNameLower.includes('90graus');
+      const isProd144 = pNameLower.includes('144');
+      const isProd102 = pNameLower.includes('102');
+
+      if (isProdCurto && !isAdCurto) continue;
+      if (isProd90 && !isAd90) continue;
+      if (isProd144 && !isAd144) continue;
+      if (isProd102 && !isAd102) continue;
+
+      const normPName = normalizeName(p.name);
+      if (normPName && sNameNorm && (normPName.includes(sNameNorm) || sNameNorm.includes(normPName))) {
+        return p;
+      }
+    }
+  }
+
+  // 2. Tentar por ID de produto se não casou por nome ou se nome era genérico
+  const sPid = String(s.productId || '').trim();
+  if (sPid && sPid !== 'unknown' && sPid !== 'null' && sPid !== 'undefined' && sPid !== '') {
+    const matchById = productsList.find(p => String(p.id || '').trim() === sPid);
+    if (matchById) return matchById;
+  }
+
+  // 3. Tentar por SKU
+  const sSku = String((s as any).sku || '').trim().toLowerCase();
+  if (sSku && !['sim', 'não', 'nao', 'ml'].includes(sSku)) {
+    const matchBySku = productsList.find(p => (p.sku || '').trim().toLowerCase() === sSku);
+    if (matchBySku) return matchBySku;
+  }
+
+  return undefined;
+}
+
+/**
+ * Calcula o volume total de saídas (vendas ativas) para um produto específico
+ */
+export function calculateProductSalesVolume(
+  product: Product,
+  sales: Sale[],
+  allProducts?: Product[]
+): number {
+  if (!sales || sales.length === 0 || !product) return 0;
+
+  const productsList = allProducts && allProducts.length > 0 ? allProducts : [product];
+  const targetId = String(product.id || '').trim();
+  const targetNameNorm = normalizeName(product.name || '');
+
+  return sales
     .filter(s => s.status !== 'refunded')
     .reduce((acc, s) => {
-      // Se a venda já tem um produto associado, confia no ID para evitar duplicação cruzada
-      if (s.productId) {
-        if (s.productId === product.id) {
-          return acc + (s.quantity || 1);
+      const matched = findProductForSale(s, productsList);
+      let isMatch = false;
+
+      if (matched) {
+        if (String(matched.id || '').trim() === targetId || normalizeName(matched.name) === targetNameNorm) {
+          isMatch = true;
         }
-        return acc; // Não tenta buscar por nome se já está vinculada a outro produto!
+      } else {
+        const sPid = String(s.productId || '').trim();
+        const sSku = String((s as any).sku || '').trim().toLowerCase();
+        const targetSkuClean = (product.sku || '').trim().toLowerCase();
+
+        if (targetId && sPid && sPid === targetId) {
+          isMatch = true;
+        } else if (targetSkuClean && targetSkuClean.length > 1 && !['sim', 'não', 'nao', 'ml'].includes(targetSkuClean) && sSku === targetSkuClean) {
+          isMatch = true;
+        }
       }
 
-      // 2. Fallback: Correspondência por nome exato (apenas se não houver productId)
-      const sNameClean = (s.productName || '').trim();
-      const normSaleName = normalizeName(sNameClean);
-
-      const isNameMatch = normSaleName.length > 0 && normProdName.length > 0 && (
-        normSaleName === normProdName
-      );
-
-      // 3. Fallback: Correspondência por SKU exato
-      const isSkuMatch = prodSkuClean.length > 2 && sNameClean.toLowerCase() === prodSkuClean;
-
-      if (isNameMatch || isSkuMatch) {
-        return acc + (s.quantity || 1);
+      if (isMatch) {
+        return acc + (Number(s.quantity) || 1);
       }
       return acc;
     }, 0);
+}
 
-  return Math.max(0, product.stock - totalSold);
+/**
+ * Calcula o estoque atual restante de um produto (Estoque Inicial - Saídas)
+ */
+export function calculateCurrentStock(product: Product, sales: Sale[], allProducts?: Product[]): number {
+  if (!product) return 0;
+  const totalSold = calculateProductSalesVolume(product, sales, allProducts);
+  return (product.stock || 0) - totalSold;
 }
 
 /**

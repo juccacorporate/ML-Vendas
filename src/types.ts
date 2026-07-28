@@ -111,24 +111,21 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
   // 1. Se o título for genérico ou booleano, ignoramos no comparativo de título
   const isGenericTitle = !adTitleLower || ['sim', 'não', 'nao', 'true', 'false', 'produto mercado livre'].includes(adTitleLower);
 
-  // 2. Busca exata ou parcial por SKU no estoque
+  // 2. Busca por SKU exata no estoque
   if (rSkuClean && !['sim', 'não', 'nao', 'ml'].includes(rSkuClean)) {
     const matchBySku = products.find(p => {
       const pSkuClean = (p.sku || '').trim().toLowerCase();
-      const pNameClean = p.name.trim().toLowerCase();
-      if (pSkuClean && (pSkuClean === rSkuClean || rSkuClean.includes(pSkuClean) || pSkuClean.includes(rSkuClean))) return true;
-      if (pNameClean && (pNameClean.includes(rSkuClean) || rSkuClean.includes(pNameClean))) return true;
+      if (pSkuClean && pSkuClean === rSkuClean) return true;
       return false;
     });
     if (matchBySku) return matchBySku;
   }
 
-  // 3. Busca por ID do anúncio (adId) na SKU ou Nome do produto
+  // 3. Busca por ID do anúncio (adId) na SKU do produto
   if (rAdIdClean && rAdIdClean.length > 3) {
     const matchByAdId = products.find(p => {
       const pSkuClean = (p.sku || '').trim().toLowerCase();
-      const pNameClean = p.name.trim().toLowerCase();
-      return (pSkuClean && pSkuClean.includes(rAdIdClean)) || (pNameClean && pNameClean.includes(rAdIdClean));
+      return pSkuClean && pSkuClean === rAdIdClean;
     });
     if (matchByAdId) return matchByAdId;
   }
@@ -139,15 +136,13 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
   if (r.sku && !['sim', 'não', 'nao'].includes(r.sku.toLowerCase())) candidateTexts.push(r.sku.toLowerCase());
   if (r.variation && !['sim', 'não', 'nao'].includes(r.variation.toLowerCase())) candidateTexts.push(r.variation.toLowerCase());
 
-  // Verificar inclusão exata ou de substrings de nomes de produtos
+  // Verificar inclusão de textos respeitando os filtros de especificações técnicas
   for (const text of candidateTexts) {
     for (const p of products) {
       const pNameLower = p.name.toLowerCase().trim();
       const pSkuLower = (p.sku || '').toLowerCase().trim();
 
-      if (pSkuLower && text.includes(pSkuLower)) return p;
-
-      // Filtros de distinção de especificações técnicas (ex: 20cm, 90º, 144, 192, 2 metros)
+      // Filtros de distinção de especificações técnicas (ex: 20cm vs 90º, 144 vs 192, 2 metros)
       const isAdCurto = text.includes('20 cm') || text.includes('20cm') || text.includes('curto') || text.includes('20c');
       const isAd90 = text.includes('90') || text.includes('90°') || text.includes('90º') || text.includes('90graus');
       const isAd2m = text.includes('2 metro') || text.includes('2m') || text.includes('2 metros');
@@ -166,10 +161,12 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
       if (isProd144 && !isAd144) continue;
       if (isProd192 && !isAd192) continue;
 
-      const normText = text.replace(/[°ºª]/g, '');
-      const normPName = pNameLower.replace(/[°ºª]/g, '');
+      if (pSkuLower && pSkuLower.length > 2 && text.includes(pSkuLower)) return p;
 
-      if (normText.includes(normPName) || normPName.includes(normText)) {
+      const normText = text.replace(/^(id\d+|kit\s*\d*|\d+)\s*/i, '').replace(/[°ºª]/g, '').trim();
+      const normPName = pNameLower.replace(/^(id\d+|kit\s*\d*|\d+)\s*/i, '').replace(/[°ºª]/g, '').trim();
+
+      if (normText && normPName && (normText.includes(normPName) || normPName.includes(normText))) {
         return p;
       }
     }
