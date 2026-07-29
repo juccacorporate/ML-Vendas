@@ -153,9 +153,9 @@ export default function DashboardOverview({
   // Impostos calculados sobre o faturamento de saídas do período selecionado (4% alíquota Simples/Padrão)
   const totalTaxesForPeriod = filteredAllSales.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.salePrice * s.quantity * 0.04), 0);
 
-  // Lucro líquido do período = soma do lucro líquido das vendas concluídas - Impostos de 4% - Prejuízos e Imprevistos
+  // Lucro líquido do período = soma do lucro líquido das vendas concluídas (liberadas)
   const rawCompletedNetProfit = filteredCompletedSales.reduce((acc, s) => acc + s.netProfit, 0);
-  const totalNetProfit = Math.max(0, rawCompletedNetProfit - totalTaxesForPeriod - totalUnforeseenLosses);
+  const totalNetProfit = rawCompletedNetProfit;
 
   // Custos totais operacionais de todas as vendas do período (concluídas e pendentes) para exibição no card de custos
   // Comissão ML só é cobrada em vendas não reembolsadas

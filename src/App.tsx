@@ -269,9 +269,21 @@ export default function App() {
       const carrier = s.carrier || (localSale && localSale.carrier) || undefined;
       const trackingUrl = s.trackingUrl || (localSale && localSale.trackingUrl) || undefined;
 
-      const protectedStatus = s.status === 'pending' && localSale && localSale.status !== 'pending'
+      let protectedStatus = s.status === 'pending' && localSale && localSale.status !== 'pending'
         ? localSale.status
         : (s.status || 'pending');
+
+      if (protectedStatus === 'pending' && s.date) {
+        const saleDateObj = new Date(s.date + 'T12:00:00');
+        const nowObj = new Date();
+        saleDateObj.setHours(0, 0, 0, 0);
+        nowObj.setHours(0, 0, 0, 0);
+        const diffTime = nowObj.getTime() - saleDateObj.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        if (diffDays >= 30) {
+          protectedStatus = 'completed';
+        }
+      }
 
       return {
         ...s,
@@ -304,7 +316,26 @@ export default function App() {
       };
     });
 
-    return { products: sanitizedProducts, sales: sanitizedSales };
+    const uniqueSalesMap = new Map<string, any>();
+    const finalSanitizedSales: any[] = [];
+    
+    sanitizedSales.forEach(s => {
+      if (s.isMlSale && s.mlSaleId) {
+        if (!uniqueSalesMap.has(s.mlSaleId)) {
+          uniqueSalesMap.set(s.mlSaleId, s);
+          finalSanitizedSales.push(s);
+        } else {
+          const existing = uniqueSalesMap.get(s.mlSaleId)!;
+          if (s.lossAmount && !existing.lossAmount) {
+            Object.assign(existing, s);
+          }
+        }
+      } else {
+        finalSanitizedSales.push(s);
+      }
+    });
+
+    return { products: sanitizedProducts, sales: finalSanitizedSales };
   };
 
   // Buscar dados da planilha na inicialização do aplicativo para manter sincronizado com múltiplos dispositivos
@@ -890,7 +921,26 @@ export default function App() {
           }
         });
 
-    setSales(updatedSales);
+    const uniqueSalesMap = new Map<string, Sale>();
+    const deduplicatedSales: Sale[] = [];
+    
+    updatedSales.forEach(s => {
+      if (s.isMlSale && s.mlSaleId) {
+        if (!uniqueSalesMap.has(s.mlSaleId)) {
+          uniqueSalesMap.set(s.mlSaleId, s);
+          deduplicatedSales.push(s);
+        } else {
+          const existing = uniqueSalesMap.get(s.mlSaleId)!;
+          if (s.lossAmount && !existing.lossAmount) {
+             Object.assign(existing, s);
+          }
+        }
+      } else {
+        deduplicatedSales.push(s);
+      }
+    });
+
+    setSales(deduplicatedSales);
     setProducts(updatedProducts);
     
     setMlRecords(prev => {

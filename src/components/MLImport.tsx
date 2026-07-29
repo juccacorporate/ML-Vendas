@@ -953,7 +953,7 @@ export default function MLImport({
           )}
 
           {/* Cards de Métricas Avançadas - Fileira 1: Geral & Faturamento Real */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             
             {/* Card 1: Faturamento ML Bruto */}
             <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
@@ -972,41 +972,7 @@ export default function MLImport({
               </div>
             </div>
 
-            {/* Card 2: Líquido Recebido ML */}
-            <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-emerald-500/10 transition-all"></div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-black tracking-widest text-white/40 uppercase">LÍQUIDO RECEBIDO ML</span>
-                <div className="bg-emerald-500/10 text-emerald-400 p-2 rounded-lg">
-                  <TrendingUp className="w-4 h-4 stroke-[2.5]" />
-                </div>
-              </div>
-              <div>
-                <h4 className="text-lg sm:text-2xl font-light text-emerald-400 tracking-tight leading-none">
-                  {formatCurrency(metrics.netProfitML)}
-                </h4>
-                <p className="text-[10px] text-white/40 mt-1">Valor liberado livre de custos do ML</p>
-              </div>
-            </div>
-
-            {/* Card 3: Lucro Líquido Previsto (Destaque Neon Corporativo) */}
-            <div className="bg-[#121212] border-2 border-[#FFE600]/20 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-[0_0_20px_rgba(255,230,0,0.05)] relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-[#FFE600]/10 rounded-full blur-xl pointer-events-none group-hover:bg-[#FFE600]/15 transition-all"></div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-black tracking-widest text-[#FFE600] uppercase">LUCRO LÍQ. PREVISTO 🔥</span>
-                <div className="bg-[#FFE600]/10 text-[#FFE600] p-2 rounded-lg">
-                  <TrendingUp className="w-4 h-4 stroke-[2.5]" />
-                </div>
-              </div>
-              <div>
-                <h4 className="text-lg sm:text-2xl font-black text-[#FFE600] tracking-tight leading-none">
-                  {formatCurrency(metrics.predictedNetProfit)}
-                </h4>
-                <p className="text-[10px] text-white/50 mt-1">Líquido de taxas, frete e custos de estoque</p>
-              </div>
-            </div>
-
-            {/* Card 4: Faturamento Ads */}
+            {/* Card 2: Faturamento Ads */}
             <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
               <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-purple-500/10 transition-all"></div>
               <div className="flex items-center justify-between mb-3">
@@ -1026,9 +992,9 @@ export default function MLImport({
           </div>
 
           {/* Cards de Métricas Avançadas - Fileira 2: Logísticas & Eficiência */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-4">
             
-            {/* Card 5: Vendas Full */}
+            {/* Card 3: Vendas Full */}
             <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
               <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-amber-500/10 transition-all"></div>
               <div className="flex items-center justify-between mb-3">
@@ -1045,7 +1011,7 @@ export default function MLImport({
               </div>
             </div>
 
-            {/* Card 6: Vendas Flex */}
+            {/* Card 4: Vendas Flex */}
             <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
               <div className="absolute top-0 right-0 w-24 h-24 bg-emerald-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-emerald-500/10 transition-all"></div>
               <div className="flex items-center justify-between mb-3">
@@ -1062,7 +1028,7 @@ export default function MLImport({
               </div>
             </div>
 
-            {/* Card 7: Vendas Transportadora */}
+            {/* Card 5: Vendas Transportadora */}
             <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
               <div className="absolute top-0 right-0 w-24 h-24 bg-sky-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-sky-500/10 transition-all"></div>
               <div className="flex items-center justify-between mb-3">
@@ -1076,23 +1042,6 @@ export default function MLImport({
                   {formatCurrency(metrics.totalCarrierSales)}
                 </h4>
                 <p className="text-[10px] text-sky-400 mt-1 font-bold">{metrics.carrierUnitsSold} unidades via Transportadora</p>
-              </div>
-            </div>
-
-            {/* Card 8: Custo Logística Geral */}
-            <div className="bg-[#121212] border border-white/5 rounded-2xl p-4 sm:p-5 flex flex-col justify-between shadow-lg relative overflow-hidden group">
-              <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-xl pointer-events-none group-hover:bg-red-500/10 transition-all"></div>
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-[10px] font-black tracking-widest text-white/40 uppercase">CUSTO LOGÍSTICA GERAL</span>
-                <div className="bg-red-500/10 text-red-400 p-2 rounded-lg">
-                  <Truck className="w-4 h-4 stroke-[2.5]" />
-                </div>
-              </div>
-              <div>
-                <h4 className="text-lg sm:text-xl font-bold text-red-400 tracking-tight leading-none">
-                  -{formatCurrency(metrics.totalShippingFee)}
-                </h4>
-                <p className="text-[10px] text-white/40 mt-1">Fretes, pesos e diferenças declaradas</p>
               </div>
             </div>
 
@@ -1148,64 +1097,33 @@ export default function MLImport({
               </div>
             </div>
 
-            {/* Bento de Publicidade, Reclamações & Devoluções */}
-            <div className="lg:col-span-4 grid grid-cols-1 gap-6">
+            {/* Bento de Publicidade */}
+            <div className="lg:col-span-4 flex flex-col justify-between">
               
               {/* Box Publicidade */}
-              <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl flex flex-col justify-between">
+              <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl flex flex-col justify-between h-full">
                 <div className="space-y-1">
                   <span className="text-[10px] font-black tracking-widest text-[#FFE600] uppercase">MERCADO ADS 🚀</span>
                   <h4 className="text-sm font-bold text-white">Vendas via Publicidade</h4>
                   <p className="text-[11px] text-white/50 leading-relaxed font-medium">Faturamento gerado impulsionando produtos através de campanhas.</p>
                 </div>
 
-                <div className="py-4 flex items-center justify-between">
+                <div className="py-6 flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <h5 className="text-2xl font-light text-white">{formatCurrency(metrics.totalAdSales)}</h5>
-                    <p className="text-[10px] text-white/40">{metrics.adUnitsSold} unidades vendidas via Ads</p>
+                    <h5 className="text-3xl font-light text-white">{formatCurrency(metrics.totalAdSales)}</h5>
+                    <p className="text-[11px] text-white/40">{metrics.adUnitsSold} unidades vendidas via Ads</p>
                   </div>
-                  <div className="bg-[#FFE600]/10 border border-[#FFE600]/20 rounded-full p-4 flex items-center justify-center">
-                    <span className="text-xs font-black text-[#FFE600]">
+                  <div className="bg-[#FFE600]/10 border border-[#FFE600]/20 rounded-full p-5 flex items-center justify-center">
+                    <span className="text-sm font-black text-[#FFE600]">
                       {metrics.totalRevenue > 0 ? ((metrics.totalAdSales / metrics.totalRevenue) * 100).toFixed(0) : 0}%
                     </span>
                   </div>
                 </div>
 
-                <p className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/10 rounded-xl p-2.5 font-bold flex items-center gap-1.5">
+                <p className="text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/10 rounded-xl p-3 font-bold flex items-center gap-1.5">
                   <Check className="w-3.5 h-3.5" />
                   Publicidade representou uma parcela relevante no faturamento.
                 </p>
-              </div>
-
-              {/* Box Reclamações & Devoluções */}
-              <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl flex flex-col justify-between">
-                <div className="space-y-1">
-                  <span className="text-[10px] font-black tracking-widest text-red-400 uppercase">RECLAMAÇÕES & DEV. ⚠️</span>
-                  <h4 className="text-sm font-bold text-white">Controle de Reputação</h4>
-                  <p className="text-[11px] text-white/50 leading-relaxed font-medium">Reclamações abertas que impactam no seu termômetro e saúde financeira.</p>
-                </div>
-
-                <div className="py-3 flex items-center justify-between">
-                  <div className="space-y-1">
-                    <span className="text-xs font-bold text-white/60 block">Reclamações Abertas</span>
-                    <span className={`text-lg font-bold ${metrics.openClaims > 0 ? 'text-red-400 animate-pulse' : 'text-emerald-400'}`}>
-                      {metrics.openClaims} ocorrências
-                    </span>
-                  </div>
-                  <div className="space-y-1 text-right">
-                    <span className="text-xs font-bold text-white/60 block">Devoluções / Cancelamentos</span>
-                    <span className="text-lg font-bold text-red-400">
-                      -{formatCurrency(metrics.refunds)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="text-[10px] text-white/50 bg-white/5 rounded-xl p-2.5 font-medium flex items-center justify-between">
-                  <span>Índice Geral de Reclamações:</span>
-                  <strong className={`font-bold ${metrics.claimRate > 3 ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {metrics.claimRate.toFixed(1)}%
-                  </strong>
-                </div>
               </div>
 
             </div>
