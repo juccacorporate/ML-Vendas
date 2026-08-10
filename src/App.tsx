@@ -38,18 +38,6 @@ export default function App() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [mlRecords, setMlRecords] = useState<MLImportRecord[]>([]);
   
-  useEffect(() => {
-    fetch('/api/config')
-      .then(res => res.json())
-      .then(data => {
-        if (data.webAppUrl) {
-          setWebAppUrl(data.webAppUrl);
-          localStorage.setItem('ml_webapp_url', data.webAppUrl);
-        }
-      })
-      .catch(console.error);
-  }, []);
-
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string>(() => {
     return localStorage.getItem('ml_spreadsheet_url') || 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?usp=sharing';
   });
@@ -57,6 +45,25 @@ export default function App() {
   const [webAppUrl, setWebAppUrl] = useState<string>(() => {
     return localStorage.getItem('ml_webapp_url') || 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
   });
+
+  // Regra de Sincronização Mestra: Buscar Web App URL da aba "Database" da planilha
+  useEffect(() => {
+    const fetchWebAppUrlFromSheet = async () => {
+      if (!spreadsheetUrl) return;
+      try {
+        const res = await fetch(`/api/get-webapp-url?spreadsheetUrl=${encodeURIComponent(spreadsheetUrl)}`);
+        const data = await res.json();
+        if (data.webAppUrl && data.webAppUrl !== webAppUrl) {
+          console.log('Web App URL atualizada automaticamente da aba Database da planilha!');
+          setWebAppUrl(data.webAppUrl);
+          localStorage.setItem('ml_webapp_url', data.webAppUrl);
+        }
+      } catch (err) {
+        console.error('Erro ao buscar Web App URL da planilha:', err);
+      }
+    };
+    fetchWebAppUrlFromSheet();
+  }, [spreadsheetUrl]);
 
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
   const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
@@ -93,13 +100,6 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('ml_webapp_url', webAppUrl);
-    if (webAppUrl && webAppUrl.startsWith('https://')) {
-      fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ webAppUrl })
-      }).catch(console.error);
-    }
   }, [webAppUrl]);
 
   useEffect(() => {

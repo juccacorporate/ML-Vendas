@@ -56,31 +56,28 @@ async function startServer() {
     throw new Error('Tempo limite de conexão excedido.');
   }
 
-  // API Configuração Global (Persistência para evitar perda de cache no navegador)
-  const CONFIG_FILE = path.join(process.cwd(), 'server-config.json');
-
-  app.get('/api/config', (req, res) => {
+  // API para buscar o Web App URL diretamente da aba "Database" da planilha do usuário
+  app.get('/api/get-webapp-url', async (req, res) => {
     try {
-      if (fs.existsSync(CONFIG_FILE)) {
-        const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-        res.json(config);
-      } else {
-        res.json({ webAppUrl: '' });
+      const spreadsheetUrl = req.query.spreadsheetUrl as string;
+      if (!spreadsheetUrl) return res.json({ webAppUrl: null });
+      const match = spreadsheetUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+      if (!match) return res.json({ webAppUrl: null });
+      
+      const spreadsheetId = match[1];
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=Database`;
+      
+      const response = await fetchWithTimeout(csvUrl, {}, 15000);
+      if (response.ok) {
+        const csvText = await response.text();
+        const scriptMatch = csvText.match(/https:\/\/script\.google\.com\/macros\/s\/[a-zA-Z0-9-_]+\/exec/);
+        if (scriptMatch) {
+          return res.json({ webAppUrl: scriptMatch[0] });
+        }
       }
+      res.json({ webAppUrl: null });
     } catch (err) {
-      res.json({ webAppUrl: '' });
-    }
-  });
-
-  app.post('/api/config', (req, res) => {
-    try {
-      const { webAppUrl } = req.body;
-      if (typeof webAppUrl === 'string') {
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ webAppUrl }));
-      }
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: 'Falha ao salvar configuração global.' });
+      res.json({ webAppUrl: null });
     }
   });
 
