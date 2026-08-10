@@ -6,6 +6,7 @@
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
+import fs from 'fs';
 
 async function startServer() {
   const app = express();
@@ -54,6 +55,34 @@ async function startServer() {
     }
     throw new Error('Tempo limite de conexão excedido.');
   }
+
+  // API Configuração Global (Persistência para evitar perda de cache no navegador)
+  const CONFIG_FILE = path.join(process.cwd(), 'server-config.json');
+
+  app.get('/api/config', (req, res) => {
+    try {
+      if (fs.existsSync(CONFIG_FILE)) {
+        const config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+        res.json(config);
+      } else {
+        res.json({ webAppUrl: '' });
+      }
+    } catch (err) {
+      res.json({ webAppUrl: '' });
+    }
+  });
+
+  app.post('/api/config', (req, res) => {
+    try {
+      const { webAppUrl } = req.body;
+      if (typeof webAppUrl === 'string') {
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ webAppUrl }));
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: 'Falha ao salvar configuração global.' });
+    }
+  });
 
   // API Proxy para Sincronização do Google Sheets - GET para buscar dados em realtime
   app.get('/api/sync-sheets', async (req, res) => {

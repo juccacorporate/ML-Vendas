@@ -187,7 +187,7 @@ function doPost(e) {
     var prodHeaders = [
       "ID Produto", "Nome Produto", "SKU", "Preço de Compra", "Preço de Venda", 
       "Estoque Inicial", "Saídas", "Estoque Atual", "Estoque Mínimo", "Data de Entrada", "Categoria", "Tipo Anuncio ML", 
-      "Comissão Customizada %", "Frete Padrão", "Diferença", "Taxa ML", "Dias Parados"
+      "Comissão Customizada %", "Frete Padrão", "Diferença", "Taxa ML", "Dias Parados", "Status", "Histórico de Reposições"
     ];
     productSheet.appendRow(prodHeaders);
     
@@ -240,7 +240,9 @@ function doPost(e) {
           p.shippingCost || 0,
           diff, 
           mlFee, 
-          days
+          days,
+          p.status || 'active',
+          p.replenishments ? JSON.stringify(p.replenishments) : '[]'
         ];
       });
       productSheet.getRange(2, 1, prodRows.length, prodHeaders.length).setValues(prodRows);
@@ -439,12 +441,24 @@ function doGet(e) {
         var idxFeeType = headers.indexOf("Tipo Anuncio ML");
         var idxCustomFee = headers.indexOf("Comissão Customizada %");
         var idxShipping = headers.indexOf("Frete Padrão");
+        var idxStatus = headers.indexOf("Status");
+        var idxReplenishments = headers.indexOf("Histórico de Reposições");
         
         for (var i = 1; i < prodData.length; i++) {
           var row = prodData[i];
           if (!row[idxId]) continue;
           
           var addedDateStr = formatSheetDate(row[idxAddedDate]);
+          
+          var statusVal = idxStatus !== -1 ? String(row[idxStatus]) : 'active';
+          if (statusVal !== 'active' && statusVal !== 'archived') statusVal = 'active';
+
+          var replenishments = [];
+          if (idxReplenishments !== -1 && row[idxReplenishments]) {
+            try {
+              replenishments = JSON.parse(row[idxReplenishments]);
+            } catch(e) {}
+          }
           
           products.push({
             id: String(row[idxId]),
@@ -458,7 +472,9 @@ function doGet(e) {
             category: String(row[idxCategory] || "Geral"),
             mlFeeType: String(row[idxFeeType] || "none"),
             customFeePercent: sanitizeNumber(row[idxCustomFee]),
-            shippingCost: sanitizeNumber(row[idxShipping])
+            shippingCost: sanitizeNumber(row[idxShipping]),
+            status: statusVal,
+            replenishments: replenishments
           });
         }
       }

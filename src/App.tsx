@@ -37,6 +37,18 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [mlRecords, setMlRecords] = useState<MLImportRecord[]>([]);
+  
+  useEffect(() => {
+    fetch('/api/config')
+      .then(res => res.json())
+      .then(data => {
+        if (data.webAppUrl) {
+          setWebAppUrl(data.webAppUrl);
+          localStorage.setItem('ml_webapp_url', data.webAppUrl);
+        }
+      })
+      .catch(console.error);
+  }, []);
 
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string>(() => {
     return localStorage.getItem('ml_spreadsheet_url') || 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?usp=sharing';
@@ -81,6 +93,13 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem('ml_webapp_url', webAppUrl);
+    if (webAppUrl && webAppUrl.startsWith('https://')) {
+      fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webAppUrl })
+      }).catch(console.error);
+    }
   }, [webAppUrl]);
 
   useEffect(() => {

@@ -29,12 +29,20 @@ export default function StockControl({
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'low' | 'idle'>('all');
+  const [activeStatusFilter, setActiveStatusFilter] = useState<'active' | 'archived' | 'all'>('active');
 
   // Controle de Modal / Formulário de Adicionar Produto
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+
+  // Estados para Modal de Reposição de Estoque
+  const [isReplenishOpen, setIsReplenishOpen] = useState(false);
+  const [replenishProduct, setReplenishProduct] = useState<Product | null>(null);
+  const [replenishQuantity, setReplenishQuantity] = useState<number>(0);
+  const [replenishPrice, setReplenishPrice] = useState<number>(0);
+  const [replenishDate, setReplenishDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
   // Estados para o Modal de Excluir Tudo por Senha
   const [isClearOpen, setIsClearOpen] = useState(false);
@@ -62,6 +70,9 @@ export default function StockControl({
     const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
     const currentStock = calculateCurrentStock(p, sales, products);
     
+    const productStatus = p.status || 'active';
+    const matchesActiveStatus = activeStatusFilter === 'all' || productStatus === activeStatusFilter;
+
     let matchesStatus = true;
     if (stockStatusFilter === 'low') {
       matchesStatus = currentStock <= p.minimalStock;
@@ -84,7 +95,7 @@ export default function StockControl({
       matchesStatus = daysWithoutSale >= 30;
     }
 
-    return matchesSearch && matchesCategory && matchesStatus;
+    return matchesSearch && matchesCategory && matchesStatus && matchesActiveStatus;
   });
 
   const handleOpenAdd = () => {
@@ -176,7 +187,19 @@ export default function StockControl({
           />
         </div>
 
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
+          <div className="flex flex-wrap gap-2 w-full md:w-auto">
+          <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
+            <Layers className="w-3.5 h-3.5 text-[#FFE600]" />
+            <select
+              value={activeStatusFilter}
+              onChange={(e) => setActiveStatusFilter(e.target.value as any)}
+              className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
+            >
+              <option value="active" className="bg-[#121212] text-white">Ativos</option>
+              <option value="archived" className="bg-[#121212] text-white">Arquivados (Histórico)</option>
+              <option value="all" className="bg-[#121212] text-white">Todos</option>
+            </select>
+          </div>
           {/* Categoria */}
           <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
             <Tag className="w-3.5 h-3.5 text-[#FFE600]" />
@@ -315,6 +338,15 @@ export default function StockControl({
                       {/* Compra */}
                       <td className="py-4 px-4 text-center text-white/80">
                         {formatCurrency(p.purchasePrice)}
+                        {p.replenishments && p.replenishments.length > 0 && (
+                          <div className="mt-1 flex flex-col items-center gap-0.5" title="Última reposição">
+                            {p.replenishments.slice(-1).map(r => (
+                              <span key={r.id} className="text-[9px] text-sky-400 bg-sky-500/10 px-1.5 py-0.5 rounded border border-sky-500/20">
+                                {r.quantity} un. em {r.date.substring(8,10)}/{r.date.substring(5,7)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
 
                       {/* Venda */}
@@ -429,6 +461,31 @@ export default function StockControl({
                             </div>
                           ) : (
                             <>
+                              <button
+                                onClick={() => {
+                                  onEditProduct({
+                                    ...p,
+                                    status: (p.status === 'archived') ? 'active' : 'archived'
+                                  });
+                                }}
+                                className={`${p.status === 'archived' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20' : 'bg-amber-500/10 border-amber-500/20 text-amber-400 hover:bg-amber-500/20'} border p-1.5 rounded-lg transition-colors cursor-pointer mr-1`}
+                                title={p.status === 'archived' ? 'Desarquivar Produto' : 'Arquivar Produto'}
+                              >
+                                <Layers className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setReplenishProduct(p);
+                                  setReplenishQuantity(0);
+                                  setReplenishPrice(p.purchasePrice);
+                                  setReplenishDate(new Date().toISOString().split('T')[0]);
+                                  setIsReplenishOpen(true);
+                                }}
+                                className="bg-sky-500/10 border border-sky-500/20 text-sky-400 hover:bg-sky-500/20 p-1.5 rounded-lg transition-colors cursor-pointer mr-1"
+                                title="Repor Estoque / Recompra"
+                              >
+                                <Plus className="w-4 h-4" />
+                              </button>
                               <button
                                 onClick={() => handleOpenEdit(p)}
                                 className="bg-white/5 hover:bg-white/10 border border-white/10 text-white hover:text-[#FFE600] p-1.5 rounded-lg transition-colors cursor-pointer"
@@ -935,6 +992,91 @@ export default function StockControl({
       )}
 
       {/* Modal de confirmação por senha para Apagar Tudo */}
+      {/* Modal de Reposição de Estoque */}
+      {isReplenishOpen && replenishProduct && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fade-in">
+          <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 w-full max-w-md shadow-2xl relative">
+            <h2 className="text-xl font-bold text-white mb-2">Repor Estoque</h2>
+            <p className="text-xs text-white/50 mb-6 font-medium">
+              Produto: <strong className="text-white">{replenishProduct.name}</strong>
+            </p>
+
+            <form onSubmit={(e) => {
+              e.preventDefault();
+              if (replenishQuantity <= 0) return;
+              
+              const newReplenishment = {
+                id: `rep_${Date.now()}`,
+                date: replenishDate,
+                quantity: replenishQuantity,
+                price: replenishPrice
+              };
+
+              onEditProduct({
+                ...replenishProduct,
+                stock: replenishProduct.stock + replenishQuantity,
+                purchasePrice: replenishPrice,
+                replenishments: [...(replenishProduct.replenishments || []), newReplenishment]
+              });
+              setIsReplenishOpen(false);
+              setReplenishProduct(null);
+            }} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1.5 uppercase tracking-wider">Quantidade Adquirida</label>
+                <input
+                  type="number"
+                  min="1"
+                  required
+                  value={replenishQuantity || ''}
+                  onChange={e => setReplenishQuantity(Number(e.target.value))}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1.5 uppercase tracking-wider">Novo Custo Unitário (R$)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  required
+                  value={replenishPrice || ''}
+                  onChange={e => setReplenishPrice(Number(e.target.value))}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-medium"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-white/70 mb-1.5 uppercase tracking-wider">Data da Compra</label>
+                <input
+                  type="date"
+                  required
+                  value={replenishDate}
+                  onChange={e => setReplenishDate(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-medium"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2.5 pt-4">
+                <button
+                  type="button"
+                  onClick={() => setIsReplenishOpen(false)}
+                  className="bg-white/10 hover:bg-white/15 text-white text-xs font-bold py-2.5 px-4 rounded-xl cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="bg-sky-500 hover:bg-sky-400 text-white text-xs font-extrabold py-2.5 px-5 rounded-xl cursor-pointer shadow-[0_0_15px_rgba(14,165,233,0.3)]"
+                >
+                  Registrar Reposição
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {isClearOpen && (
         <div className="fixed inset-0 bg-[#000000]/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
           <div className="bg-[#141414] rounded-2xl border border-red-500/30 max-w-md w-full p-6 shadow-2xl relative">

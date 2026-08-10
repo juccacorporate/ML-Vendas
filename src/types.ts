@@ -3,6 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+export interface ProductReplenishment {
+  id: string;
+  date: string;
+  quantity: number;
+  price: number;
+}
+
 export interface Product {
   id: string;
   name: string;
@@ -16,6 +23,8 @@ export interface Product {
   mlFeeType: 'classic' | 'premium' | 'custom' | 'none'; // Tipo de anúncio Mercado Livre
   customFeePercent?: number; // Comissão customizada
   shippingCost: number;   // Custo de frete padrão
+  status?: 'active' | 'archived'; // Status do produto
+  replenishments?: ProductReplenishment[]; // Histórico de reposição de estoque
 }
 
 export interface Sale {
