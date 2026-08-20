@@ -256,20 +256,42 @@ function doPost(e) {
       } catch(eFmt) {}
     }
     
-    // 2. Sincronizar Vendas
-    var salesSheet = ss.getSheetByName("Vendas") || ss.insertSheet("Vendas");
-    salesSheet.clear();
+    // 2. Sincronizar Vendas (Dividindo em andamento e finalizadas)
+    var salesSheetActive = ss.getSheetByName("Vendas em Andamento") || ss.insertSheet("Vendas em Andamento");
+    var salesSheetFinished = ss.getSheetByName("Vendas Finalizadas") || ss.insertSheet("Vendas Finalizadas");
+    salesSheetActive.clear();
+    salesSheetFinished.clear();
     var salesHeaders = [
       "ID Venda", "ID Produto", "Nome Produto", "Quantidade", "Preço Venda", "Data", 
       "Taxa ML", "Custo Frete", "Receita por Envio", "Preço Compra", "Lucro Bruto", "Lucro Líquido", "Imposto", "Desconto", "Status", "Tempo Conclusão",
       "ID Venda Mercado Livre", "Nome do Cliente", "Prejuízo Extra", "Motivo Prejuízo", "Tipo de Frete", "Venda Customizada", "Comissão Customizada", "Frete Customizado"
     ];
-    salesSheet.appendRow(salesHeaders);
+    salesSheetActive.appendRow(salesHeaders);
+    salesSheetFinished.appendRow(salesHeaders);
     
     if (payload.sales && payload.sales.length > 0) {
-      var salesRows = payload.sales.map(function(s, index) {
-        var rNum = index + 2;
-        return [
+      var activeRows = [];
+      var finishedRows = [];
+      
+      payload.sales.forEach(function(s) {
+        // Verificar se tem mais de 30 dias
+        var isFinished = false;
+        try {
+          if (s.date) {
+            var saleDate = new Date(s.date + "T12:00:00");
+            saleDate.setHours(0,0,0,0);
+            var now = new Date();
+            now.setHours(0,0,0,0);
+            var diffDays = Math.floor((now.getTime() - saleDate.getTime()) / (1000 * 60 * 60 * 24));
+            if (diffDays >= 30) {
+              isFinished = true;
+            }
+          }
+        } catch(e) {}
+
+        var targetList = isFinished ? finishedRows : activeRows;
+        var rNum = targetList.length + 2;
+        targetList.push([
           s.id, 
           s.productId || "", 
           s.productName, 
@@ -294,9 +316,15 @@ function doPost(e) {
           s.isCustomSale ? "Sim" : "Não",
           s.customMlFee || 0,
           s.customShippingCost || 0
-        ];
+        ]);
       });
-      salesSheet.getRange(2, 1, salesRows.length, salesHeaders.length).setValues(salesRows);
+      
+      if (activeRows.length > 0) {
+        salesSheetActive.getRange(2, 1, activeRows.length, salesHeaders.length).setValues(activeRows);
+      }
+      if (finishedRows.length > 0) {
+        salesSheetFinished.getRange(2, 1, finishedRows.length, salesHeaders.length).setValues(finishedRows);
+      }
     }
 
     // 3. Sincronizar Configurações (Aporte / Capital Inicial)
@@ -482,69 +510,73 @@ function doGet(e) {
     
     // 2. Ler Vendas
     var sales = [];
-    var salesSheet = ss.getSheetByName("Vendas");
-    if (salesSheet) {
-      var salesData = salesSheet.getDataRange().getValues();
-      if (salesData.length > 1) {
-        var headers = salesData[0];
-        var idxSaleId = headers.indexOf("ID Venda");
-        var idxProdId = headers.indexOf("ID Produto");
-        var idxProdName = headers.indexOf("Nome Produto");
-        var idxQty = headers.indexOf("Quantidade");
-        var idxPrice = headers.indexOf("Preço Venda");
-        var idxDate = headers.indexOf("Data");
-        var idxFee = headers.indexOf("Taxa ML");
-        var idxShip = headers.indexOf("Custo Frete");
-        var idxShipRevenue = headers.indexOf("Receita por Envio");
-        var idxPur = headers.indexOf("Preço Compra");
-        var idxGross = headers.indexOf("Lucro Bruto");
-        var idxNet = headers.indexOf("Lucro Líquido");
-        var idxDisc = headers.indexOf("Desconto");
-        var idxStatus = headers.indexOf("Status");
-        var idxComp = headers.indexOf("Tempo Conclusão");
-        var idxMlSaleId = headers.indexOf("ID Venda Mercado Livre");
-        var idxBuyerName = headers.indexOf("Nome do Cliente");
-        var idxLossAmount = headers.indexOf("Prejuízo Extra");
-        var idxLossReason = headers.indexOf("Motivo Prejuízo");
-        var idxShippingType = headers.indexOf("Tipo de Frete");
-        var idxIsCustomSale = headers.indexOf("Venda Customizada");
-        var idxCustomMlFee = headers.indexOf("Comissão Customizada");
-        var idxCustomShippingCost = headers.indexOf("Frete Customizado");
-        
-        for (var i = 1; i < salesData.length; i++) {
-          var row = salesData[i];
-          if (!row[idxSaleId]) continue;
+    var salesSheetsToRead = ["Vendas em Andamento", "Vendas Finalizadas", "Vendas"];
+    
+    salesSheetsToRead.forEach(function(sheetName) {
+      var salesSheet = ss.getSheetByName(sheetName);
+      if (salesSheet) {
+        var salesData = salesSheet.getDataRange().getValues();
+        if (salesData.length > 1) {
+          var headers = salesData[0];
+          var idxSaleId = headers.indexOf("ID Venda");
+          var idxProdId = headers.indexOf("ID Produto");
+          var idxProdName = headers.indexOf("Nome Produto");
+          var idxQty = headers.indexOf("Quantidade");
+          var idxPrice = headers.indexOf("Preço Venda");
+          var idxDate = headers.indexOf("Data");
+          var idxFee = headers.indexOf("Taxa ML");
+          var idxShip = headers.indexOf("Custo Frete");
+          var idxShipRevenue = headers.indexOf("Receita por Envio");
+          var idxPur = headers.indexOf("Preço Compra");
+          var idxGross = headers.indexOf("Lucro Bruto");
+          var idxNet = headers.indexOf("Lucro Líquido");
+          var idxDisc = headers.indexOf("Desconto");
+          var idxStatus = headers.indexOf("Status");
+          var idxComp = headers.indexOf("Tempo Conclusão");
+          var idxMlSaleId = headers.indexOf("ID Venda Mercado Livre");
+          var idxBuyerName = headers.indexOf("Nome do Cliente");
+          var idxLossAmount = headers.indexOf("Prejuízo Extra");
+          var idxLossReason = headers.indexOf("Motivo Prejuízo");
+          var idxShippingType = headers.indexOf("Tipo de Frete");
+          var idxIsCustomSale = headers.indexOf("Venda Customizada");
+          var idxCustomMlFee = headers.indexOf("Comissão Customizada");
+          var idxCustomShippingCost = headers.indexOf("Frete Customizado");
           
-          var dateStr = formatSheetDate(row[idxDate]);
-          
-          sales.push({
-            id: String(row[idxSaleId]),
-            productId: idxProdId !== -1 ? String(row[idxProdId]) : "unknown",
-            productName: String(row[idxProdName]),
-            quantity: sanitizeNumber(row[idxQty]) || 1,
-            salePrice: sanitizeNumber(row[idxPrice]),
-            date: dateStr || new Date().toISOString().split('T')[0],
-            mlFee: idxFee !== -1 ? sanitizeNumber(row[idxFee]) : 0,
-            shippingCost: idxShip !== -1 ? sanitizeNumber(row[idxShip]) : 0,
-            shippingRevenue: idxShipRevenue !== -1 ? sanitizeNumber(row[idxShipRevenue]) : 0,
-            purchasePrice: idxPur !== -1 ? sanitizeNumber(row[idxPur]) : 0,
-            grossProfit: idxGross !== -1 ? sanitizeNumber(row[idxGross]) : 0,
-            netProfit: idxNet !== -1 ? sanitizeNumber(row[idxNet]) : 0,
-            discount: idxDisc !== -1 ? sanitizeNumber(row[idxDisc]) : 0,
-            status: idxStatus !== -1 ? String(row[idxStatus]) : "completed",
-            completionTime: idxComp !== -1 ? (row[idxComp] !== "" ? sanitizeNumber(row[idxComp]) : undefined) : undefined,
-            mlSaleId: idxMlSaleId !== -1 ? (String(row[idxMlSaleId]) || undefined) : undefined,
-            buyerName: idxBuyerName !== -1 ? (String(row[idxBuyerName]) || undefined) : undefined,
-            lossAmount: idxLossAmount !== -1 ? (sanitizeNumber(row[idxLossAmount]) || undefined) : undefined,
-            lossReason: idxLossReason !== -1 ? (String(row[idxLossReason]) || undefined) : undefined,
-            shippingType: idxShippingType !== -1 ? (String(row[idxShippingType]) || undefined) : undefined,
-            isCustomSale: idxIsCustomSale !== -1 ? (row[idxIsCustomSale] === "Sim" ? true : false) : undefined,
-            customMlFee: idxCustomMlFee !== -1 ? (sanitizeNumber(row[idxCustomMlFee]) || undefined) : undefined,
-            customShippingCost: idxCustomShippingCost !== -1 ? (sanitizeNumber(row[idxCustomShippingCost]) || undefined) : undefined
-          });
+          for (var i = 1; i < salesData.length; i++) {
+            var row = salesData[i];
+            if (!row[idxSaleId]) continue;
+            
+            var dateStr = formatSheetDate(row[idxDate]);
+            
+            sales.push({
+              id: String(row[idxSaleId]),
+              productId: idxProdId !== -1 ? String(row[idxProdId]) : "unknown",
+              productName: String(row[idxProdName]),
+              quantity: sanitizeNumber(row[idxQty]) || 1,
+              salePrice: sanitizeNumber(row[idxPrice]),
+              date: dateStr || new Date().toISOString().split('T')[0],
+              mlFee: idxFee !== -1 ? sanitizeNumber(row[idxFee]) : 0,
+              shippingCost: idxShip !== -1 ? sanitizeNumber(row[idxShip]) : 0,
+              shippingRevenue: idxShipRevenue !== -1 ? sanitizeNumber(row[idxShipRevenue]) : 0,
+              purchasePrice: idxPur !== -1 ? sanitizeNumber(row[idxPur]) : 0,
+              grossProfit: idxGross !== -1 ? sanitizeNumber(row[idxGross]) : 0,
+              netProfit: idxNet !== -1 ? sanitizeNumber(row[idxNet]) : 0,
+              discount: idxDisc !== -1 ? sanitizeNumber(row[idxDisc]) : 0,
+              status: idxStatus !== -1 ? String(row[idxStatus]) : "completed",
+              completionTime: idxComp !== -1 ? (row[idxComp] !== "" ? sanitizeNumber(row[idxComp]) : undefined) : undefined,
+              mlSaleId: idxMlSaleId !== -1 ? (String(row[idxMlSaleId]) || undefined) : undefined,
+              buyerName: idxBuyerName !== -1 ? (String(row[idxBuyerName]) || undefined) : undefined,
+              lossAmount: idxLossAmount !== -1 ? (sanitizeNumber(row[idxLossAmount]) || undefined) : undefined,
+              lossReason: idxLossReason !== -1 ? (String(row[idxLossReason]) || undefined) : undefined,
+              shippingType: idxShippingType !== -1 ? (String(row[idxShippingType]) || undefined) : undefined,
+              isCustomSale: idxIsCustomSale !== -1 ? (row[idxIsCustomSale] === "Sim" ? true : false) : undefined,
+              customMlFee: idxCustomMlFee !== -1 ? (sanitizeNumber(row[idxCustomMlFee]) || undefined) : undefined,
+              customShippingCost: idxCustomShippingCost !== -1 ? (sanitizeNumber(row[idxCustomShippingCost]) || undefined) : undefined
+            });
+          }
         }
       }
-    }
+    });
 
     // 3. Ler Configurações (Aporte / Capital Inicial)
     var initialCapital = 500;

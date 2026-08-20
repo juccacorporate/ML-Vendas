@@ -115,11 +115,14 @@ export default function App() {
   const sanitizeCloudData = (cloudProducts: Product[], cloudSales: Sale[], cloudMlRecords?: MLImportRecord[]) => {
     const recordsToUse = cloudMlRecords || mlRecords || [];
     
-    // Descartar produtos fantasma "Sim" e "Não" ou genericamente incorretos criados anteriormente
+    // 1. Manter APENAS produtos que foram cadastrados manualmente.
+    // Ignorar "fantasmas" auto-criados (prod_ml_...) e lixos ("sim", "nao").
     const sanitizedProducts = (cloudProducts || [])
       .filter(p => {
         const n = (p.name || '').trim().toLowerCase();
-        return n !== 'sim' && n !== 'não' && n !== 'nao';
+        const isTrash = n === 'sim' || n === 'não' || n === 'nao';
+        const isGhost = p.id.startsWith('prod_ml_');
+        return !isTrash && !isGhost;
       })
       .map(p => ({
         ...p,
@@ -131,6 +134,7 @@ export default function App() {
         customFeePercent: p.customFeePercent !== undefined ? Number(p.customFeePercent) : undefined
       }));
 
+    // 2. Mapear vendas e DESCARTAR qualquer venda que não possua um produto correspondente no estoque oficial.
     const sanitizedSales = (cloudSales || []).map(s => {
       let salePrice = Number(s.salePrice) || 0;
       const quantity = Number(s.quantity) || 1;
@@ -139,7 +143,7 @@ export default function App() {
       const cleanSaleProductName = (s.productName || '').trim();
       const isBadName = !cleanSaleProductName || ['sim', 'não', 'nao', 'produto mercado livre'].includes(cleanSaleProductName.toLowerCase());
 
-      // Encontrar produto correspondente priorizando o Nome (Título) do produto para consistência absoluta
+      // Encontrar produto correspondente priorizando o Nome (Título) do produto
       let matchingProd: Product | undefined = undefined;
       if (!isBadName) {
         matchingProd = sanitizedProducts.find(p => normalizeName(p.name) === normalizeName(cleanSaleProductName));
@@ -148,7 +152,7 @@ export default function App() {
         matchingProd = sanitizedProducts.find(p => p.id === s.productId);
       }
 
-      // Tentar re-vincular usando o registro do Mercado Livre (mlRecords)
+      // Tentar re-vincular usando o registro do ML caso não encontre por nome/id
       const idToSearch = (s.mlSaleId || s.id || '').split('_')[0];
       const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
 
@@ -161,30 +165,21 @@ export default function App() {
         }
       }
 
-      let productName = '';
-      if (originalRecord && originalRecord.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(originalRecord.adTitle.trim().toLowerCase())) {
-        productName = originalRecord.adTitle;
-      } else if (!isBadName) {
-        productName = cleanSaleProductName;
-      } else if (matchingProd) {
-        productName = matchingProd.name;
-      } else if (originalRecord && originalRecord.sku && !['sim', 'não', 'nao'].includes(originalRecord.sku.trim().toLowerCase())) {
-        productName = originalRecord.sku;
-      } else {
-        productName = 'Produto Mercado Livre';
+      // Se após todas as tentativas a venda NÃO tiver um produto oficial no estoque, marcamos como inválida
+      if (!matchingProd) {
+        return null; // Será filtrado na próxima etapa
       }
 
-      let productId = matchingProd ? matchingProd.id : s.productId;
-      let purchasePrice = matchingProd ? matchingProd.purchasePrice : (Number(s.purchasePrice) || 0);
+      let productName = matchingProd.name;
+      let productId = matchingProd.id;
+      let purchasePrice = matchingProd.purchasePrice;
 
-      // Corrigir preços corrompidos/bizarros (como datas formatadas por engano na planilha, menores ou iguais a zero ou absurdamente grandes)
+      // Corrigir preços corrompidos
       if (salePrice <= 0 || salePrice > 1000000) {
         if (Number(s.grossProfit) > 0 && purchasePrice > 0) {
           salePrice = Number(s.grossProfit) + purchasePrice + discount;
-        } else if (matchingProd) {
-          salePrice = matchingProd.salePrice;
         } else {
-          salePrice = 0;
+          salePrice = matchingProd.salePrice;
         }
       }
 
@@ -333,7 +328,7 @@ export default function App() {
         carrier,
         trackingUrl
       };
-    });
+    }).filter(s => s !== null);
 
     const uniqueSalesMap = new Map<string, any>();
     const finalSanitizedSales: any[] = [];
@@ -765,26 +760,9 @@ export default function App() {
           let matchingProduct = findMatchingProduct(r, updatedProducts);
 
           if (!matchingProduct) {
-            // Se o produto não estava cadastrado no Estoque, cria automaticamente usando o título do anúncio real (NUNCA "Sim" ou "Não")
-            const autoProdName = (r.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(r.adTitle.toLowerCase()))
-              ? r.adTitle
-              : (r.sku ? `SKU: ${r.sku}` : 'Produto Mercado Livre');
-
-            const autoProd: Product = {
-              id: `prod_ml_${r.sku || r.adId || Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-              name: autoProdName,
-              sku: r.sku || r.adId || 'ML',
-              purchasePrice: 0,
-              salePrice: r.units > 0 ? Number((r.productRevenue / r.units).toFixed(2)) : r.productRevenue,
-              stock: 0,
-              minimalStock: 2,
-              addedDate: new Date().toISOString().split('T')[0],
-              category: 'Geral',
-              mlFeeType: 'classic',
-              shippingCost: 6.55
-            };
-            updatedProducts.push(autoProd);
-            matchingProduct = autoProd;
+            // Regra: Não cadastrar produtos novos automaticamente baseados na planilha.
+            // Ignorar vendas de produtos que não estão cadastrados no controle de estoque.
+            return;
           }
 
           // Definir o nome exato do produto da venda baseado no Título do Anúncio do Mercado Livre
