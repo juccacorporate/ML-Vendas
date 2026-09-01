@@ -6,7 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { MLImportRecord, Product, findMatchingProduct } from '../types';
-import { formatCurrency, formatDate } from '../utils';
+import { formatCurrency, formatDate, cleanMlSaleId, extractMlOrderId } from '../utils';
 import { 
   Upload, 
   FileSpreadsheet, 
@@ -54,6 +54,7 @@ interface MLImportProps {
   isSheetsConnected: boolean;
   onPushToCloud: () => void;
   isSyncing: boolean;
+  onImportRecebimentos?: (records: any[], rawMatrix?: any[][]) => number | void;
 }
 
 export default function MLImport({
@@ -63,13 +64,15 @@ export default function MLImport({
   onClearRecords,
   isSheetsConnected,
   onPushToCloud,
-  isSyncing
+  isSyncing,
+  onImportRecebimentos
 }: MLImportProps) {
   const [pasteData, setPasteArea] = useState('');
   const [copiedScript, setCopiedScript] = useState(false);
   const [dragOver, setDragActive] = useState(false);
   const [parseError, setParseError] = useState<string | null>(null);
   const [importSuccess, setImportSuccess] = useState<string | null>(null);
+  const [recebimentosFeedback, setRecebimentosFeedback] = useState<{ type: 'success' | 'error' | 'info'; message: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('todos');
   const [adFilter, setAdFilter] = useState('todos');
@@ -112,7 +115,14 @@ export default function MLImport({
     }
 
     const normalizeStr = (s: any) => 
-      String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+      String(s || '')
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[ºª°]/g, "o")
+        .replace(/[^a-z0-9]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 
     // Palavras-chave para localizar a linha de cabeçalho na planilha
     const keyHeaderWords = [
@@ -171,7 +181,14 @@ export default function MLImport({
       return -1;
     };
 
-    const idxId = getIndex(['n.º de venda', 'n.º venda', 'nº de venda', 'id venda', 'id da venda', 'numero de venda', 'número de venda', 'id de venda', 'id de compra', 'pack_id', 'order_id'], ['publicidade', 'anuncio']);
+    const idxId = getIndex([
+      '# de venda', '# da venda', '# de pacote', '# do pacote', '# venda', '# pacote',
+      'n.o de venda', 'n.º de venda', 'n.o venda', 'n.º venda', 'nº de venda', 'no de venda', 'n de venda',
+      'numero da venda', 'número da venda', 'numero de venda', 'número de venda', 'num da venda',
+      'numero do pacote', 'número do pacote', 'numero de envio', 'número de envio',
+      'id da venda', 'id de venda', 'id venda', 'id da operacao', 'id da operação', 'id de operacao',
+      'operacao', 'operação', 'id do pacote', 'id do pedido', 'pedido', 'pack_id', 'order_id', 'id'
+    ], ['publicidade', 'anuncio', 'anúncio', 'produto', 'comprador', 'cliente', 'dados', 'tipo', 'forma']);
     const idxDate = getIndex(['data da venda', 'data de criação', 'data venda', 'data_venda', 'data de criacao']);
     const idxStatus = getIndex(['estado do envio', 'estado', 'status da venda', 'status']);
     const idxStatusDesc = getIndex(['descricao do status', 'descrição do status', 'detalhe do status', 'status_desc']);
@@ -217,6 +234,7 @@ export default function MLImport({
     }
 
     const importedRecords: MLImportRecord[] = [];
+    let lastValidMlId = '';
 
     for (let i = bestHeaderRowIndex + 1; i < matrix.length; i++) {
       const row = matrix[i];
@@ -225,7 +243,32 @@ export default function MLImport({
       const hasSomeData = row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
       if (!hasSomeData) continue;
 
-      const rawId = idxId !== -1 ? cleanStr(row[idxId]) : '';
+      let rawId = '';
+      if (idxId !== -1 && row[idxId] !== undefined && row[idxId] !== null) {
+        rawId = extractMlOrderId(row[idxId]);
+      } else if (row[0] !== undefined && row[0] !== null) {
+        const col0Candidate = extractMlOrderId(row[0]);
+        if (/^\d{6,24}$/.test(col0Candidate)) {
+          rawId = col0Candidate;
+        }
+      }
+
+      if (!rawId || !/^\d{6,24}$/.test(rawId)) {
+        for (let col = 0; col < row.length; col++) {
+          const candidate = extractMlOrderId(row[col]);
+          if (/^\d{8,24}$/.test(candidate)) {
+            rawId = candidate;
+            break;
+          }
+        }
+      }
+
+      if (rawId && /^\d{6,24}$/.test(rawId)) {
+        lastValidMlId = rawId;
+      } else if (!rawId && lastValidMlId) {
+        rawId = lastValidMlId;
+      }
+
       let rawTitle = idxAdTitle !== -1 ? cleanStr(row[idxAdTitle]) : '';
       const rawRevenue = idxProductRevenue !== -1 ? cleanNum(row[idxProductRevenue]) : 0;
       const rawSku = idxSku !== -1 ? cleanStr(row[idxSku]) : '';
@@ -264,8 +307,10 @@ export default function MLImport({
 
       if (!rawId && !rawTitle && !rawRevenue && !rawSku) continue;
 
+      const recordId = rawId || `rec_${Date.now()}_${i}`;
+
       importedRecords.push({
-        id: rawId || `ml_v_${i}`,
+        id: recordId,
         dateStr: idxDate !== -1 && row[idxDate] ? cleanStr(row[idxDate]) : new Date().toLocaleDateString('pt-BR'),
         status: idxStatus !== -1 && row[idxStatus] ? cleanStr(row[idxStatus]) : 'Entregue',
         statusDescription: idxStatusDesc !== -1 && row[idxStatusDesc] ? cleanStr(row[idxStatusDesc]) : 'Chegou',
@@ -420,6 +465,235 @@ export default function MLImport({
     }
   };
 
+  
+  const handleFileUploadRecebimentos = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    
+    setParseError(null);
+
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[sheetName];
+      const matrix: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '', raw: false });
+
+      if (matrix.length < 2) {
+        alert('A planilha de recebimentos parece estar vazia.');
+        setParseError('A planilha de recebimentos parece estar vazia.');
+        return;
+      }
+
+      let bestHeaderRowIndex = -1;
+      let maxMatches = 0;
+      const keyHeaderWords = ['tipo de opera', 'numero da opera', 'numero do pacote', 'numero da venda', 'numero de envio'];
+
+      for (let r = 0; r < Math.min(matrix.length, 20); r++) {
+        const row = matrix[r];
+        if (!Array.isArray(row)) continue;
+        let matches = 0;
+        for (const cell of row) {
+          const normCell = cleanStr(cell).toLowerCase();
+          if (normCell && keyHeaderWords.some(k => normCell.includes(k))) {
+            matches++;
+          }
+        }
+        if (matches > maxMatches) {
+          maxMatches = matches;
+          bestHeaderRowIndex = r;
+        }
+      }
+
+      if (bestHeaderRowIndex === -1) {
+         bestHeaderRowIndex = 0;
+      }
+
+      const isValidSaleId = (val: any): boolean => {
+        if (val === null || val === undefined) return false;
+        let str = String(val).trim();
+        if (!str) return false;
+        if (/[eE\+,\.]/.test(str)) {
+          return false;
+        }
+        if (str.toLowerCase().includes('prod_')) {
+          return false;
+        }
+        return /^\d{8,20}$/.test(str);
+      };
+
+      const formatFullIdString = (val: any): string => {
+        if (val === null || val === undefined) return '';
+        let str = String(val).trim();
+        if (!str) return '';
+        if (/[eE\+,\.]/.test(str)) {
+          return '';
+        }
+        return str;
+      };
+
+      const headers = (matrix[bestHeaderRowIndex] || []).map(h => cleanStr(h).toLowerCase());
+      
+      const idxDate = headers.findIndex(h => h.includes('data de libera') || h.includes('data da libera') || h.includes('data de entrada') || h.includes('data da opera') || h.includes('data'));
+      const idxOpNum = headers.findIndex(h => h.includes('numero da opera') || h.includes('número da operação') || h.includes('numero de envio') || (h.includes('operacao') && !h.includes('tipo') && !h.includes('status')));
+      const idxTipoOp = headers.findIndex(h => h.includes('tipo de opera') || h.includes('tipo de operação') || h.includes('status de libera') || (h.includes('tipo') && !h.includes('documento') && !h.includes('anuncio')));
+      const idxOpStatus = headers.findIndex(h => h.includes('status da opera') || h.includes('status da operação') || h.includes('status da operacao') || h.includes('estado da opera') || h.includes('status operacao') || (h.includes('status') && !h.includes('libera') && !h.includes('anuncio') && !h.includes('envio')));
+      const idxPackage = headers.findIndex(h => h.includes('numero do pacote') || h.includes('número do pacote') || h.includes('numero de pacote') || h.includes('pacote'));
+
+      let idxItem = headers.findIndex(h => {
+        const norm = cleanStr(h).toLowerCase();
+        return (norm.includes('titulo') || norm.includes('título') || norm.includes('nome do item') || norm === 'item' || (norm.includes('item') && !norm.includes('id') && !norm.includes('numero') && !norm.includes('número') && !norm.includes('cod') && !norm.includes('código')));
+      });
+
+      if (idxItem === -1) {
+        idxItem = headers.findIndex(h => {
+          const norm = cleanStr(h).toLowerCase();
+          return (norm.includes('descricao') || norm.includes('descrição') || norm.includes('produto') || norm.includes('anuncio') || norm.includes('anúncio')) && !norm.includes('id') && !norm.includes('numero') && !norm.includes('número');
+        });
+      }
+
+      const records: any[] = [];
+
+      for (let i = bestHeaderRowIndex + 1; i < matrix.length; i++) {
+        const row = matrix[i];
+        if (!row || !Array.isArray(row) || row.length === 0) continue;
+
+        let rawDateStr = idxDate !== -1 && row[idxDate] ? String(row[idxDate]).trim() : '';
+        let dateStr = rawDateStr;
+        if (rawDateStr.includes('GMT') || rawDateStr.includes('GMT-')) {
+          try {
+            const dObj = new Date(rawDateStr);
+            if (!isNaN(dObj.getTime())) {
+              dateStr = dObj.toISOString().split('T')[0];
+            }
+          } catch (e) {}
+        }
+
+        let releaseStatus = idxTipoOp !== -1 && row[idxTipoOp] !== undefined ? String(row[idxTipoOp]).trim() : '';
+        if (!releaseStatus || releaseStatus.toLowerCase().includes('gmt') || /^\d{4}-\d{2}-\d{2}/.test(releaseStatus) || /^\d{2}\/\d{2}\/\d{4}/.test(releaseStatus)) {
+          releaseStatus = 'Liberação';
+        }
+        
+        // Regra do Usuário (Tipo de Operação): Capturar apenas as linhas "Liberação"
+        if (idxTipoOp !== -1 && releaseStatus) {
+          const cleanTipo = cleanStr(releaseStatus).toLowerCase();
+          if (!cleanTipo.includes('libera') && !cleanTipo.includes('dispon')) {
+            // Se for tarifa, saque, estorno ou retenção, ignorar a linha pois não é uma liberação de caixa/venda
+            continue;
+          }
+        }
+
+        // Regra do Usuário (Status da Operação - Coluna F): Precisa ser "PAGO"
+        let operationStatus = idxOpStatus !== -1 && row[idxOpStatus] !== undefined ? String(row[idxOpStatus]).trim() : '';
+        if (!operationStatus && row.length > 5 && row[5] !== undefined && row[5] !== null) {
+          const cell5 = String(row[5]).trim();
+          if (['pago', 'cancelado', 'pendente', 'estornado', 'reembolsado', 'devolvido'].includes(cell5.toLowerCase())) {
+            operationStatus = cell5;
+          }
+        }
+
+        // Identificar se o status da operação é "Cancelado", "Estornado", etc.
+        let isCanceledOp = false;
+        if (operationStatus) {
+          const cleanOp = cleanStr(operationStatus).toLowerCase();
+          if (cleanOp.includes('cancelad') || cleanOp.includes('estorn') || cleanOp.includes('devol') || (cleanOp !== 'pago' && cleanOp !== 'paga' && cleanOp !== 'paid' && cleanOp !== 'aprovado' && cleanOp !== 'concluido')) {
+            isCanceledOp = true;
+          }
+        }
+        
+        let rawPackageId = idxPackage !== -1 ? formatFullIdString(row[idxPackage]) : '';
+        let rawOpNum = idxOpNum !== -1 ? formatFullIdString(row[idxOpNum]) : '';
+        let colZVal = row.length > 25 ? formatFullIdString(row[25]) : '';
+        
+        let mlSaleId = '';
+
+        // Regra 1: Procurar na coluna Z (índice 25, 26ª coluna da planilha do Mercado Livre) os IDs de venda
+        if (isValidSaleId(colZVal)) {
+          mlSaleId = colZVal;
+        } else if (isValidSaleId(rawPackageId)) {
+          mlSaleId = rawPackageId;
+        } else if (isValidSaleId(rawOpNum)) {
+          mlSaleId = rawOpNum;
+        } else {
+          // Busca em qualquer célula da linha um número estrito de pacote/venda (apenas dígitos, iniciando em 20...)
+          for (const cell of row) {
+            const candidate = formatFullIdString(cell);
+            if (isValidSaleId(candidate)) {
+              mlSaleId = candidate;
+              break;
+            }
+          }
+        }
+
+        // Se não for um ID numérico de pacote/venda estritamente válido (começando com 20, apenas dígitos), ignora a linha
+        if (!isValidSaleId(mlSaleId)) {
+          continue;
+        }
+
+        let rawProductName = idxItem !== -1 && row[idxItem] ? String(row[idxItem]).trim() : '';
+        if (!rawProductName || /^MLB\d+/i.test(rawProductName) || ['sim', 'não', 'nao', 'true', 'false', 'liberação', 'liberacao', 'disponível'].includes(rawProductName.toLowerCase())) {
+          rawProductName = '';
+          // Busca na linha uma célula que contenha o nome/título real do item
+          for (let c = 0; c < row.length; c++) {
+            const cellVal = String(row[c] || '').trim();
+            if (cellVal.length >= 6 && 
+                !/^MLB\d+/i.test(cellVal) && 
+                !/^\d+$/.test(cellVal) && 
+                !/^20\d+/.test(cellVal) && 
+                !/^17\d+/.test(cellVal) && 
+                !/^\d{4}-\d{2}-\d{2}/.test(cellVal) && 
+                !/^\d{2}\/\d{2}\/\d{4}/.test(cellVal) && 
+                !['liberação', 'liberacao', 'disponível', 'disponivel', 'pago', 'saque', 'tarifa', 'cashback', 'cancelado'].includes(cellVal.toLowerCase())) {
+              rawProductName = cellVal;
+              break;
+            }
+          }
+        }
+        const productName = rawProductName || 'Item Mercado Livre';
+
+        records.push({
+          id: mlSaleId,
+          mlSaleId,
+          dateStr,
+          description: 'Liberação',
+          releaseStatus: releaseStatus || 'Liberação',
+          operationStatus: operationStatus || 'Pago',
+          productName
+        });
+      }
+
+      if (matrix.length > 0) {
+        let updatedCount = 0;
+        if (onImportRecebimentos) {
+          const res = onImportRecebimentos(records, matrix);
+          if (typeof res === 'number') {
+            updatedCount = res;
+          }
+        }
+        if (onPushToCloud) {
+          onPushToCloud();
+        }
+        setRecebimentosFeedback({
+          type: 'success',
+          message: `Planilha importada com sucesso! ${matrix.length} linhas (incluindo cabeçalhos) preparadas para a aba "Entrada de Valores"${updatedCount > 0 ? ` e ${updatedCount} vendas marcadas como Concluída` : ''}. Sincronização com o Google Sheets disparada!`
+        });
+      } else {
+        setRecebimentosFeedback({
+          type: 'error',
+          message: 'Não foi possível ler as linhas da planilha enviada.'
+        });
+      }
+    } catch (err: any) {
+      setRecebimentosFeedback({
+        type: 'error',
+        message: 'Erro ao ler arquivo de recebimentos: ' + (err.message || err)
+      });
+    } finally {
+      if (e.target) e.target.value = '';
+    }
+  };
+
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       handleFile(e.target.files[0]);
@@ -485,7 +759,8 @@ export default function MLImport({
         totalSaleFee += Math.abs(r.saleFeeAndTaxes);
         totalShippingFee += shippingCost;
         
-        netProfitML += (r.productRevenue - saleFee - shippingCost - taxML - discount + shippingRevenue);
+        const aReceberML = r.productRevenue + (r.surchargeRevenue || 0) + (r.installmentFee || 0) - saleFee + shippingRevenue - shippingCost;
+        netProfitML += (aReceberML - taxML);
         
         if (r.isAdSale) {
           totalAdSales += r.productRevenue;
@@ -579,7 +854,8 @@ export default function MLImport({
 
       const discount = Math.abs(r.discountsAndBonuses || 0);
       const taxML = r.productRevenue * 0.04;
-      const rowNetProfit = isCanceled ? -shippingCost : (r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue);
+      const aReceberML = r.productRevenue + (r.surchargeRevenue || 0) + (r.installmentFee || 0) - saleFee + shippingRevenue - shippingCost;
+      const rowNetProfit = isCanceled ? -shippingCost : (aReceberML - taxML - productCost);
 
       if (!dailyMap[dateKey]) {
         dailyMap[dateKey] = { date: dateKey, receita: 0, lucroLiquido: 0, unidades: 0 };
@@ -655,7 +931,8 @@ export default function MLImport({
 
       const discount = Math.abs(r.discountsAndBonuses || 0);
       const taxML = r.productRevenue * 0.04;
-      const rowNetProfit = isCanceled ? -shippingCost : (r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue);
+      const aReceberML = r.productRevenue + (r.surchargeRevenue || 0) + (r.installmentFee || 0) - saleFee + shippingRevenue - shippingCost;
+      const rowNetProfit = isCanceled ? -shippingCost : (aReceberML - taxML - productCost);
 
       const titleKey = r.adTitle || r.adId; if (!adMap[titleKey]) {
         adMap[titleKey] = { id: r.adId, title: r.adTitle, qty: 0, total: 0 };
@@ -701,7 +978,8 @@ export default function MLImport({
 
       const discount = Math.abs(r.discountsAndBonuses || 0);
       const taxML = r.productRevenue * 0.04;
-      const rowNetProfit = isCanceled ? -shippingCost : (r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue);
+      const aReceberML = r.productRevenue + (r.surchargeRevenue || 0) + (r.installmentFee || 0) - saleFee + shippingRevenue - shippingCost;
+      const rowNetProfit = isCanceled ? -shippingCost : (aReceberML - taxML - productCost);
 
       let detectedState = 'Outros';
       const address = (r.buyerAddress || '').toUpperCase();
@@ -803,11 +1081,11 @@ export default function MLImport({
       </div>
 
       {/* Se não houver dados, exibe a interface de upload e guia */}
-      {mlRecords.length === 0 ? (
+      
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           
           {/* Coluna Esquerda: Caixa de Importação e Drag-Drop */}
-          <div className="lg:col-span-8 space-y-6">
+          <div className={mlRecords.length === 0 ? "lg:col-span-8 space-y-6" : "lg:col-span-12 grid grid-cols-1 md:grid-cols-2 gap-6"}>
             <div className="bg-[#121212] border border-white/5 rounded-3xl p-6 shadow-xl space-y-5">
               <div className="flex items-center justify-between border-b border-white/5 pb-4">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -895,9 +1173,65 @@ export default function MLImport({
                 </div>
               )}
             </div>
+
+              {/* Box: Relatório de Recebimentos */}
+              <div className="bg-[#121212] border border-white/5 rounded-3xl p-6 shadow-xl space-y-5">
+                <div className="flex items-center justify-between border-b border-white/5 pb-4">
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4 text-emerald-400"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>
+                    Relatório de Recebimentos (Liberações)
+                  </h3>
+                  <span className="text-[10px] text-white/40 font-mono">Formatos: XLS, XLSX, CSV</span>
+                </div>
+
+                <div className="bg-emerald-400/10 border border-emerald-400/20 rounded-2xl p-4 mb-4">
+                  <p className="text-xs text-emerald-400 font-bold mb-1">Baixa Automática (Dinheiro Entrou)</p>
+                  <p className="text-[11px] text-white/60 leading-relaxed">
+                    Suba a planilha de Recebimentos. O sistema identificará automaticamente os status de <strong>"Liberação"</strong> e cruzará o número da operação (ID) para alterar o status das suas vendas para <strong>Concluída (Paga)</strong>.
+                  </p>
+                </div>
+
+                <div className="border-2 border-dashed border-emerald-400/20 hover:border-emerald-400/40 bg-emerald-400/5 rounded-2xl p-8 text-center transition-all relative">
+                  <input
+                    type="file"
+                    accept=".csv,.xlsx,.xls"
+                    onChange={handleFileUploadRecebimentos}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <div className="flex flex-col items-center space-y-3 pointer-events-none">
+                    <div className="bg-emerald-400/10 text-emerald-400 p-4 rounded-full">
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-8 h-8"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M8 13h2"/><path d="M8 17h2"/><path d="M14 13h2"/><path d="M14 17h2"/></svg>
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold text-white">Arraste o relatório de Recebimentos aqui</p>
+                    </div>
+                  </div>
+                </div>
+
+                {recebimentosFeedback && (
+                  <div className={`border rounded-xl p-4 flex items-start gap-3 animate-fade-in ${
+                    recebimentosFeedback.type === 'success' 
+                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                      : 'bg-red-500/10 border-red-500/20 text-red-400'
+                  }`}>
+                    {recebimentosFeedback.type === 'success' ? (
+                      <Check className="w-5 h-5 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                    )}
+                    <div className="space-y-1">
+                      <p className="text-xs font-bold">
+                        {recebimentosFeedback.type === 'success' ? 'Recebimentos Processados' : 'Erro no Processamento'}
+                      </p>
+                      <p className="text-[11px] text-white/70 leading-relaxed">{recebimentosFeedback.message}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
           </div>
 
           {/* Coluna Direita: Instruções e Manual */}
+          {mlRecords.length === 0 && (
           <div className="lg:col-span-4 space-y-6">
             <div className="bg-[#121212] border border-white/5 rounded-3xl p-6 shadow-xl space-y-5">
               <h3 className="text-xs font-black tracking-widest text-white/50 uppercase">
@@ -930,10 +1264,10 @@ export default function MLImport({
               </div>
             </div>
           </div>
+          )}
+          </div>
 
-        </div>
-      ) : (
-        /* Se houver dados importados, exibe o Dashboard Completo */
+      {mlRecords.length > 0 && (
         <div className="space-y-6">
           
           {/* Sucesso na Importação */}
@@ -1130,6 +1464,110 @@ export default function MLImport({
 
           </div>
 
+          {/* Seção Inferior de Bento Grid: Anúncios Campeões, Mapa de Calor por Estado, e Instruções do Google Sheets */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            {/* Box 1: Top 5 Anúncios Campeões de Venda */}
+            <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl space-y-4">
+              <h4 className="text-xs font-black tracking-widest text-white/40 uppercase">Top 5 Anúncios Campeões de Venda</h4>
+              <div className="space-y-3.5">
+                {topAds.map((ad, idx) => (
+                  <div key={`top_ad_${ad.id}_${idx}`} className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-7 h-7 rounded-xl bg-[#FFE600]/10 text-[#FFE600] flex items-center justify-center font-black shrink-0 text-xs">
+                        #{idx + 1}
+                      </div>
+                      <div className="min-w-0 space-y-0.5">
+                        <span className="font-bold text-white text-xs block truncate" title={ad.title}>
+                          {ad.title}
+                        </span>
+                        <span className="font-mono text-[10px] text-white/30">{ad.id}</span>
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0 space-y-0.5">
+                      <span className="font-bold text-white text-xs block">{formatCurrency(ad.total)}</span>
+                      <span className="text-[10px] text-emerald-400 block">{ad.qty} vendas</span>
+                    </div>
+                  </div>
+                ))}
+
+                {topAds.length === 0 && (
+                  <p className="text-xs text-white/30 text-center py-6">Sem anúncios cadastrados.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Box 2: Mapa de Calor de Faturamento Regional por Estado */}
+            <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-black tracking-widest text-white/40 uppercase">Distribuição por Estado (Mapa de Calor) 🔥</h4>
+                <span className="text-[10px] font-black tracking-widest bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded-full uppercase">REGIONAL</span>
+              </div>
+              <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                {stateData.map((s) => {
+                  const maxTotal = stateData[0]?.total || 1;
+                  const ratio = (s.total / maxTotal) * 100;
+                  return (
+                    <div key={s.estado} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs font-bold">
+                        <span className="text-white flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-orange-500 to-amber-400"></span>
+                          {s.estado}
+                        </span>
+                        <div className="text-right">
+                          <span className="text-white shrink-0 font-bold block">{formatCurrency(s.total)}</span>
+                          <span className="text-[10px] text-white/40 block">{s.vendas} vendas</span>
+                        </div>
+                      </div>
+                      {/* Barra de Calor Progressiva */}
+                      <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full rounded-full bg-gradient-to-r from-orange-500 to-amber-400" 
+                          style={{ width: `${ratio}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {stateData.length === 0 && (
+                  <p className="text-xs text-white/30 text-center py-6">Sem dados de estados.</p>
+                )}
+              </div>
+            </div>
+
+            {/* Box 3: Box Instruções da Planilha Integrada */}
+            <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl flex flex-col justify-between space-y-4">
+              <div className="space-y-1">
+                <span className="text-[10px] font-black tracking-widest text-[#FFE600] uppercase">Mapeamento do Google Sheets</span>
+                <h4 className="text-sm font-bold text-white">Aba "Importe Mercado Livre"</h4>
+                <p className="text-xs text-white/60 leading-relaxed font-medium">
+                  Se você usa o Google Sheets ativo de gravação, o sistema salvará estes dados importados na sua planilha em uma aba dedicada chamada <strong className="text-white">"Importe Mercado Livre"</strong> automaticamente ao clicar em "Salvar na Planilha"!
+                </p>
+              </div>
+
+              <div className="bg-[#FFE600]/10 border border-[#FFE600]/20 rounded-2xl p-4 space-y-3">
+                <p className="text-xs text-[#FFE600] font-bold">⚠️ Certifique-se de atualizar seu Apps Script no Google Sheets!</p>
+                <p className="text-[11px] text-white/60 leading-relaxed">
+                  Para que o Google Sheets consiga ler e salvar esta nova aba de relatórios, você deve copiar o código atualizado no Passo 3 da aba <strong>Sincronizar Google Sheets</strong> e implantá-lo como "Nova Versão".
+                </p>
+                
+                <button
+                  onClick={handleCopyScriptText}
+                  className="bg-white/5 hover:bg-white/10 border border-white/10 text-white text-[10px] font-bold py-2 px-3 rounded-lg transition-all w-full flex items-center justify-center gap-1 cursor-pointer"
+                >
+                  <Clipboard className="w-3 h-3" />
+                  {copiedScript ? 'Copiado!' : 'Saber mais do Script'}
+                </button>
+              </div>
+            </div>
+
+              
+
+
+
+          </div>
+
+
           {/* Tabela de Transações Importadas do Mercado Livre */}
           <div className="bg-[#121212] border border-white/5 rounded-3xl shadow-xl overflow-hidden">
             
@@ -1197,14 +1635,20 @@ export default function MLImport({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-white/5 text-xs">
-                  {filteredRecords.map((r) => (
-                    <tr key={r.id} className="hover:bg-white/[0.02] transition-colors">
+                  {filteredRecords.map((r, rIdx) => (
+                    <tr key={`rec_row_${r.id}_${r.adId}_${rIdx}`} className="hover:bg-white/[0.02] transition-colors">
                       
                       {/* ID / Data */}
                       <td className="py-4 px-5 space-y-1">
-                        <span className="font-bold text-white font-mono block select-all" title="Copiar ID de Venda">
-                          {r.id}
-                        </span>
+                        {cleanMlSaleId(r.id) ? (
+                          <span className="font-bold text-white font-mono block select-all" title="Copiar ID de Venda">
+                            {cleanMlSaleId(r.id)}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-white/30 italic block">
+                            Sem ID ML
+                          </span>
+                        )}
                         <span className="text-[10px] text-white/40 block">
                           {r.dateStr}
                         </span>
@@ -1353,10 +1797,9 @@ export default function MLImport({
                         const discount = Math.abs(r.discountsAndBonuses || 0);
                         const taxML = r.productRevenue * 0.04;
                         
-                        const rowNetProfit = isRefunded
-                          ? -shippingCost
-                          : r.productRevenue - saleFee - shippingCost - taxML - productCost - discount + shippingRevenue;
-                        const marginPercent = ((rowNetProfit / (productCost || 1)) * 100).toFixed(0);
+                        const aReceberML = r.productRevenue + (r.surchargeRevenue || 0) + (r.installmentFee || 0) - saleFee + shippingRevenue - shippingCost;
+                        const rowNetProfit = isRefunded ? -shippingCost : (aReceberML - taxML - productCost);
+                        const marginPercent = ((rowNetProfit / (r.productRevenue || 1)) * 100).toFixed(0);
                         
                         return (
                           <td className="py-4 px-5 text-right font-mono">
@@ -1388,105 +1831,6 @@ export default function MLImport({
                   )}
                 </tbody>
               </table>
-            </div>
-
-          </div>
-
-          {/* Seção Inferior de Bento Grid: Anúncios Campeões, Mapa de Calor por Estado, e Instruções do Google Sheets */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            
-            {/* Box 1: Top 5 Anúncios Campeões de Venda */}
-            <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl space-y-4">
-              <h4 className="text-xs font-black tracking-widest text-white/40 uppercase">Top 5 Anúncios Campeões de Venda</h4>
-              <div className="space-y-3.5">
-                {topAds.map((ad, idx) => (
-                  <div key={ad.id} className="flex items-center justify-between gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-7 h-7 rounded-xl bg-[#FFE600]/10 text-[#FFE600] flex items-center justify-center font-black shrink-0 text-xs">
-                        #{idx + 1}
-                      </div>
-                      <div className="min-w-0 space-y-0.5">
-                        <span className="font-bold text-white text-xs block truncate" title={ad.title}>
-                          {ad.title}
-                        </span>
-                        <span className="font-mono text-[10px] text-white/30">{ad.id}</span>
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0 space-y-0.5">
-                      <span className="font-bold text-white text-xs block">{formatCurrency(ad.total)}</span>
-                      <span className="text-[10px] text-emerald-400 block">{ad.qty} vendas</span>
-                    </div>
-                  </div>
-                ))}
-
-                {topAds.length === 0 && (
-                  <p className="text-xs text-white/30 text-center py-6">Sem anúncios cadastrados.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Box 2: Mapa de Calor de Faturamento Regional por Estado */}
-            <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl space-y-4">
-              <div className="flex items-center justify-between">
-                <h4 className="text-xs font-black tracking-widest text-white/40 uppercase">Distribuição por Estado (Mapa de Calor) 🔥</h4>
-                <span className="text-[10px] font-black tracking-widest bg-orange-500/10 text-orange-400 px-2 py-0.5 rounded-full uppercase">REGIONAL</span>
-              </div>
-              <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
-                {stateData.map((s) => {
-                  const maxTotal = stateData[0]?.total || 1;
-                  const ratio = (s.total / maxTotal) * 100;
-                  return (
-                    <div key={s.estado} className="space-y-1">
-                      <div className="flex items-center justify-between text-xs font-bold">
-                        <span className="text-white flex items-center gap-1.5">
-                          <span className="w-2.5 h-2.5 rounded-full bg-gradient-to-r from-orange-500 to-amber-400"></span>
-                          {s.estado}
-                        </span>
-                        <div className="text-right">
-                          <span className="text-white shrink-0 font-bold block">{formatCurrency(s.total)}</span>
-                          <span className="text-[10px] text-white/40 block">{s.vendas} vendas</span>
-                        </div>
-                      </div>
-                      {/* Barra de Calor Progressiva */}
-                      <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full rounded-full bg-gradient-to-r from-orange-500 to-amber-400" 
-                          style={{ width: `${ratio}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                  );
-                })}
-                {stateData.length === 0 && (
-                  <p className="text-xs text-white/30 text-center py-6">Sem dados de estados.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Box 3: Box Instruções da Planilha Integrada */}
-            <div className="bg-[#121212] border border-white/5 rounded-3xl p-5 shadow-xl flex flex-col justify-between space-y-4">
-              <div className="space-y-1">
-                <span className="text-[10px] font-black tracking-widest text-[#FFE600] uppercase">Mapeamento do Google Sheets</span>
-                <h4 className="text-sm font-bold text-white">Aba "Importe Mercado Livre"</h4>
-                <p className="text-xs text-white/60 leading-relaxed font-medium">
-                  Se você usa o Google Sheets ativo de gravação, o sistema salvará estes dados importados na sua planilha em uma aba dedicada chamada <strong className="text-white">"Importe Mercado Livre"</strong> automaticamente ao clicar em "Salvar na Planilha"!
-                </p>
-              </div>
-
-              <div className="bg-[#FFE600]/10 border border-[#FFE600]/20 rounded-2xl p-4 space-y-3">
-                <p className="text-xs text-[#FFE600] font-bold">⚠️ Certifique-se de atualizar seu Apps Script no Google Sheets!</p>
-                <p className="text-[11px] text-white/60 leading-relaxed">
-                  Para que o Google Sheets consiga ler e salvar esta nova aba de relatórios, você deve copiar o código atualizado no Passo 3 da aba <strong>Sincronizar Google Sheets</strong> e implantá-lo como "Nova Versão".
-                </p>
-                
-                <button
-                  onClick={handleCopyScriptText}
-                  className="bg-white/5 hover:bg-white/10 border border-white/10 text-white text-[10px] font-bold py-2 px-3 rounded-lg transition-all w-full flex items-center justify-center gap-1 cursor-pointer"
-                >
-                  <Clipboard className="w-3 h-3" />
-                  {copiedScript ? 'Copiado!' : 'Saber mais do Script'}
-                </button>
-              </div>
             </div>
 
           </div>

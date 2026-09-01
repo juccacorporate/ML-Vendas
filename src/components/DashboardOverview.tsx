@@ -101,6 +101,8 @@ export default function DashboardOverview({
 
   // Filtrar todas as vendas pelo período selecionado
   const filteredAllSales = uniqueSales.filter(sale => {
+    if (sale.status === 'ignored') return false;
+
     if (selectedTimeframe === 'all') return true;
     
     if (selectedTimeframe === 'custom') {

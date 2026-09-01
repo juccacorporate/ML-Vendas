@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product, Sale } from '../types';
-import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock } from '../utils';
+import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock, normalizeName, cleanMlSaleId, getSaleMlId } from '../utils';
 import { ShoppingCart, Plus, Search, Calendar, Landmark, Info, Trash2, ArrowRightCircle, AlertCircle, TrendingUp, Clock, Edit3, X } from 'lucide-react';
 
 interface SalesManagerProps {
@@ -59,6 +59,8 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingSale, setEditingSale] = useState<Sale | null>(null);
   const [editPrice, setEditPrice] = useState<number>(0);
+  const [editPurchasePrice, setEditPurchasePrice] = useState<number>(0);
+  const [editProductId, setEditProductId] = useState<string>('');
   const [editQuantity, setEditQuantity] = useState<number>(1);
   const [editDiscount, setEditDiscount] = useState<number>(0);
   const [editShippingType, setEditShippingType] = useState<'transportadora' | 'full'>('transportadora');
@@ -86,6 +88,8 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const handleOpenEditModal = (sale: Sale) => {
     setEditingSale(sale);
     setEditPrice(sale.salePrice);
+    setEditPurchasePrice(sale.purchasePrice || 0);
+    setEditProductId(sale.productId || '');
     setEditQuantity(sale.quantity);
     setEditDiscount(sale.discount || 0);
     setEditShippingType(sale.shippingType || 'transportadora');
@@ -100,7 +104,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
     setEditStatus(sale.status);
     setEditLossAmount(sale.lossAmount || 0);
     setEditLossReason(sale.lossReason || '');
-    setEditMlSaleId(sale.mlSaleId || '');
+    setEditMlSaleId(getSaleMlId(sale) || sale.mlSaleId || '');
     setIsEditModalOpen(true);
   };
 
@@ -120,9 +124,13 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
     const finalMlFeeTotal = editMlFeeUnit * editQuantity;
 
+    const selectedProd = products.find(p => p.id === editProductId);
     const updatedSale: Sale = {
       ...editingSale,
+      productId: editProductId || editingSale.productId,
+      productName: selectedProd ? selectedProd.name : editingSale.productName,
       salePrice: Number(editPrice),
+      purchasePrice: Number(editPurchasePrice),
       quantity: Number(editQuantity),
       discount: Number(editDiscount),
       shippingType: editShippingType,
@@ -224,24 +232,43 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   };
 
   // Deduplicar vendas para evitar IDs duplicados na renderização e cálculos
-  const uniqueSalesMap = new Map<string, Sale>();
-  sales.forEach(sale => {
-    const key = sale.mlSaleId || sale.id;
-    if (!uniqueSalesMap.has(key)) {
-      uniqueSalesMap.set(key, sale);
-    }
-  });
-  const uniqueSales = Array.from(uniqueSalesMap.values());
+  const uniqueSales = React.useMemo(() => {
+    const uniqueSalesMap = new Map<string, Sale>();
+    sales.forEach(sale => {
+      const realMlId = getSaleMlId(sale);
+      const key = realMlId ? `ml_${realMlId}` : sale.id;
+      if (!uniqueSalesMap.has(key)) {
+        uniqueSalesMap.set(key, sale);
+      }
+    });
+    return Array.from(uniqueSalesMap.values());
+  }, [sales]);
+
+  const [showIgnored, setShowIgnored] = useState(false);
 
   // Filtragem de vendas a partir da lista deduplicada
-  const filteredSales = uniqueSales.filter(s => 
-    s.productName.toLowerCase().includes(searchTerm.toLowerCase())
-  ).sort((a,b) => b.date.localeCompare(a.date));
+  const filteredSales = React.useMemo(() => {
+    return uniqueSales
+      .filter(s => {
+        const matchesTerm = s.productName.toLowerCase().includes(searchTerm.toLowerCase());
+        const matchesVisibility = showIgnored ? s.status === 'ignored' : s.status !== 'ignored';
+        return matchesTerm && matchesVisibility;
+      })
+      .sort((a,b) => b.date.localeCompare(a.date));
+  }, [uniqueSales, searchTerm, showIgnored]);
 
   // Simulando resumo rápido do período de Vendas (separados por status), desconsiderando estornos
-  const periodTotalRevenue = filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
-  const periodTotalNetProfit = filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + s.netProfit, 0);
-  const periodPendingProfit = filteredSales.filter(s => s.status === 'pending').reduce((acc, s) => acc + s.netProfit, 0);
+  const periodTotalRevenue = React.useMemo(() => {
+    return filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
+  }, [filteredSales]);
+
+  const periodTotalNetProfit = React.useMemo(() => {
+    return filteredSales.filter(s => s.status === 'completed').reduce((acc, s) => acc + s.netProfit, 0);
+  }, [filteredSales]);
+
+  const periodPendingProfit = React.useMemo(() => {
+    return filteredSales.filter(s => s.status === 'pending').reduce((acc, s) => acc + s.netProfit, 0);
+  }, [filteredSales]);
 
   // Calcular total de unidades vendidas por produto (desconsiderando estornos)
   const productsSoldCounts = React.useMemo(() => {
@@ -645,6 +672,15 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
           </div>
 
           <div className="flex items-center gap-2.5 w-full md:w-auto">
+            <label className="flex items-center gap-2 text-xs text-white/70 cursor-pointer hover:text-white mr-2">
+              <input
+                type="checkbox"
+                checked={showIgnored}
+                onChange={(e) => setShowIgnored(e.target.checked)}
+                className="rounded border-white/20 bg-white/5 text-[#FFE600] focus:ring-[#FFE600]/30"
+              />
+              Mostrar Vendas Desprezadas
+            </label>
             <div className="relative w-full md:w-64">
               <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-white/40 w-4 h-4" />
               <input
@@ -722,18 +758,42 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                 </tr>
               ) : (
                 filteredSales.map((sale) => {
+                  const product = products.find(p => p.id === sale.productId) || products.find(p => normalizeName(p.name) === normalizeName(sale.productName));
+                  const purchasePrice = Number(sale.purchasePrice) > 0 ? Number(sale.purchasePrice) : (product ? product.purchasePrice : 0);
                   const totalSaleValue = sale.salePrice * sale.quantity;
-                  const totalFees = sale.mlFee + sale.shippingCost - (sale.shippingRevenue || 0);
+                  const totalCostValue = purchasePrice * sale.quantity;
                   const isPending = sale.status === 'pending';
 
+                  // Taxa ML efetiva: se a venda tem taxa registrada (> 0), usa ela. Se for 0 e tiver produto cadastrado, calcula a partir do cadastro
+                  const productMlFeeUnit = product ? calculateMLFee(sale.salePrice, product.mlFeeType, product.customFeePercent) : 0;
+                  const effectiveMlFee = sale.status === 'refunded' ? 0 : (sale.mlFee > 0 ? sale.mlFee : (productMlFeeUnit * sale.quantity));
+
+                  // Custo de frete efetivo:
+                  // Para vendas do Mercado Livre, respeitar estritamente o frete registrado na venda (que é 0 se o comprador pagou o frete ou se não houve cobrança).
+                  // Não substituir 0 por frete padrão do produto!
+                  const effectiveShippingCost = sale.status === 'refunded'
+                    ? (sale.shippingCost > 0 ? sale.shippingCost : (product?.shippingCost || 0))
+                    : ((sale.isMlSale || sale.mlSaleId)
+                        ? (Number(sale.shippingCost) || 0)
+                        : (sale.shippingCost > 0 ? sale.shippingCost : (product?.shippingCost || 0)));
+
+                  const shippingRevenue = sale.shippingRevenue || 0;
+                  const taxAmount = totalSaleValue * 0.04;
+                  const totalFees = effectiveMlFee + effectiveShippingCost - shippingRevenue;
+
+                  const effectiveNetProfit = sale.status === 'refunded'
+                    ? -effectiveShippingCost
+                    : (sale.netProfit !== undefined && sale.netProfit !== null && !isNaN(sale.netProfit)
+                        ? sale.netProfit
+                        : (totalSaleValue - effectiveMlFee - effectiveShippingCost + shippingRevenue - taxAmount - totalCostValue));
+
                   // Encontrar produto correspondente para analisar diferenciação de margem líq
-                  const product = products.find(p => p.id === sale.productId);
                   let marginDifference = 0;
                   let hasMarginDiff = false;
                   if (product && sale.status !== 'refunded') {
                     const defaultMlFeeUnit = calculateMLFee(product.salePrice, product.mlFeeType, product.customFeePercent);
-                    const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost;
-                    const realNetProfitUnit = sale.netProfit / sale.quantity;
+                    const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost - (product.salePrice * 0.04);
+                    const realNetProfitUnit = effectiveNetProfit / sale.quantity;
                     marginDifference = realNetProfitUnit - defaultEstimatedNetProfitUnit;
                     if (Math.abs(marginDifference) > 0.10) {
                       hasMarginDiff = true;
@@ -749,15 +809,30 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                             <Calendar className="w-3.5 h-3.5 text-white/40" />
                             <span className="text-white font-bold">{formatDate(sale.date)}</span>
                           </div>
-                          {sale.mlSaleId ? (
-                            <span className="text-[10px] text-[#FFE600] font-mono bg-[#FFE600]/10 border border-[#FFE600]/20 px-2 py-0.5 rounded w-fit" title="ID da Venda no Mercado Livre">
-                              ID: {sale.mlSaleId}
-                            </span>
-                          ) : (
-                            <span className="text-[10px] text-white/30 italic">
-                              Sem ID ML
-                            </span>
-                          )}
+                          {(() => {
+                            const realMlId = getSaleMlId(sale) || cleanMlSaleId(sale.mlSaleId) || cleanMlSaleId(sale.id);
+                            if (realMlId) {
+                              return (
+                                <span className="text-[10px] text-[#FFE600] font-mono bg-[#FFE600]/10 border border-[#FFE600]/20 px-2 py-0.5 rounded w-fit font-bold select-all" title="ID da Venda no Mercado Livre">
+                                  ID: {realMlId}
+                                </span>
+                              );
+                            }
+                            let cleanManualId = sale.id
+                              .replace(/^sale_/, '')
+                              .replace(/^ml_v_\d+_/, '')
+                              .replace(/_?prod_\w+/g, '')
+                              .replace(/^prod_\w+_?/, '')
+                              .trim();
+                            if (!cleanManualId || cleanManualId === 'null' || cleanManualId === 'undefined') {
+                              cleanManualId = sale.id.replace(/\D/g, '') || '1001';
+                            }
+                            return (
+                              <span className="text-[10px] text-white/40 font-mono bg-white/5 border border-white/10 px-2 py-0.5 rounded w-fit" title="Venda Direta / Manual">
+                                Venda #{cleanManualId.substring(0, 10)}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </td>
 
@@ -769,6 +844,16 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                             
                             {/* Badges de Envio e Diferença de Margem em relação ao planejado */}
                             <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                              {sale.adId && (
+                                <span className="text-[9px] text-sky-300 font-mono font-bold bg-sky-500/10 border border-sky-500/25 px-1.5 py-0.5 rounded flex items-center gap-0.5" title="Número do Anúncio no Mercado Livre">
+                                  <span className="text-sky-400">#</span>{sale.adId}
+                                </span>
+                              )}
+                              {sale.sku && sale.sku !== sale.adId && (
+                                <span className="text-[9px] text-white/70 font-mono bg-white/5 border border-white/10 px-1.5 py-0.5 rounded" title="SKU do produto">
+                                  SKU: {sale.sku}
+                                </span>
+                              )}
                               {sale.shippingType === 'full' ? (
                                 <span className="text-[9px] text-black font-extrabold bg-[#FFE600] px-1.5 py-0.5 rounded shadow-[0_1px_2px_rgba(0,0,0,0.2)]">
                                   ⚡ FULL
@@ -810,7 +895,14 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
                       {/* Preço de Compra */}
                       <td className="py-4 px-4 text-center text-white/60 font-mono">
-                        {formatCurrency(sale.purchasePrice > 0 ? sale.purchasePrice : (product?.purchasePrice || 0))}
+                        <div className="flex flex-col items-center">
+                          <span>{formatCurrency(purchasePrice)}</span>
+                          {sale.quantity > 1 && (
+                            <span className="text-[10px] text-white/30 mt-0.5 font-sans" title="Custo total (Preço Un. x Quantidade) deduzido do Lucro">
+                              Total: {formatCurrency(totalCostValue)}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Total Bruto */}
@@ -824,7 +916,8 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                           const unitSalePrice = product.salePrice;
                           const purchasePriceUnit = product.purchasePrice;
                           const defaultMlFeeUnit = calculateMLFee(unitSalePrice, product.mlFeeType, product.customFeePercent);
-                          const unitExpectedProfit = unitSalePrice - purchasePriceUnit - defaultMlFeeUnit - product.shippingCost;
+                          const unitTax = unitSalePrice * 0.04;
+                          const unitExpectedProfit = unitSalePrice - purchasePriceUnit - defaultMlFeeUnit - product.shippingCost - unitTax;
                           const expectedMarginPercent = purchasePriceUnit > 0 ? (unitExpectedProfit / purchasePriceUnit) * 100 : 0;
                           return (
                             <div className="flex flex-col items-center gap-1">
@@ -837,7 +930,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                                     ? "text-emerald-400 bg-emerald-500/20 border-emerald-500/30" 
                                     : "text-red-400 bg-red-500/20 border-red-500/30"
                                 }`} 
-                                title="Margem de lucro cadastrada sobre o custo do produto"
+                                title="Margem de lucro cadastrada sobre o custo do produto (já deduzindo 4% de imposto)"
                               >
                                 {expectedMarginPercent.toFixed(0)}% Margem
                               </span>
@@ -852,21 +945,25 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       <td className="py-4 px-4 text-center text-red-400 font-mono">
                         {sale.status === 'refunded' ? (
                           <div className="flex flex-col items-center">
-                            <span className="font-bold">-{formatCurrency(sale.shippingCost)}</span>
+                            <span className="font-bold">-{formatCurrency(effectiveShippingCost)}</span>
                             <span className="text-[10px] text-red-400/70 mt-1 font-sans font-bold uppercase tracking-wider">Frete de devolução</span>
                           </div>
                         ) : (
                           <>
-                            <span className="font-bold">-{formatCurrency(totalFees + (sale.salePrice * sale.quantity * 0.04))}</span>
+                            <span className="font-bold">-{formatCurrency(totalFees + taxAmount)}</span>
                             <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
-                              <p>Taxa ML: {formatCurrency(sale.mlFee)}</p>
-                              <p>Frete: {formatCurrency(sale.shippingCost)}</p>
-                              <p className="text-blue-400 font-semibold">Imposto (4%): {formatCurrency(sale.salePrice * sale.quantity * 0.04)}</p>
+                              <p>Taxa ML: {formatCurrency(effectiveMlFee)}</p>
+                              <p>Frete: {formatCurrency(effectiveShippingCost)}</p>
+                              <p className="text-blue-400 font-semibold">Imposto (4%): {formatCurrency(taxAmount)}</p>
                               {sale.discount !== undefined && sale.discount > 0 && (
-                                <p className="text-red-400 font-bold">Desconto/Campanha: {formatCurrency(sale.discount)}</p>
+                                <p className="text-white/30 font-bold" title="Desconto não-dedutível (custeado pelo ML ou já embutido na receita bruta)">
+                                  Desc/Campanha: {formatCurrency(sale.discount)}
+                                </p>
                               )}
                               {sale.shippingRevenue !== undefined && sale.shippingRevenue > 0 && (
-                                <p className="text-emerald-400 font-bold">Rec. Envio: +{formatCurrency(sale.shippingRevenue)}</p>
+                                <p className="text-emerald-400 font-bold" title="Receita por envio adicionada ao payout">
+                                  Rec. Envio: +{formatCurrency(sale.shippingRevenue)}
+                                </p>
                               )}
                             </div>
                           </>
@@ -878,7 +975,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                         {sale.status === 'refunded' ? (
                           <div className="space-y-1">
                             <span className="text-red-500 font-black block">
-                              -{formatCurrency(Math.abs(sale.netProfit))}
+                              -{formatCurrency(Math.abs(effectiveNetProfit))}
                             </span>
                             {sale.lossAmount !== undefined && sale.lossAmount > 0 && (
                               <span className="text-[10px] text-red-400 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto" title="Prejuízo adicional lançado no estorno">
@@ -888,23 +985,23 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                           </div>
                         ) : (
                           <span className={`font-black block ${
-                            sale.netProfit < 0 
+                            effectiveNetProfit < 0 
                               ? 'text-red-400' 
                               : isPending ? 'text-emerald-600' : 'text-emerald-400'
                           }`}>
-                            {sale.netProfit > 0 ? '+' : ''}{formatCurrency(sale.netProfit)}
+                            {effectiveNetProfit > 0 ? '+' : ''}{formatCurrency(effectiveNetProfit)}
                           </span>
                         )}
                         
                         {sale.status === 'completed' || sale.status === 'pending' ? (
                           <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 ${
-                            sale.netProfit < 0
+                            effectiveNetProfit < 0
                               ? 'text-red-400 bg-red-500/10 border border-red-500/20'
                               : isPending
                                 ? 'text-emerald-600 bg-emerald-600/10 border border-emerald-600/20'
                                 : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
                           }`}>
-                            {sale.netProfit > 0 ? '+' : ''}{((sale.netProfit / (sale.purchasePrice * sale.quantity || 1)) * 100).toFixed(0)}% Margem
+                            {effectiveNetProfit > 0 ? '+' : ''}{((effectiveNetProfit / (totalCostValue || 1)) * 100).toFixed(0)}% Margem
                           </span>
                         ) : (
                           <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
@@ -915,7 +1012,16 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
                       {/* Status */}
                       <td className="py-4 px-4 text-center">
-                        {sale.status === 'pending' ? (
+                        {sale.status === 'ignored' ? (
+                          <div className="flex flex-col items-center justify-center gap-1">
+                            <span className="bg-red-500/10 text-red-500 font-bold px-2.5 py-1 rounded border border-red-500/20 text-[9px] uppercase tracking-wider flex items-center gap-1.5">
+                              ⚠️ Venda Ignorada
+                            </span>
+                            <span className="text-[10px] text-white/50 font-mono font-bold bg-white/5 px-1.5 py-0.5 rounded" title="Produto não encontrado no controle de estoque">
+                              Falta de Correspondência
+                            </span>
+                          </div>
+                        ) : sale.status === 'pending' ? (
                           <div className="flex flex-col items-center justify-center gap-1">
                             <span className="bg-amber-500/10 text-amber-400 font-bold px-2.5 py-1 rounded border border-amber-500/20 text-[9px] uppercase tracking-wider flex items-center gap-1.5 animate-pulse">
                               <span className="w-1.5 h-1.5 bg-amber-400 rounded-full animate-ping"></span>
@@ -1182,6 +1288,43 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 
+                {/* Vincular Produto do Estoque */}
+                <div className="sm:col-span-2 bg-white/5 p-3 rounded-xl border border-white/5">
+                  <label className="text-xs font-bold text-[#FFE600] block mb-1">Vincular a Produto do Estoque (Custo e SKU)</label>
+                  <select
+                    value={editProductId}
+                    onChange={(e) => {
+                      const pId = e.target.value;
+                      setEditProductId(pId);
+                      const prod = products.find(p => p.id === pId);
+                      if (prod) {
+                        setEditPurchasePrice(prod.purchasePrice);
+                      }
+                    }}
+                    className="w-full bg-black/50 border border-white/10 rounded-xl p-2.5 text-xs text-white font-medium focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30"
+                  >
+                    <option value="">-- Selecione o Produto no Estoque --</option>
+                    {products.map(p => (
+                      <option key={p.id} value={p.id} className="bg-[#141414] text-white">
+                        {p.name} (SKU: {p.sku || 'S/N'} | Custo: R$ {p.purchasePrice.toFixed(2)})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Preço de Compra (Custo Unitário) */}
+                <div>
+                  <label className="text-xs font-bold text-white/70 block mb-1">Preço de Compra Unitário (Custo R$)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={editPurchasePrice}
+                    onChange={(e) => setEditPurchasePrice(Number(e.target.value))}
+                    className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-emerald-400 font-extrabold focus:outline-none focus:ring-2 focus:ring-emerald-400/30"
+                  />
+                </div>
+
                 {/* Preço de Venda Unitário */}
                 <div>
                   <label className="text-xs font-bold text-white/70 block mb-1">Preço de Venda Unitário (R$)</label>
@@ -1326,8 +1469,10 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                     onChange={(e) => setEditStatus(e.target.value as any)}
                     className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 cursor-pointer"
                   >
-                    <option value="pending" className="bg-[#121212] text-white">⏳ Pendente / Retido</option>
-                    <option value="completed" className="bg-[#121212] text-white">✅ Concluída / Liberada</option>
+                    <option value="pending" disabled={editingSale?.status === 'completed'} className="bg-[#121212] text-white">
+                      ⏳ Pendente / Retido {editingSale?.status === 'completed' ? '(Concluída em Definitivo)' : ''}
+                    </option>
+                    <option value="completed" className="bg-[#121212] text-white">✅ Concluída / Liberada (Ganhos Líquidos)</option>
                     <option value="refunded" className="bg-[#121212] text-white">✖ Estornada / Cancelada</option>
                   </select>
                 </div>

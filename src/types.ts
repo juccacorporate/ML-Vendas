@@ -13,7 +13,8 @@ export interface ProductReplenishment {
 export interface Product {
   id: string;
   name: string;
-  sku: string;
+  sku: string; // SKU Principal / Código Único
+  skus?: string[]; // Variações / Múltiplos SKUs vinculados ao produto (ex: ABC123, ABC345, ABC587)
   purchasePrice: number; // Preço de Compra
   salePrice: number;     // Preço de Venda padrão
   stock: number;         // Estoque atual
@@ -31,6 +32,8 @@ export interface Sale {
   id: string;
   productId: string;
   productName: string;
+  sku?: string;          // SKU do produto na venda
+  adId?: string;         // # de Anúncio no Mercado Livre (ex: MLB3782694854)
   quantity: number;
   salePrice: number;     // Preço de venda praticado
   date: string;          // Data da venda
@@ -41,7 +44,7 @@ export interface Sale {
   netProfit: number;     // Preço Venda - Preço Compra - Taxas - Frete
   mlSaleUrl?: string;    // Link opcional do anúncio no ML
   discount?: number;     // Desconto em R$ aplicado à venda
-  status?: 'pending' | 'completed' | 'refunded'; // Status da venda
+  status?: 'pending' | 'completed' | 'refunded' | 'ignored'; // Status da venda
   completionTime?: number; // Tempo em milissegundos para conclusão no sistema
   lossAmount?: number;     // Prejuízo extra do estorno/cancelamento
   lossReason?: string;     // Motivo curto do prejuízo no estorno
@@ -110,125 +113,159 @@ export interface MLImportRecord {
   sku?: string; // SKU do anúncio/venda
 }
 
+export function normalizeText(str: string): string {
+  if (!str) return '';
+  return str
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function extractTokens(str: string): string[] {
+  const norm = normalizeText(str);
+  const stopWords = new Set(['de', 'da', 'do', 'das', 'dos', 'para', 'com', 'sem', 'em', 'um', 'uma', 'e', 'a', 'o', 'as', 'os', 'por', 'na', 'no', 'nas', 'nos']);
+  return norm.split(/\s+/).filter(w => w.length > 1 && !stopWords.has(w));
+}
+
+export function getCoreProductType(str: string): string {
+  if (!str) return '';
+  const s = str.toLowerCase();
+  if (s.includes('adaptador') || s.includes('plug')) return 'adaptador';
+  if (s.includes('extensor') || (s.includes('cabo') && s.includes('extensor'))) return 'extensor';
+  if (s.includes('cabo')) return 'cabo';
+  if (s.includes('xuxinha') || s.includes('rabicó') || s.includes('rabico') || s.includes('elástico') || s.includes('elastico')) return 'xuxinha';
+  if (s.includes('teclado')) return 'teclado';
+  if (s.includes('fone') || s.includes('headset')) return 'fone';
+  if (s.includes('suporte')) return 'suporte';
+  if (s.includes('garrafa')) return 'garrafa';
+  if (s.includes('carregador') || s.includes('fonte')) return 'carregador';
+  if (s.includes('capa') || s.includes('case')) return 'capa';
+  return '';
+}
+
+/**
+ * Normaliza identificadores removendo '#' e espaços extras
+ */
+export function normalizeIdentifier(val: string): string {
+  if (!val) return '';
+  return String(val).replace(/^[#\s]+/, '').trim().toLowerCase();
+}
+
+/**
+ * Retorna todos os SKUs e # de Anúncio válidos associados a um produto (SKU principal + # de anúncio + variações)
+ */
+export function getAllProductSkus(p: Product): string[] {
+  if (!p) return [];
+  const list: string[] = [];
+  if (p.sku && p.sku.trim()) {
+    list.push(p.sku.trim());
+  }
+  if (Array.isArray(p.skus)) {
+    p.skus.forEach(s => {
+      if (s && s.trim() && !list.includes(s.trim())) {
+        list.push(s.trim());
+      }
+    });
+  }
+  return list;
+}
+
 export function findMatchingProduct(r: MLImportRecord, products: Product[]): Product | undefined {
   if (!products || products.length === 0) return undefined;
 
-  const rSkuClean = (r.sku || '').trim().toLowerCase();
-  const rAdIdClean = (r.adId || '').trim().toLowerCase();
-  const adTitleLower = (r.adTitle || '').toLowerCase().trim();
+  const rSkuClean = normalizeIdentifier(r.sku || '');
+  const rAdIdClean = normalizeIdentifier(r.adId || '');
+  const rTitleNorm = normalizeText(r.adTitle || '');
+  const rVariationClean = normalizeIdentifier(r.variation || '');
 
-  // 1. Se o título for genérico ou booleano, ignoramos no comparativo de título
-  const isGenericTitle = !adTitleLower || ['sim', 'não', 'nao', 'true', 'false', 'produto mercado livre'].includes(adTitleLower);
-
-  // 2. Busca por SKU exata no estoque
-  if (rSkuClean && !['sim', 'não', 'nao', 'ml'].includes(rSkuClean)) {
-    const matchBySku = products.find(p => {
-      const pSkuClean = (p.sku || '').trim().toLowerCase();
-      if (pSkuClean && pSkuClean === rSkuClean) return true;
-      return false;
-    });
-    if (matchBySku) return matchBySku;
-  }
-
-  // 3. Busca por ID do anúncio (adId) na SKU do produto
-  if (rAdIdClean && rAdIdClean.length > 3) {
+  // 1. Busca Direta por # de Anúncio (adId / MLB...) no estoque
+  if (rAdIdClean && rAdIdClean.length > 3 && !['sim', 'não', 'nao', 'ml'].includes(rAdIdClean)) {
     const matchByAdId = products.find(p => {
-      const pSkuClean = (p.sku || '').trim().toLowerCase();
-      return pSkuClean && pSkuClean === rAdIdClean;
+      const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
+      const pIdClean = normalizeIdentifier(p.id || '');
+      // Compara exato ou sem prefixo mlb (se ambos forem dígitos)
+      const rDigitsOnly = rAdIdClean.replace(/\D/g, '');
+      return allSkus.some(s => {
+        if (s === rAdIdClean) return true;
+        const sDigitsOnly = s.replace(/\D/g, '');
+        return rDigitsOnly.length >= 6 && sDigitsOnly.length >= 6 && rDigitsOnly === sDigitsOnly;
+      }) || (pIdClean && pIdClean === rAdIdClean);
     });
     if (matchByAdId) return matchByAdId;
   }
 
-  // 4. Coletar textos candidatos do registro para verificação cruzada
-  const candidateTexts: string[] = [];
-  if (!isGenericTitle) candidateTexts.push(adTitleLower);
-  if (r.sku && !['sim', 'não', 'nao'].includes(r.sku.toLowerCase())) candidateTexts.push(r.sku.toLowerCase());
-  if (r.variation && !['sim', 'não', 'nao'].includes(r.variation.toLowerCase())) candidateTexts.push(r.variation.toLowerCase());
+  // 2. Busca por SKU exata ou variações de SKU no estoque (Multi-SKU)
+  if (rSkuClean && !['sim', 'não', 'nao', 'ml'].includes(rSkuClean)) {
+    const matchBySku = products.find(p => {
+      const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
+      const pIdClean = normalizeIdentifier(p.id || '');
+      const rDigitsOnly = rSkuClean.replace(/\D/g, '');
+      return allSkus.some(s => {
+        if (s === rSkuClean) return true;
+        const sDigitsOnly = s.replace(/\D/g, '');
+        return rDigitsOnly.length >= 6 && sDigitsOnly.length >= 6 && rDigitsOnly === sDigitsOnly;
+      }) || (pIdClean && pIdClean === rSkuClean);
+    });
+    if (matchBySku) return matchBySku;
+  }
 
-  // Verificar inclusão de textos respeitando os filtros de especificações técnicas
-  for (const text of candidateTexts) {
+  // 2.1 Busca por Variação que contenha algum dos # de Anúncio ou SKUs do produto
+  if (rVariationClean && rVariationClean.length > 2) {
+    const matchByVar = products.find(p => {
+      const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
+      return allSkus.some(sku => sku.length > 2 && rVariationClean.includes(sku));
+    });
+    if (matchByVar) return matchByVar;
+  }
+
+  // 3. Busca por Título Exato ou Substring no Estoque (Regra 1.2 e 6.2 do Manual)
+  if (rTitleNorm && rTitleNorm.length > 3) {
+    const matchByTitle = products.find(p => {
+      const pNameNorm = normalizeText(p.name || '');
+      return pNameNorm && (pNameNorm === rTitleNorm || (pNameNorm.length > 8 && rTitleNorm.includes(pNameNorm)) || (rTitleNorm.length > 8 && pNameNorm.includes(rTitleNorm)));
+    });
+    if (matchByTitle) return matchByTitle;
+  }
+
+  // 4. Busca por Sobreposição de Palavras-Chave (Tokens) com Guarda de Categoria/Tipo
+  if (rTitleNorm && rTitleNorm.length > 3) {
+    const rTokens = extractTokens(r.adTitle || '');
+    const rType = getCoreProductType(r.adTitle || '');
+
+    let bestMatch: Product | undefined;
+    let bestScore = 0;
+
     for (const p of products) {
-      const pNameLower = p.name.toLowerCase().trim();
-      const pSkuLower = (p.sku || '').toLowerCase().trim();
+      const pType = getCoreProductType(p.name || '');
+      if (rType && pType && rType !== pType) continue; // Evita que adaptador vire cabo ou fone
 
-      // Filtros de distinção de especificações técnicas (ex: 20cm vs 90º, 144 vs 192, 2 metros)
-      const isAdCurto = text.includes('20 cm') || text.includes('20cm') || text.includes('curto') || text.includes('20c');
-      const isAd90 = text.includes('90') || text.includes('90°') || text.includes('90º') || text.includes('90graus');
-      const isAd2m = text.includes('2 metro') || text.includes('2m') || text.includes('2 metros');
-      const isAd144 = text.includes('144');
-      const isAd192 = text.includes('192');
+      const pTokens = extractTokens(p.name || '');
+      if (pTokens.length === 0) continue;
 
-      const isProdCurto = pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto');
-      const isProd90 = pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º');
-      const isProd2m = pNameLower.includes('2 metro') || pNameLower.includes('2m') || pNameLower.includes('2 metros');
-      const isProd144 = pNameLower.includes('144');
-      const isProd192 = pNameLower.includes('192');
+      const matchingTokens = pTokens.filter(t => rTokens.includes(t));
+      const score = matchingTokens.length / Math.min(pTokens.length, rTokens.length);
 
-      if (isProdCurto && !isAdCurto) continue;
-      if (isProd90 && !isAd90) continue;
-      if (isProd2m && !isAd2m) continue;
-      if (isProd144 && !isAd144) continue;
-      if (isProd192 && !isAd192) continue;
-
-      if (pSkuLower && pSkuLower.length > 2 && text.includes(pSkuLower)) return p;
-
-      const normText = text.replace(/^(id\d+|kit\s*\d*|\d+)\s*/i, '').replace(/[°ºª]/g, '').trim();
-      const normPName = pNameLower.replace(/^(id\d+|kit\s*\d*|\d+)\s*/i, '').replace(/[°ºª]/g, '').trim();
-
-      if (normText && normPName && (normText.includes(normPName) || normPName.includes(normText))) {
-        return p;
-      }
-    }
-  }
-
-  // Helper para extrair palavras-chave ignorando termos genéricos
-  const getKeywords = (str: string) => {
-    return str
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, ' ')
-      .split(/\s+/)
-      .filter(w => w.length > 2 && !['para', 'com', 'sem', 'dos', 'das', 'tipo', 'turbo', 'kit', 'par', 'unidades', 'unidade', 'sim', 'nao', 'mercado', 'livre'].includes(w));
-  };
-
-  const allWords = candidateTexts.flatMap(t => getKeywords(t));
-  if (allWords.length === 0) return undefined;
-
-  let bestMatch: Product | undefined = undefined;
-  let maxScore = 0;
-
-  for (const p of products) {
-    const pNameLower = p.name.toLowerCase();
-    const isProdCurto = pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto');
-    const isProd90 = pNameLower.includes('90') || pNameLower.includes('90gr') || pNameLower.includes('90°') || pNameLower.includes('90º');
-    const isProd144 = pNameLower.includes('144');
-    const isProd192 = pNameLower.includes('192');
-
-    const combinedText = candidateTexts.join(' ');
-    if (isProdCurto && !(combinedText.includes('20') || combinedText.includes('curto'))) continue;
-    if (isProd90 && !combinedText.includes('90')) continue;
-    if (isProd144 && !combinedText.includes('144')) continue;
-    if (isProd192 && !combinedText.includes('192')) continue;
-
-    const pWords = getKeywords(p.name);
-    let score = 0;
-    for (const w of pWords) {
-      if (allWords.includes(w)) {
-        score += 2;
+      if (matchingTokens.length >= 2 && score >= 0.5 && score > bestScore) {
+        bestScore = score;
+        bestMatch = p;
       }
     }
 
-    if (score > maxScore) {
-      maxScore = score;
-      bestMatch = p;
-    }
-  }
-
-  if (maxScore >= 4) {
-    return bestMatch;
+    if (bestMatch) return bestMatch;
   }
 
   return undefined;
+}
+
+export interface EntradaValorRecord {
+  id: string; // N.º de Venda / Operação / Pacote (ex: "2000001450876553")
+  dateStr: string; // Data da Entrada / Liberação (ex: "23/08/2026")
+  description?: string; // Descrição do Recebimento ("Liberação")
+  releaseStatus: string; // Tipo de Operação ("Liberação" ou "Disponível")
+  operationStatus?: string; // Status da Operação ("Pago", "Cancelado", etc.)
+  productName: string; // Produto Vinculado / Título do Anúncio (ex: "Kit 144 Xuxinha...")
 }
 

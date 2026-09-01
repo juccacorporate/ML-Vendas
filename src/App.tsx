@@ -4,8 +4,8 @@
  */
 
 import { useState, useEffect } from 'react';
-import { Product, Sale, MLImportRecord, findMatchingProduct } from './types';
-import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock } from './utils';
+import { Product, Sale, MLImportRecord, EntradaValorRecord, findMatchingProduct } from './types';
+import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale } from './utils';
 import { Lock, Unlock, Key, LogOut } from 'lucide-react';
 
 // Importando componentes modulares
@@ -37,6 +37,37 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [mlRecords, setMlRecords] = useState<MLImportRecord[]>([]);
+  const [entradaRecords, setEntradaRecords] = useState<EntradaValorRecord[]>(() => {
+    const saved = localStorage.getItem('ml_entrada_records');
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(item => {
+          const str = String(item.id || '').trim();
+          const isStrictId = !/[eE\+,\.]/.test(str) && /^20\d{10,18}$/.test(str);
+          if (!isStrictId) return false;
+          const opStat = String(item.operationStatus || '').toLowerCase().trim();
+          const tipo = String(item.releaseStatus || item.description || '').toLowerCase().trim();
+          if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
+          if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
+            return false;
+          }
+          return true;
+        });
+      }
+    } catch (e) {}
+    return [];
+  });
+
+  const [entradaRawMatrix, setEntradaRawMatrix] = useState<any[][] | null>(() => {
+    try {
+      const saved = localStorage.getItem('ml_entrada_raw_matrix');
+      return saved ? JSON.parse(saved) : null;
+    } catch (e) {
+      return null;
+    }
+  });
   
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string>(() => {
     return localStorage.getItem('ml_spreadsheet_url') || 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?usp=sharing';
@@ -95,6 +126,22 @@ export default function App() {
   }, [mlRecords]);
 
   useEffect(() => {
+    localStorage.setItem('ml_entrada_records', JSON.stringify(entradaRecords));
+  }, [entradaRecords]);
+
+  useEffect(() => {
+    if (entradaRawMatrix) {
+      try {
+        localStorage.setItem('ml_entrada_raw_matrix', JSON.stringify(entradaRawMatrix));
+      } catch (e) {}
+    } else {
+      try {
+        localStorage.removeItem('ml_entrada_raw_matrix');
+      } catch (e) {}
+    }
+  }, [entradaRawMatrix]);
+
+  useEffect(() => {
     localStorage.setItem('ml_spreadsheet_url', spreadsheetUrl);
   }, [spreadsheetUrl]);
 
@@ -112,8 +159,9 @@ export default function App() {
   }, [webAppUrl]);
 
   // Função para sanitizar e corrigir automaticamente produtos e vendas vindos da planilha
-  const sanitizeCloudData = (cloudProducts: Product[], cloudSales: Sale[], cloudMlRecords?: MLImportRecord[]) => {
+  const sanitizeCloudData = (cloudProducts: Product[], cloudSales: Sale[], cloudMlRecords?: MLImportRecord[], cloudEntradaRecords?: EntradaValorRecord[]) => {
     const recordsToUse = cloudMlRecords || mlRecords || [];
+    const recordsToUseEntrada = cloudEntradaRecords || entradaRecords || [];
     
     // 1. Manter APENAS produtos que foram cadastrados manualmente.
     // Ignorar "fantasmas" auto-criados (prod_ml_...) e lixos ("sim", "nao").
@@ -121,11 +169,16 @@ export default function App() {
       .filter(p => {
         const n = (p.name || '').trim().toLowerCase();
         const isTrash = n === 'sim' || n === 'não' || n === 'nao';
-        const isGhost = p.id.startsWith('prod_ml_');
+        const isGhost = false;
         return !isTrash && !isGhost;
       })
       .map(p => ({
         ...p,
+        skus: Array.isArray(p.skus)
+          ? p.skus
+          : (typeof (p as any).skus === 'string' && (p as any).skus
+              ? (p as any).skus.split(/[,;\n\r]+/).map((s: string) => s.trim()).filter(Boolean)
+              : []),
         purchasePrice: Number(p.purchasePrice) || 0,
         salePrice: Number(p.salePrice) || 0,
         stock: Number(p.stock) || 0,
@@ -143,42 +196,64 @@ export default function App() {
       const cleanSaleProductName = (s.productName || '').trim();
       const isBadName = !cleanSaleProductName || ['sim', 'não', 'nao', 'produto mercado livre'].includes(cleanSaleProductName.toLowerCase());
 
-      // Encontrar produto correspondente priorizando o Nome (Título) do produto
-      let matchingProd: Product | undefined = undefined;
-      if (!isBadName) {
-        matchingProd = sanitizedProducts.find(p => normalizeName(p.name) === normalizeName(cleanSaleProductName));
-      }
-      if (!matchingProd) {
-        matchingProd = sanitizedProducts.find(p => p.id === s.productId);
-      }
-
-      // Tentar re-vincular usando o registro do ML caso não encontre por nome/id
+      // Tentar re-vincular usando o registro do ML caso exista
       const idToSearch = (s.mlSaleId || s.id || '').split('_')[0];
       const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
 
-      if (isBadName || !matchingProd) {
+      let realAdTitle = cleanSaleProductName;
+      if (originalRecord && originalRecord.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(originalRecord.adTitle.trim().toLowerCase())) {
+        realAdTitle = originalRecord.adTitle.trim();
+      }
+
+      // 1. CHAVE PRIMÁRIA (SSOT): Se a venda já tem um ID de Produto válido associado, verificar no estoque
+      let matchingProd: Product | undefined;
+      if (s.productId) {
+        matchingProd = sanitizedProducts.find(p => p.id === s.productId || p.sku === s.productId);
+      }
+      
+      // 2. Fallback de Correção: Se não tinha ID de produto (ou foi renomeado), tentar vincular pelo registro original ou título
+      if (!matchingProd) {
         if (originalRecord) {
-          const reFound = findMatchingProduct(originalRecord, sanitizedProducts);
-          if (reFound) {
-            matchingProd = reFound;
-          }
+          matchingProd = findMatchingProduct(originalRecord, sanitizedProducts);
+        }
+        if (!matchingProd) {
+          matchingProd = findProductForSale({ ...s, productName: realAdTitle }, sanitizedProducts);
         }
       }
 
-      // Se após todas as tentativas a venda NÃO tiver um produto oficial no estoque, marcamos como inválida
-      if (!matchingProd) {
-        return null; // Será filtrado na próxima etapa
+      // O Título da venda DEVE ser o realAdTitle se for válido, preservando a informação do ML
+      const productName = (!isBadName && realAdTitle) ? realAdTitle : (matchingProd ? matchingProd.name : 'Venda Desconhecida');
+      
+      // Regra 1.2, 1.4 e 6.2 do Manual: Normalizar status
+      const rawStatusStr = String(s.status || '').toLowerCase().trim();
+      let finalStatus: 'pending' | 'completed' | 'refunded' | 'ignored' = 'pending';
+      if (['completed', 'concluido', 'concluído', 'liberado', 'liberada', 'finalizado', 'finalizada', 'entregue', 'pago'].includes(rawStatusStr)) {
+        finalStatus = 'completed';
+      } else if (['refunded', 'estornado', 'cancelado', 'devolvido'].includes(rawStatusStr)) {
+        finalStatus = 'refunded';
+      } else if (['ignored', 'desprezado', 'desprezada', 'ignorado', 'lixo'].includes(rawStatusStr)) {
+        finalStatus = 'ignored';
       }
 
-      let productName = matchingProd.name;
-      let productId = matchingProd.id;
-      let purchasePrice = matchingProd.purchasePrice;
+      // Vendas pendentes sem produto no estoque são ignoradas. Vendas finalizadas são fidelizadas para sempre (Regra 7.1.1)
+      if (!matchingProd && finalStatus !== 'completed') {
+        finalStatus = 'ignored';
+      }
+
+      // O ID do produto vincula ao estoque se houver match real, senão gera ID seguro sem corromper vendas
+      const pureMlId = cleanMlSaleId(s.mlSaleId) || cleanMlSaleId(s.id);
+      const productId = matchingProd ? matchingProd.id : s.productId;
+
+      // Preço de Compra: se o produto está cadastrado no estoque, herda o preço de compra do estoque se válido!
+      let purchasePrice = (matchingProd && matchingProd.purchasePrice > 0)
+        ? matchingProd.purchasePrice
+        : (Number(s.purchasePrice) > 0 ? Number(s.purchasePrice) : (matchingProd ? matchingProd.purchasePrice : 0));
 
       // Corrigir preços corrompidos
       if (salePrice <= 0 || salePrice > 1000000) {
         if (Number(s.grossProfit) > 0 && purchasePrice > 0) {
           salePrice = Number(s.grossProfit) + purchasePrice + discount;
-        } else {
+        } else if (matchingProd) {
           salePrice = matchingProd.salePrice;
         }
       }
@@ -189,14 +264,16 @@ export default function App() {
       // Preservar propriedades locais se a planilha ainda não as tiver por usar script antigo
       const localSale = sales.find(ls => ls.id === s.id);
       
-      let mlSaleId = s.mlSaleId || (localSale && localSale.mlSaleId);
-      if (!mlSaleId && s.id) {
-        const cleanId = s.id.split('_')[0];
-        if (/^\d+$/.test(cleanId)) {
-          mlSaleId = cleanId;
+      const mlSaleId = getSaleMlId(s) || (localSale && getSaleMlId(localSale)) || cleanMlSaleId(s.mlSaleId);
+      const isMlSale = s.isMlSale || !!mlSaleId;
+      let cleanSaleId = mlSaleId || cleanMlSaleId(s.id);
+      if (!cleanSaleId) {
+        let rawClean = String(s.id || '').replace(/^sale_/, '').replace(/^ml_v_\d+_/, '').replace(/_?prod_\w+/g, '').replace(/^prod_\w+_?/, '').trim();
+        if (!rawClean || rawClean === 'null' || rawClean === 'undefined') {
+          rawClean = `sale_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
         }
+        cleanSaleId = rawClean;
       }
-      const isMlSale = s.isMlSale || !!mlSaleId || (s.id && !s.id.startsWith('sale_') && /^\d/.test(s.id));
 
       let mlFee = Number(s.mlFee) || 0;
       let shippingCost = Number(s.shippingCost) || 0;
@@ -209,65 +286,67 @@ export default function App() {
         const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
         
         if (originalRecord) {
-          mlFee = s.status === 'refunded' ? 0 : Math.abs(originalRecord.saleFeeAndTaxes);
-          const rawShipCost = Math.abs(originalRecord.shippingFee) + Math.abs(originalRecord.shippingWeightCost) + Math.abs(originalRecord.shippingDiffCost);
-          shipRev = s.status === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
+          const rawRecordFee = Math.abs(originalRecord.saleFeeAndTaxes || 0);
+          const rawShipCost = Math.abs(originalRecord.shippingFee || 0) + Math.abs(originalRecord.shippingWeightCost || 0) + Math.abs(originalRecord.shippingDiffCost || 0);
+          shipRev = finalStatus === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
           
-          if (s.status === 'refunded') {
-            shippingCost = (matchingProd && matchingProd.shippingCost > 0) ? matchingProd.shippingCost : (Number(s.shippingCost) || 6.65);
-          } else if (totalSaleValue < 79 && (!s.shippingType || s.shippingType !== 'full') && !s.customShippingCost) {
-            // Vendas < R$ 79 no Mercado Livre têm frete pago pelo comprador (exceto se o vendedor oferecer frete grátis)
-            shippingCost = Math.max(0, rawShipCost - shipRev);
-            if (shipRev === 0 && rawShipCost > 0) {
-              shippingCost = 0; // O comprador pagou o frete no checkout do Mercado Livre
-            }
+          if (finalStatus === 'refunded') {
+            mlFee = 0;
+            shippingCost = rawShipCost > 0 ? rawShipCost : ((matchingProd && matchingProd.shippingCost > 0) ? matchingProd.shippingCost : 6.65);
           } else {
+            // Se o relatório original tem a tarifa de venda discriminada, usa ela. Senão calcula a partir da comissão do produto
+            if (rawRecordFee > 0) {
+              mlFee = rawRecordFee;
+            } else if (matchingProd) {
+              mlFee = calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity;
+            }
+
+            // O custo de frete real cobrado pelo ML é o do relatório (se for 0, o vendedor NÃO pagou frete)
             shippingCost = rawShipCost;
           }
-          
-          const taxAmount = totalSaleValue * 0.04;
-          if (s.status === 'refunded') {
-            netProfit = -shippingCost;
-            grossProfit = 0;
-          } else {
-            netProfit = totalSaleValue - mlFee - shippingCost - taxAmount + shipRev - totalCostValue;
-            grossProfit = totalSaleValue - totalCostValue;
-          }
         } else {
-          // Fallback se não encontrar o registro em mlRecords
-          const taxAmount = totalSaleValue * 0.04;
-          if (s.status === 'refunded') {
-            netProfit = -shippingCost;
-            grossProfit = 0;
+          // Fallback se não encontrar o registro bruto em mlRecords
+          if (finalStatus === 'refunded') {
+            mlFee = 0;
+            shippingCost = s.shippingCost > 0 ? s.shippingCost : ((matchingProd && matchingProd.shippingCost > 0) ? matchingProd.shippingCost : 6.65);
           } else {
-            if (totalSaleValue < 79 && (!s.shippingType || s.shippingType !== 'full') && !s.customShippingCost) {
-              if (shippingCost > 0 && shipRev === 0) {
-                shippingCost = 0; // Vendas < R$ 79 no Mercado Livre
-              }
+            if (mlFee === 0 && matchingProd) {
+              mlFee = calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity;
             }
-            netProfit = totalSaleValue - mlFee - shippingCost - taxAmount + shipRev - totalCostValue;
-            grossProfit = totalSaleValue - totalCostValue;
+            // Para vendas do ML, respeitar o frete registrado na venda (não forçar frete do cadastro)
+            shippingCost = Number(s.shippingCost) || 0;
           }
         }
       } else {
-        // Normal manual sales recalculation
+        // Venda manual direta
         if (!s.isCustomSale && matchingProd) {
-          if (matchingProd.mlFeeType !== 'none') {
-            const percent = matchingProd.mlFeeType === 'custom' 
-              ? (matchingProd.customFeePercent || 0) 
-              : (matchingProd.mlFeeType === 'classic' ? 12 : (matchingProd.mlFeeType === 'premium' ? 17 : 0));
-            let calculatedFee = (salePrice * percent) / 100;
-            if (salePrice < 79 && (matchingProd.mlFeeType === 'classic' || matchingProd.mlFeeType === 'premium')) {
-              calculatedFee += 6;
-            }
-            mlFee = Number((calculatedFee * quantity).toFixed(2));
-          } else {
-            mlFee = 0;
+          mlFee = calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity;
+          if (shippingCost === 0 && matchingProd.shippingCost > 0) {
+            shippingCost = matchingProd.shippingCost;
           }
         }
-        const taxAmount = totalSaleValue * 0.04;
+      }
+
+      const taxAmount = totalSaleValue * 0.04;
+      if (finalStatus === 'refunded') {
+        netProfit = -shippingCost;
+        grossProfit = 0;
+      } else {
         grossProfit = totalSaleValue - totalCostValue;
-        netProfit = s.status === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost - taxAmount + shipRev - totalCostValue);
+        
+        let surchargeRev = 0;
+        let installmentFee = 0;
+        if (isMlSale || mlSaleId) {
+          const idToSearch = (mlSaleId || s.id || '').split('_')[0];
+          const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
+          if (originalRecord) {
+            surchargeRev = originalRecord.surchargeRevenue || 0;
+            installmentFee = originalRecord.installmentFee || 0;
+          }
+        }
+        
+        const aReceberML = totalSaleValue + surchargeRev + installmentFee - mlFee + shipRev - shippingCost;
+        netProfit = aReceberML - taxAmount - totalCostValue;
       }
 
       const lossAmount = s.lossAmount !== undefined ? s.lossAmount : (localSale ? localSale.lossAmount : undefined);
@@ -283,11 +362,43 @@ export default function App() {
       const carrier = s.carrier || (localSale && localSale.carrier) || undefined;
       const trackingUrl = s.trackingUrl || (localSale && localSale.trackingUrl) || undefined;
 
-      let protectedStatus = s.status === 'pending' && localSale && localSale.status !== 'pending'
-        ? localSale.status
-        : (s.status || 'pending');
+      const searchId = cleanSaleId || mlSaleId || s.id;
 
-      if (protectedStatus === 'pending' && s.date) {
+      // Filtrar estritamente apenas entradas válidas com Liberação e Pago (descarta cancelados e outros status)
+      const isExplicitlyCanceledInEntrada = (recordsToUseEntrada || []).some(eRec => {
+        const eId = String(eRec.id || '').trim();
+        if (eId !== searchId && !searchId.includes(eId) && !eId.includes(searchId)) return false;
+        const opStat = String(eRec.operationStatus || '').toLowerCase().trim();
+        const tipo = String(eRec.releaseStatus || eRec.description || '').toLowerCase().trim();
+        return opStat.includes('cancelad') || opStat.includes('estorn') || tipo.includes('estorno') || tipo.includes('cancel');
+      });
+
+      const isExplicitlyPaidInEntrada = (recordsToUseEntrada || []).some(eRec => {
+        const eId = String(eRec.id || '').trim();
+        if (eId !== searchId && !searchId.includes(eId) && !eId.includes(searchId)) return false;
+        const tipo = String(eRec.releaseStatus || eRec.description || '').toLowerCase().trim();
+        if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
+        const opStat = String(eRec.operationStatus || '').toLowerCase().trim();
+        if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
+          return false;
+        }
+        return true;
+      });
+
+      let protectedStatus: 'pending' | 'completed' | 'refunded' | 'ignored' = 'pending';
+      if (finalStatus === 'ignored') {
+        protectedStatus = 'ignored';
+      } else if (finalStatus === 'refunded') {
+        protectedStatus = 'refunded';
+      } else if (isExplicitlyCanceledInEntrada) {
+        // Se foi cancelado no extrato do Mercado Pago / Entrada de Valores, a venda NUNCA fica como liberada
+        protectedStatus = 'pending';
+      } else if (isExplicitlyPaidInEntrada) {
+        // Confirmado como Pago e Liberação na Entrada de Valores
+        protectedStatus = 'completed';
+      } else if (s.date) {
+        // Regra do Manual: Vendas sem Entrada de Valores confirmada ficam como Pendente (Faturamento Previsto)
+        // a menos que já tenham completado 30 dias desde a venda
         const saleDateObj = new Date(s.date + 'T12:00:00');
         const nowObj = new Date();
         saleDateObj.setHours(0, 0, 0, 0);
@@ -296,11 +407,16 @@ export default function App() {
         const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
         if (diffDays >= 30) {
           protectedStatus = 'completed';
+        } else {
+          protectedStatus = 'pending';
         }
+      } else {
+        protectedStatus = 'pending';
       }
 
       return {
         ...s,
+        id: cleanSaleId,
         productId,
         productName,
         status: protectedStatus,
@@ -326,7 +442,9 @@ export default function App() {
         buyerAddress,
         trackingNumber,
         carrier,
-        trackingUrl
+        trackingUrl,
+        adId: s.adId || (originalRecord ? originalRecord.adId : undefined),
+        sku: s.sku || (originalRecord ? originalRecord.sku : undefined)
       };
     }).filter(s => s !== null);
 
@@ -371,12 +489,24 @@ export default function App() {
 
         if (result && result.status === 'success') {
           // Sanitização robusta contra dados corrompidos ou chaves de datas na coluna de preços
-          const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
+          const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
           
           setProducts(sanitized.products);
           setSales(sanitized.sales);
           if (result.mlRecords && Array.isArray(result.mlRecords)) {
             setMlRecords(result.mlRecords);
+          }
+          if (result.entradaRecords && Array.isArray(result.entradaRecords)) {
+            const filtered = result.entradaRecords.filter(e => {
+              const opStat = String(e.operationStatus || '').toLowerCase().trim();
+              const tipo = String(e.releaseStatus || e.description || '').toLowerCase().trim();
+              if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
+              if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
+                return false;
+              }
+              return true;
+            });
+            setEntradaRecords(filtered);
           }
           
           // Sincronizar o capital inicial / aporte
@@ -422,12 +552,24 @@ export default function App() {
       }
 
       if (result && result.status === 'success') {
-        const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
+        const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
         
         setProducts(sanitized.products);
         setSales(sanitized.sales);
         if (result.mlRecords && Array.isArray(result.mlRecords)) {
           setMlRecords(result.mlRecords);
+        }
+        if (result.entradaRecords && Array.isArray(result.entradaRecords)) {
+          const filtered = result.entradaRecords.filter(e => {
+            const opStat = String(e.operationStatus || '').toLowerCase().trim();
+            const tipo = String(e.releaseStatus || e.description || '').toLowerCase().trim();
+            if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
+            if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
+              return false;
+            }
+            return true;
+          });
+          setEntradaRecords(filtered);
         }
         
         // Sincronizar o capital inicial / aporte
@@ -510,7 +652,7 @@ export default function App() {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords })
+          body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix })
         });
 
         if (!response.ok) {
@@ -521,12 +663,6 @@ export default function App() {
         const result = await response.json();
         if (result.status !== 'success') {
           throw new Error(result.message || 'Erro no Apps Script');
-        }
-        if (result.products && Array.isArray(result.products) && result.products.length > 0) {
-          const sanitized = sanitizeCloudData(result.products, sales, mlRecords);
-          if (JSON.stringify(sanitized.products) !== JSON.stringify(products)) {
-            setProducts(sanitized.products);
-          }
         }
         console.log('Sincronização em tempo real realizada com sucesso!');
         setHasPendingWrite(false); // Reseta a flag de alterações pendentes após sucesso
@@ -539,7 +675,7 @@ export default function App() {
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, initialCapital, mlRecords, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite, handlePullFromCloud]);
+  }, [products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite, handlePullFromCloud]);
 
   // Loop de atualização das vendas pendentes (conclusão automática por período de 30 dias)
   useEffect(() => {
@@ -597,19 +733,28 @@ export default function App() {
   const handleAddProduct = (newProduct: Omit<Product, 'id'>) => {
     const freshProduct: Product = {
       ...newProduct,
-      id: `prod_${Date.now()}`
+      id: newProduct.sku
     };
-    setProducts(prev => [freshProduct, ...prev]);
+    const nextProducts = [freshProduct, ...products.filter(p => p.id !== freshProduct.id)];
+    setProducts(nextProducts);
+    const reSanitized = sanitizeCloudData(nextProducts, sales, mlRecords, entradaRecords);
+    setSales(reSanitized.sales);
     setHasPendingWrite(true);
   };
 
   const handleEditProduct = (updatedProd: Product) => {
-    setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+    const nextProducts = products.map(p => p.id === updatedProd.id ? updatedProd : p);
+    setProducts(nextProducts);
+    const reSanitized = sanitizeCloudData(nextProducts, sales, mlRecords, entradaRecords);
+    setSales(reSanitized.sales);
     setHasPendingWrite(true);
   };
 
   const handleDeleteProduct = (id: string) => {
-    setProducts(prev => prev.filter(p => p.id !== id));
+    const nextProducts = products.filter(p => p.id !== id);
+    setProducts(nextProducts);
+    const reSanitized = sanitizeCloudData(nextProducts, sales, mlRecords, entradaRecords);
+    setSales(reSanitized.sales);
     setHasPendingWrite(true);
   };
 
@@ -618,11 +763,11 @@ export default function App() {
     const totalCostValue = newSale.purchasePrice * newSale.quantity;
     const discount = newSale.discount || 0;
     
-    // Cálculo do Lucro Bruto e Líquido exato (deduzindo comissão, frete, imposto de 4% e descontos)
     const grossProfit = newSale.status === 'refunded' ? 0 : totalSaleValue - totalCostValue;
     const shipRev = newSale.shippingRevenue || 0;
     const taxAmount = totalSaleValue * 0.04;
-    const netProfit = newSale.status === 'refunded' ? -newSale.shippingCost : (totalSaleValue - newSale.mlFee - newSale.shippingCost - taxAmount + shipRev - totalCostValue);
+    const aReceberML = totalSaleValue - newSale.mlFee + shipRev - newSale.shippingCost;
+    const netProfit = newSale.status === 'refunded' ? -newSale.shippingCost : (aReceberML - taxAmount - totalCostValue);
 
     // Calcular se a data da venda está acima de 30 dias atrás
     const saleDate = new Date(newSale.date + 'T12:00:00');
@@ -694,7 +839,8 @@ export default function App() {
           netProfit = -updatedSale.shippingCost;
           grossProfit = 0;
         } else {
-          netProfit = totalSaleValue - updatedSale.mlFee - updatedSale.shippingCost - taxAmount + shipRev - totalCostValue;
+          const aReceberML = totalSaleValue + (originalRecord ? (originalRecord.surchargeRevenue || 0) + (originalRecord.installmentFee || 0) : 0) - updatedSale.mlFee + shipRev - updatedSale.shippingCost;
+          netProfit = aReceberML - taxAmount - totalCostValue;
           grossProfit = totalSaleValue - totalCostValue;
         }
       } else {
@@ -703,14 +849,16 @@ export default function App() {
           netProfit = -updatedSale.shippingCost;
           grossProfit = 0;
         } else {
-          netProfit = totalSaleValue - updatedSale.mlFee - updatedSale.shippingCost - taxAmount + shipRev - totalCostValue;
+          const aReceberML = totalSaleValue + (originalRecord ? (originalRecord.surchargeRevenue || 0) + (originalRecord.installmentFee || 0) : 0) - updatedSale.mlFee + shipRev - updatedSale.shippingCost;
+          netProfit = aReceberML - taxAmount - totalCostValue;
           grossProfit = totalSaleValue - totalCostValue;
         }
       }
     } else {
       grossProfit = updatedSale.status === 'refunded' ? 0 : totalSaleValue - totalCostValue;
       const taxAmount = totalSaleValue * 0.04;
-      netProfit = updatedSale.status === 'refunded' ? -updatedSale.shippingCost : (totalSaleValue - updatedSale.mlFee - updatedSale.shippingCost - taxAmount + shipRev - totalCostValue);
+      const aReceberML = totalSaleValue - updatedSale.mlFee + shipRev - updatedSale.shippingCost;
+      netProfit = updatedSale.status === 'refunded' ? -updatedSale.shippingCost : (aReceberML - taxAmount - totalCostValue);
     }
 
     const freshSale: Sale = {
@@ -737,6 +885,130 @@ export default function App() {
     }
   };
 
+  
+  const handleImportRecebimentos = (records: any[], rawMatrix?: any[][]): number => {
+    let updatedCount = 0;
+
+    if (rawMatrix && Array.isArray(rawMatrix) && rawMatrix.length > 0) {
+      setEntradaRawMatrix(rawMatrix);
+    }
+
+    const isStrictSaleId = (val: any): boolean => {
+      if (!val) return false;
+      const str = String(val).trim();
+      if (/[eE\+,\.]/.test(str)) return false;
+      if (str.toLowerCase().includes('prod_')) return false;
+      return /^\d{8,20}$/.test(str);
+    };
+
+    // Apenas considerar registros com ID numérico de pacote/venda válido, Tipo = Liberação e Status da Operação = Pago
+    const validRecords = records.filter(r => {
+      const rawId = String(r.id || r.mlSaleId || '').trim();
+      if (!isStrictSaleId(rawId)) return false;
+
+      const tipo = String(r.releaseStatus || r.description || '').toLowerCase();
+      if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
+
+      const opStat = String(r.operationStatus || '').toLowerCase();
+      if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
+        return false;
+      }
+      return true;
+    });
+
+    const canceledRecords = records.filter(r => {
+      const rawId = String(r.id || r.mlSaleId || '').trim();
+      if (!isStrictSaleId(rawId)) return false;
+      const opStat = String(r.operationStatus || '').toLowerCase();
+      const tipo = String(r.releaseStatus || r.description || '').toLowerCase();
+      return opStat.includes('cancelad') || opStat.includes('estorn') || tipo.includes('estorno') || tipo.includes('cancel');
+    });
+
+    setSales(prev => {
+      const updated = prev.map(s => {
+        if (s.mlSaleId || s.id) {
+          const mlId = (s.mlSaleId || s.id).split('_')[0].trim();
+          
+          // Se foi cancelado na entrada de valores, NUNCA fica como concluída/liberada
+          const isCanceled = canceledRecords.some(r => {
+            const rId = String(r.id || r.mlSaleId || '').trim();
+            return rId === mlId || mlId.includes(rId) || rId.includes(mlId);
+          });
+          if (isCanceled && s.status === 'completed') {
+            return { ...s, status: 'pending' as const };
+          }
+
+          const rec = validRecords.find(r => {
+            const rId = String(r.id || r.mlSaleId || '').trim();
+            return rId === mlId || mlId.includes(rId) || rId.includes(mlId);
+          });
+          if (rec && s.status !== 'completed' && s.status !== 'refunded') {
+            updatedCount++;
+            return { ...s, status: 'completed' as const };
+          }
+        }
+        return s;
+      });
+      return updated;
+    });
+
+    const newEntradaList: EntradaValorRecord[] = validRecords.map(r => {
+      const rId = String(r.id || r.mlSaleId).trim();
+
+      // Cruzar com a base de vendas para resgatar o nome real do item caso venha com código MLB ou 'Item Mercado Livre'
+      const matchedSale = sales.find(s => {
+        const mlId = (s.mlSaleId || s.id).split('_')[0].trim();
+        return mlId === rId || mlId.includes(rId) || rId.includes(mlId);
+      });
+
+      let name = r.productName;
+      if (!name || name === 'Item Mercado Livre' || /^MLB\d+/i.test(name)) {
+        if (matchedSale && matchedSale.productName && !/^MLB\d+/i.test(matchedSale.productName)) {
+          name = matchedSale.productName;
+        }
+      }
+
+      return {
+        id: rId,
+        dateStr: r.dateStr || '',
+        description: 'Liberação',
+        releaseStatus: r.releaseStatus || 'Liberação',
+        operationStatus: r.operationStatus || 'Pago',
+        productName: name || (matchedSale ? matchedSale.productName : 'Item Mercado Livre')
+      };
+    });
+
+    setEntradaRecords(prev => {
+      // Filtrar a lista anterior descartando cancelados, datas ou IDs inválidos
+      const filteredPrev = prev.filter(item => {
+        if (!isStrictSaleId(item.id)) return false;
+        const opStat = String(item.operationStatus || '').toLowerCase();
+        if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
+          return false;
+        }
+        return true;
+      });
+      const existingMap = new Map<string, EntradaValorRecord>(filteredPrev.map(item => [item.id, item]));
+
+      // Remover explicitamente qualquer item cancelado
+      canceledRecords.forEach(c => {
+        const cId = String(c.id || c.mlSaleId || '').trim();
+        existingMap.delete(cId);
+      });
+
+      newEntradaList.forEach(item => {
+        const existing = existingMap.get(item.id);
+        if (!existing || /^MLB\d+/i.test(existing.productName) || existing.productName === 'Item Mercado Livre') {
+          existingMap.set(item.id, item);
+        }
+      });
+      return Array.from(existingMap.values());
+    });
+
+    setHasPendingWrite(true);
+    return updatedCount;
+  };
+
   const handleImportMLRecords = async (records: MLImportRecord[]) => {
     // 0. Remover do estoque quaisquer produtos criados indevidamente com nomes booleanos ("Sim", "Não")
     let updatedProducts = products.filter(p => {
@@ -745,7 +1017,7 @@ export default function App() {
     });
     let updatedSales = [...sales];
     
-    records.forEach(r => {
+    records.forEach((r, idx) => {
           // Limpar e sanitizar adTitle
           let cleanTitle = (r.adTitle || '').trim();
           if (['sim', 'não', 'nao', 'true', 'false', 'produto mercado livre'].includes(cleanTitle.toLowerCase())) {
@@ -756,19 +1028,21 @@ export default function App() {
           }
           r.adTitle = cleanTitle;
 
-          // 1. Identificar se existe produto no estoque, mas preservando o título do anúncio do ML intacto
+          // 1. O Princípio da Fonte Única de Verdade (SSOT): Se o produto não existe no estoque, ignorar.
           let matchingProduct = findMatchingProduct(r, updatedProducts);
 
-          if (!matchingProduct) {
-            // Regra: Não cadastrar produtos novos automaticamente baseados na planilha.
-            // Ignorar vendas de produtos que não estão cadastrados no controle de estoque.
-            return;
-          }
-
-          // Definir o nome exato do produto da venda baseado no Título do Anúncio do Mercado Livre
           const finalSaleTitle = (r.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(r.adTitle.trim().toLowerCase()))
             ? r.adTitle
-            : matchingProduct.name;
+            : (matchingProduct ? matchingProduct.name : 'Venda Desconhecida');
+
+          let finalProductId = matchingProduct ? matchingProduct.id : '';
+
+          let isIgnored = false;
+          if (!matchingProduct) {
+            // Regra do Manual 1.2: Todo produto que não conste imputado manualmente deve ser ignorado.
+            finalProductId = r.sku || r.adId || '';
+            isIgnored = false; // was true
+          }
           
           // Formatar data da venda (de "6 de julho de 2026 20:02" para "2026-07-06")
           let formattedDate = new Date().toISOString().split('T')[0];
@@ -795,7 +1069,7 @@ export default function App() {
           }
 
           // 2. Mapear status do ML para status da venda com base estrita no período de 30 dias se não for reembolsada
-          let saleStatus: 'completed' | 'pending' | 'refunded' = 'completed';
+          let saleStatus: 'completed' | 'pending' | 'refunded' | 'ignored' = 'completed';
           const statusLower = (r.status || '').toLowerCase();
           const descLower = (r.statusDescription || '').toLowerCase();
           const isRefunded = 
@@ -810,7 +1084,9 @@ export default function App() {
             descLower.includes('refund') || 
             descLower.includes('estorn');
 
-          if (isRefunded) {
+          if (isIgnored) {
+            saleStatus = 'ignored';
+          } else if (isRefunded) {
             saleStatus = 'refunded';
           } else {
             const saleDateObj = new Date(formattedDate + 'T12:00:00');
@@ -822,32 +1098,52 @@ export default function App() {
             saleStatus = diffDays < 30 ? 'pending' : 'completed';
           }
           
-          // 3. Verificar se essa venda já existe na nossa base de vendas (pelo ID do ML)
-          const uniqueSaleId = `${r.id}_${matchingProduct.id}`;
-          const existingSaleIdx = updatedSales.findIndex(s => s.id === uniqueSaleId || (s.mlSaleId && s.mlSaleId === r.id));
-          
           const totalSaleValue = r.productRevenue;
-          const totalCostValue = matchingProduct.purchasePrice * r.units;
+          const totalCostValue = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
+          
+          // 3. Verificar se essa venda já existe na nossa base de vendas (pelo ID do ML ou produto + data)
+          const realMlId = cleanMlSaleId(r.id);
+          const uniqueSaleId = realMlId || `sale_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 5)}`;
+          const existingSaleIdx = updatedSales.findIndex(s => 
+            (realMlId && getSaleMlId(s) === realMlId) || 
+            s.id === uniqueSaleId ||
+            (matchingProduct && !getSaleMlId(s) && s.productId === matchingProduct.id && s.date === formattedDate && Math.abs((s.salePrice * s.quantity) - totalSaleValue) < 0.05)
+          );
           const discount = r.discountsAndBonuses || 0;
-          const mlFee = saleStatus === 'refunded' ? 0 : Math.abs(r.saleFeeAndTaxes);
-          const defaultShipping = matchingProduct ? matchingProduct.shippingCost : 0;
-          const rawShippingFee = Math.abs(r.shippingFee) + Math.abs(r.shippingWeightCost) + Math.abs(r.shippingDiffCost);
+          const rawRecordFee = Math.abs(r.saleFeeAndTaxes || 0);
+          const rawShippingFee = Math.abs(r.shippingFee || 0) + Math.abs(r.shippingWeightCost || 0) + Math.abs(r.shippingDiffCost || 0);
           const shippingRevenue = saleStatus === 'refunded' ? 0 : Math.abs(r.shippingRevenue || 0);
           
-          let shippingCost = rawShippingFee;
+          let mlFee = 0;
+          let shippingCost = 0;
+
           if (saleStatus === 'refunded') {
-            shippingCost = defaultShipping; // O Mercado Livre cobra apenas 1 frete de devolução por pacote, independente da quantidade de itens
-          } else if (totalSaleValue < 79) {
-            // No Mercado Livre, vendas abaixo de R$ 79,00 têm o frete custeado pelo COMPRADOR
-            shippingCost = Math.max(0, rawShippingFee - shippingRevenue);
-            if (shippingRevenue === 0 && rawShippingFee > 0) {
-              shippingCost = 0; // O comprador pagou o frete no checkout
+            mlFee = 0;
+            shippingCost = rawShippingFee > 0 ? rawShippingFee : ((matchingProduct && matchingProduct.shippingCost > 0) ? matchingProduct.shippingCost : 6.65);
+          } else {
+            if (rawRecordFee > 0) {
+              mlFee = rawRecordFee;
+            } else if (matchingProduct) {
+              mlFee = calculateMLFee(r.productRevenue / r.units, matchingProduct.mlFeeType, matchingProduct.customFeePercent) * r.units;
             }
+
+            // Custo de frete do Mercado Livre: se 0 no relatório, o vendedor não teve custo de frete
+            shippingCost = rawShippingFee;
           }
           
           const taxAmount = totalSaleValue * 0.04;
           const grossProfit = saleStatus === 'refunded' ? 0 : totalSaleValue - totalCostValue;
-          const netProfit = saleStatus === 'refunded' ? -shippingCost : (totalSaleValue - mlFee - shippingCost + shippingRevenue - taxAmount - totalCostValue);
+          
+          // PDF Rule 4.3.1: A Receber do ML = Receita(H) + Acrescimo(I) + Parcelamento(J) + Tarifa(K) + Rec.Envio(L) + TarifaEnvio(M)
+          // PDF Rule 4.3.2: Lucro Real = A Receber - Custo Compra - Imposto
+          const aReceberML = totalSaleValue 
+                           + (r.surchargeRevenue || 0) 
+                           + (r.installmentFee || 0) 
+                           - mlFee 
+                           + shippingRevenue 
+                           - shippingCost;
+          
+          const netProfit = saleStatus === 'refunded' ? -shippingCost : (aReceberML - taxAmount - totalCostValue);
           
           // Determinar tipo de logística
           let shippingType: 'full' | 'flex' | 'transportadora' = 'transportadora';
@@ -863,15 +1159,27 @@ export default function App() {
             // Se já existe, atualizamos os dados para refletir as mudanças de status, frete, produto e custo de compra
             const oldSale = updatedSales[existingSaleIdx];
             
+            // CHAVE PRIMÁRIA: Se a venda antiga já tinha um ID de Produto válido associado, preservar! (Não deixar o fuzzy match sobrescrever)
+            let preservedProductId = oldSale.productId;
+            let preservedProductName = oldSale.productName;
+            let preservedPurchasePrice = oldSale.purchasePrice;
+            
+            if (!preservedProductId || preservedProductId === finalProductId || !updatedProducts.find(p => p.id === preservedProductId)) {
+              // Só atualiza o produto se a venda antiga não tinha produto, ou era o mesmo, ou o produto antigo não existe mais no estoque
+              preservedProductId = finalProductId;
+              preservedProductName = finalSaleTitle;
+              preservedPurchasePrice = matchingProduct ? matchingProduct.purchasePrice : 0;
+            }
+
             updatedSales[existingSaleIdx] = {
               ...oldSale,
               id: uniqueSaleId,
-              productId: matchingProduct.id,
-              productName: finalSaleTitle,
+              productId: preservedProductId,
+              productName: preservedProductName,
               status: saleStatus,
               quantity: r.units,
               salePrice: r.units > 0 ? Number((r.productRevenue / r.units).toFixed(2)) : r.productRevenue,
-              purchasePrice: matchingProduct.purchasePrice,
+              purchasePrice: preservedPurchasePrice,
               grossProfit: Number(grossProfit.toFixed(2)),
               netProfit: Number(netProfit.toFixed(2)),
               mlFee: Number(mlFee.toFixed(2)),
@@ -879,24 +1187,28 @@ export default function App() {
               shippingRevenue,
               discount,
               shippingType,
+              sku: r.sku || oldSale.sku,
+              adId: r.adId || oldSale.adId,
               buyerName: r.buyerName,
               buyerDocument: r.buyerDocument,
               buyerAddress: r.buyerAddress,
               trackingNumber: r.trackingNumber,
               carrier: r.carrier,
               trackingUrl: r.trackingUrl,
-              isMlSale: true,
-              mlSaleId: r.id
+              isMlSale: !!realMlId,
+              mlSaleId: realMlId
             };
           } else {
             // Se não existe, inserimos uma nova venda no histórico
             updatedSales.push({
               id: uniqueSaleId,
-              productId: matchingProduct.id,
+              productId: finalProductId,
               productName: finalSaleTitle,
+              sku: r.sku,
+              adId: r.adId,
               quantity: r.units,
               salePrice: r.productRevenue / r.units,
-              purchasePrice: matchingProduct.purchasePrice,
+              purchasePrice: matchingProduct ? matchingProduct.purchasePrice : 0,
               date: formattedDate,
               discount,
               mlFee: Number(mlFee.toFixed(2)),
@@ -905,8 +1217,8 @@ export default function App() {
               grossProfit: Number(grossProfit.toFixed(2)),
               netProfit: Number(netProfit.toFixed(2)),
               status: saleStatus,
-              mlSaleId: r.id,
-              isMlSale: true,
+              mlSaleId: realMlId,
+              isMlSale: !!realMlId,
               shippingType,
               buyerName: r.buyerName,
               buyerDocument: r.buyerDocument,
@@ -918,16 +1230,20 @@ export default function App() {
           }
         });
 
+    // Se estamos importando vendas reais do Mercado Livre, removemos vendas de demonstração padrão (sale_1 a sale_7)
+    const baseSales = records.length > 0 ? updatedSales.filter(s => !s.id.match(/^sale_[1-7]$/)) : updatedSales;
+
     const uniqueSalesMap = new Map<string, Sale>();
     const deduplicatedSales: Sale[] = [];
     
-    updatedSales.forEach(s => {
-      if (s.isMlSale && s.mlSaleId) {
-        if (!uniqueSalesMap.has(s.mlSaleId)) {
-          uniqueSalesMap.set(s.mlSaleId, s);
+    baseSales.forEach(s => {
+      const realId = getSaleMlId(s);
+      if (realId) {
+        if (!uniqueSalesMap.has(realId)) {
+          uniqueSalesMap.set(realId, s);
           deduplicatedSales.push(s);
         } else {
-          const existing = uniqueSalesMap.get(s.mlSaleId)!;
+          const existing = uniqueSalesMap.get(realId)!;
           if (s.lossAmount && !existing.lossAmount) {
              Object.assign(existing, s);
           }
@@ -955,6 +1271,12 @@ export default function App() {
 
   const handleClearMLRecords = () => {
     setMlRecords([]);
+    setEntradaRecords([]);
+    setEntradaRawMatrix(null);
+    try {
+      localStorage.removeItem('ml_entrada_records');
+      localStorage.removeItem('ml_entrada_raw_matrix');
+    } catch (e) {}
     setHasPendingWrite(true);
   };
 
@@ -1156,6 +1478,8 @@ export default function App() {
             onPullFromCloud={handlePullFromCloud}
             initialCapital={initialCapital}
             mlRecords={mlRecords}
+            entradaRecords={entradaRecords}
+            entradaRawMatrix={entradaRawMatrix || undefined}
           />
         )}
 
@@ -1168,6 +1492,7 @@ export default function App() {
             isSheetsConnected={!!webAppUrl || !!spreadsheetUrl}
             onPushToCloud={() => setHasPendingWrite(true)}
             isSyncing={isCloudSyncing}
+            onImportRecebimentos={handleImportRecebimentos}
           />
         )}
 

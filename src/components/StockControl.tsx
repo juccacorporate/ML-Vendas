@@ -4,9 +4,9 @@
  */
 
 import React, { useState } from 'react';
-import { Product, Sale } from '../types';
+import { Product, Sale, getAllProductSkus } from '../types';
 import { calculateMLFee, calculateTax, calculateDaysInStock, formatCurrency, calculateCurrentStock, calculateProductSalesVolume } from '../utils';
-import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers } from 'lucide-react';
+import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers, X, Hash } from 'lucide-react';
 
 interface StockControlProps {
   products: Product[];
@@ -52,6 +52,8 @@ export default function StockControl({
   // Campos do formulário
   const [name, setName] = useState('');
   const [sku, setSku] = useState('');
+  const [additionalSkus, setAdditionalSkus] = useState<string[]>([]);
+  const [newSkuInput, setNewSkuInput] = useState('');
   const [purchasePrice, setPurchasePrice] = useState<number>(0);
   const [salePrice, setSalePrice] = useState<number>(0);
   const [stock, setStock] = useState<number>(0);
@@ -64,9 +66,35 @@ export default function StockControl({
 
   const categories = Array.from(new Set(products.map(p => p.category)));
 
+  // Helper para adicionar SKUs extras
+  const handleAddSkuChip = (skuValue: string) => {
+    if (!skuValue) return;
+    const parts = skuValue.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+    setAdditionalSkus(prev => {
+      const updated = [...prev];
+      parts.forEach(p => {
+        if (!updated.includes(p) && p.toLowerCase() !== sku.trim().toLowerCase()) {
+          updated.push(p);
+        }
+      });
+      return updated;
+    });
+    setNewSkuInput('');
+  };
+
+  const handleRemoveSkuChip = (indexToRemove: number) => {
+    setAdditionalSkus(prev => prev.filter((_, idx) => idx !== indexToRemove));
+  };
+
   // Filter products
   const filteredProducts = products.filter(p => {
-    const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || p.sku.toLowerCase().includes(searchTerm.toLowerCase());
+    const allProdSkus = getAllProductSkus(p).map(s => s.toLowerCase());
+    const searchLower = searchTerm.toLowerCase().trim();
+    const matchesSearch = !searchLower || 
+      p.name.toLowerCase().includes(searchLower) || 
+      allProdSkus.some(s => s.includes(searchLower)) ||
+      p.category.toLowerCase().includes(searchLower);
+      
     const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
     const currentStock = calculateCurrentStock(p, sales, products);
     
@@ -101,6 +129,8 @@ export default function StockControl({
   const handleOpenAdd = () => {
     setName('');
     setSku('');
+    setAdditionalSkus([]);
+    setNewSkuInput('');
     setPurchasePrice(0);
     setSalePrice(0);
     setStock(10);
@@ -117,6 +147,8 @@ export default function StockControl({
     setEditingProduct(p);
     setName(p.name);
     setSku(p.sku);
+    setAdditionalSkus(p.skus || []);
+    setNewSkuInput('');
     setPurchasePrice(p.purchasePrice);
     setSalePrice(p.salePrice);
     setStock(p.stock);
@@ -133,9 +165,21 @@ export default function StockControl({
     e.preventDefault();
     if (!name || !sku) return;
     
+    // Processar se tiver algo ainda digitado no input de novo SKU
+    let finalSkus = [...additionalSkus];
+    if (newSkuInput.trim()) {
+      const parts = newSkuInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+      parts.forEach(p => {
+        if (!finalSkus.includes(p) && p.toLowerCase() !== sku.trim().toLowerCase()) {
+          finalSkus.push(p);
+        }
+      });
+    }
+
     onAddProduct({
       name,
       sku,
+      skus: finalSkus.length > 0 ? finalSkus : undefined,
       purchasePrice: Number(purchasePrice),
       salePrice: Number(salePrice),
       stock: Number(stock),
@@ -153,10 +197,21 @@ export default function StockControl({
     e.preventDefault();
     if (!editingProduct || !name || !sku) return;
 
+    let finalSkus = [...additionalSkus];
+    if (newSkuInput.trim()) {
+      const parts = newSkuInput.split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
+      parts.forEach(p => {
+        if (!finalSkus.includes(p) && p.toLowerCase() !== sku.trim().toLowerCase()) {
+          finalSkus.push(p);
+        }
+      });
+    }
+
     onEditProduct({
       id: editingProduct.id,
       name,
       sku,
+      skus: finalSkus.length > 0 ? finalSkus : undefined,
       purchasePrice: Number(purchasePrice),
       salePrice: Number(salePrice),
       stock: Number(stock),
@@ -322,15 +377,25 @@ export default function StockControl({
                     <tr key={p.id} className="hover:bg-white/5 transition-colors">
                       {/* Name and SKU */}
                       <td className="py-4 px-5">
-                        <div>
-                          <p className="text-white font-bold max-w-xs truncate">{p.name}</p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-[10px] bg-white/5 text-white/50 border border-white/10 px-1.5 py-0.5 rounded font-mono">
+                        <div className="max-w-md">
+                          <p className="text-white font-bold text-xs sm:text-sm leading-snug break-words whitespace-normal">{p.name}</p>
+                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                            <span className="text-[10px] bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/30 px-1.5 py-0.5 rounded font-mono font-bold" title="SKU Principal / Código Master">
                               {p.sku}
                             </span>
+                            {p.skus && p.skus.length > 0 && p.skus.map((altSku, sIdx) => (
+                              <span key={sIdx} className="text-[9.5px] bg-sky-500/10 text-sky-300 border border-sky-500/20 px-1.5 py-0.5 rounded font-mono" title="Variação de SKU Vinculada">
+                                {altSku}
+                              </span>
+                            ))}
                             <span className="text-[10px] bg-white/5 text-white/40 border border-white/5 px-1.5 py-0.5 rounded">
                               {p.category}
                             </span>
+                            {p.status === 'archived' && (
+                              <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-bold">
+                                Arquivado
+                              </span>
+                            )}
                           </div>
                         </div>
                       </td>
@@ -536,13 +601,13 @@ export default function StockControl({
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-white/70 block mb-1">SKU / Código Único *</label>
+                  <label className="text-xs font-bold text-white/70 block mb-1">SKU Principal / Código Master *</label>
                   <input
                     type="text"
                     required
                     value={sku}
                     onChange={(e) => setSku(e.target.value)}
-                    placeholder="Ex: ML-FBT-009"
+                    placeholder="Ex: ABC123"
                     className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-mono font-bold"
                   />
                 </div>
@@ -556,6 +621,66 @@ export default function StockControl({
                     placeholder="Ex: Eletrônicos"
                     className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-semibold"
                   />
+                </div>
+
+                {/* Bloco de # de Anúncio e Variações de SKU (Multi-Anúncio / Multi-SKU) */}
+                <div className="col-span-2 bg-[#1b1e23] p-3.5 rounded-xl border border-sky-500/25 shadow-inner">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+                      <Hash className="w-3.5 h-3.5 text-sky-400" />
+                      Números de # de Anúncio / Variações de SKU
+                    </label>
+                    <span className="text-[10px] text-sky-400/80 font-mono bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">
+                      {additionalSkus.length} vinculado(s)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-white/60 mb-2.5 leading-relaxed">
+                    Vincule múltiplos <span className="text-sky-300 font-mono font-bold"># de anúncio</span> (ex: <span className="text-sky-300 font-mono">MLB3782694854</span>, <span className="text-sky-300 font-mono">MLB3737455528</span>) e códigos de SKU. Qualquer venda do Mercado Livre com esses números dará baixa automaticamente neste produto.
+                  </p>
+
+                  <div className="flex gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={newSkuInput}
+                      onChange={(e) => setNewSkuInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddSkuChip(newSkuInput);
+                        }
+                      }}
+                      placeholder="Digite # de Anúncio (ex: MLB3782694854) ou SKU e dê Enter"
+                      className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-sky-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleAddSkuChip(newSkuInput)}
+                      className="bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Adicionar
+                    </button>
+                  </div>
+
+                  {additionalSkus.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {additionalSkus.map((altSku, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center gap-1.5 bg-sky-950/70 border border-sky-500/40 text-sky-200 text-[11px] font-mono font-medium px-2.5 py-1 rounded-md"
+                        >
+                          <span className="text-sky-400/80 font-bold">#</span>
+                          {altSku}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSkuChip(idx)}
+                            className="hover:text-red-400 text-sky-400/80 p-0.5 rounded transition-colors ml-0.5"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -775,7 +900,7 @@ export default function StockControl({
                 </div>
 
                 <div>
-                  <label className="text-xs font-bold text-white/70 block mb-1">SKU / Código Único *</label>
+                  <label className="text-xs font-bold text-white/70 block mb-1">SKU Principal / Código Master *</label>
                   <input
                     type="text"
                     required
@@ -793,6 +918,66 @@ export default function StockControl({
                     onChange={(e) => setCategory(e.target.value)}
                     className="w-full bg-white/5 border border-white/10 rounded-lg p-2.5 text-xs text-white focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 font-semibold"
                   />
+                </div>
+
+                {/* Bloco de # de Anúncio e Variações de SKU (Multi-Anúncio / Multi-SKU) */}
+                <div className="col-span-2 bg-[#1b1e23] p-3.5 rounded-xl border border-sky-500/25 shadow-inner">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-sky-300 flex items-center gap-1.5">
+                      <Hash className="w-3.5 h-3.5 text-sky-400" />
+                      Números de # de Anúncio / Variações de SKU
+                    </label>
+                    <span className="text-[10px] text-sky-400/80 font-mono bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">
+                      {additionalSkus.length} vinculado(s)
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-white/60 mb-2.5 leading-relaxed">
+                    Vincule múltiplos <span className="text-sky-300 font-mono font-bold"># de anúncio</span> (ex: <span className="text-sky-300 font-mono">MLB3782694854</span>, <span className="text-sky-300 font-mono">MLB3737455528</span>) e códigos de SKU. Qualquer venda do Mercado Livre com esses números dará baixa automaticamente neste produto.
+                  </p>
+
+                  <div className="flex gap-2 mb-2">
+                    <input
+                      type="text"
+                      value={newSkuInput}
+                      onChange={(e) => setNewSkuInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleAddSkuChip(newSkuInput);
+                        }
+                      }}
+                      placeholder="Digite # de Anúncio (ex: MLB3782694854) ou SKU e dê Enter"
+                      className="flex-1 bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-white/30 focus:outline-none focus:border-sky-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleAddSkuChip(newSkuInput)}
+                      className="bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/30 px-3.5 py-2 rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" /> Adicionar
+                    </button>
+                  </div>
+
+                  {additionalSkus.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 pt-1">
+                      {additionalSkus.map((altSku, idx) => (
+                        <span
+                          key={idx}
+                          className="inline-flex items-center gap-1.5 bg-sky-950/70 border border-sky-500/40 text-sky-200 text-[11px] font-mono font-medium px-2.5 py-1 rounded-md"
+                        >
+                          <span className="text-sky-400/80 font-bold">#</span>
+                          {altSku}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSkuChip(idx)}
+                            className="hover:text-red-400 text-sky-400/80 p-0.5 rounded transition-colors ml-0.5"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -1014,7 +1199,7 @@ export default function StockControl({
 
               onEditProduct({
                 ...replenishProduct,
-                stock: replenishProduct.stock + replenishQuantity,
+                
                 purchasePrice: replenishPrice,
                 replenishments: [...(replenishProduct.replenishments || []), newReplenishment]
               });

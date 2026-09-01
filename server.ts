@@ -98,7 +98,9 @@ async function startServer() {
 
       if (!response.ok) {
         let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
-        if (response.status === 500) {
+        if (response.status === 404) {
+          msg = `A URL do Web App do Google Apps Script não foi encontrada (HTTP 404). Isso ocorre quando a URL está incorreta ou o Web App foi excluído/desativado. Verifique no seu Google Sheets: Extensões > Apps Script > Implantar > Gerenciar implantações e copie a URL do Web App que termina com '/exec'.`;
+        } else if (response.status === 500) {
           msg += ` Isso geralmente significa que há um erro interno de execução no seu código do Apps Script (como uma coluna ausente ou uma fórmula inválida na planilha). Por favor, verifique no menu "Execuções" do seu Apps Script para ver o log de erro detalhado.`;
         }
         throw new Error(msg);
@@ -156,12 +158,14 @@ async function startServer() {
         headers: {
           'Content-Type': 'text/plain;charset=utf-8'
         },
-        body: JSON.stringify({ products, sales, initialCapital, mlRecords })
+        body: JSON.stringify({ products, sales, initialCapital, mlRecords, entradaRecords: req.body.entradaRecords, entradaRawMatrix: req.body.entradaRawMatrix })
       }, 45000);
 
       if (!response.ok) {
         let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
-        if (response.status === 500) {
+        if (response.status === 404) {
+          msg = `A URL do Web App do Google Apps Script não foi encontrada (HTTP 404). Verifique se a URL no Passo 2 termina com '/exec' e se a implantação está ativa.`;
+        } else if (response.status === 500) {
           msg += ` Isso geralmente indica erro de código ou formato incorreto no seu Apps Script ao gravar. Por favor, cheque a aba "Execuções" no painel do Google Apps Script.`;
         }
         throw new Error(msg);

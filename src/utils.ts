@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Product, Sale } from './types';
+import { Product, Sale, getAllProductSkus } from './types';
 
 // Taxas padrão do Mercado Livre e Impostos
 export const ML_CLASSIC_PERCENT = 12; // 12% de comissão
@@ -27,60 +27,121 @@ export function normalizeName(name: string): string {
 }
 
 /**
+ * Identifica o tipo principal/substantivo do produto para evitar trocas incorretas
+ */
+export function getCoreProductType(str: string): string {
+  if (!str) return '';
+  const s = str.toLowerCase();
+  if (s.includes('adaptador') || s.includes('plug')) return 'adaptador';
+  if (s.includes('extensor') || (s.includes('cabo') && s.includes('extensor'))) return 'extensor';
+  if (s.includes('cabo')) return 'cabo';
+  if (s.includes('xuxinha') || s.includes('rabicó') || s.includes('rabico') || s.includes('elástico') || s.includes('elastico')) return 'xuxinha';
+  if (s.includes('teclado')) return 'teclado';
+  if (s.includes('fone') || s.includes('headset')) return 'fone';
+  if (s.includes('suporte')) return 'suporte';
+  if (s.includes('garrafa')) return 'garrafa';
+  if (s.includes('carregador') || s.includes('fonte')) return 'carregador';
+  if (s.includes('capa') || s.includes('case')) return 'capa';
+  return '';
+}
+
+export function extractTokens(str: string): string[] {
+  const norm = normalizeName(str);
+  const stopWords = new Set(['de', 'da', 'do', 'das', 'dos', 'para', 'com', 'sem', 'em', 'um', 'uma', 'e', 'a', 'o', 'as', 'os', 'por', 'na', 'no', 'nas', 'nos']);
+  return norm.split(/\s+/).filter(w => w.length > 1 && !stopWords.has(w));
+}
+
+/**
  * Encontra o produto correspondente para uma venda no catálogo de produtos
  */
 export function findProductForSale(s: Sale, productsList: Product[]): Product | undefined {
   if (!productsList || productsList.length === 0) return undefined;
 
-  const rawName = (s.productName || '').trim();
-  const rawNameLower = rawName.toLowerCase();
-  const isBadName = !rawName || ['sim', 'não', 'nao', 'produto mercado livre', 'true', 'false'].includes(rawNameLower);
-
-  // 1. Se o nome do produto na venda for válido, tentar casar pelo nome do produto
-  if (!isBadName) {
-    const sNameNorm = normalizeName(rawName);
-
-    // Exact match
-    const exactMatch = productsList.find(p => normalizeName(p.name) === sNameNorm);
-    if (exactMatch) return exactMatch;
-
-    // Spec distinction match (evitar que 20cm cante em 90º, ou 144 cante em 102/192)
-    const isAdCurto = rawNameLower.includes('20cm') || rawNameLower.includes('20 cm') || rawNameLower.includes('curto');
-    const isAd90 = rawNameLower.includes('90') || rawNameLower.includes('90º') || rawNameLower.includes('90°') || rawNameLower.includes('90graus');
-    const isAd144 = rawNameLower.includes('144');
-    const isAd102 = rawNameLower.includes('102');
-
-    for (const p of productsList) {
-      const pNameLower = p.name.toLowerCase();
-      const isProdCurto = pNameLower.includes('20cm') || pNameLower.includes('20 cm') || pNameLower.includes('curto');
-      const isProd90 = pNameLower.includes('90') || pNameLower.includes('90º') || pNameLower.includes('90°') || pNameLower.includes('90graus');
-      const isProd144 = pNameLower.includes('144');
-      const isProd102 = pNameLower.includes('102');
-
-      if (isProdCurto && !isAdCurto) continue;
-      if (isProd90 && !isAd90) continue;
-      if (isProd144 && !isAd144) continue;
-      if (isProd102 && !isAd102) continue;
-
-      const normPName = normalizeName(p.name);
-      if (normPName && sNameNorm && (normPName.includes(sNameNorm) || sNameNorm.includes(normPName))) {
-        return p;
-      }
-    }
-  }
-
-  // 2. Tentar por ID de produto se não casou por nome ou se nome era genérico
+  // 1. Tentar por ID de produto EXATO
   const sPid = String(s.productId || '').trim();
-  if (sPid && sPid !== 'unknown' && sPid !== 'null' && sPid !== 'undefined' && sPid !== '') {
+  if (sPid) {
     const matchById = productsList.find(p => String(p.id || '').trim() === sPid);
     if (matchById) return matchById;
   }
 
-  // 3. Tentar por SKU
-  const sSku = String((s as any).sku || '').trim().toLowerCase();
+  // 2. Tentar por # de Anúncio no Mercado Livre (s.adId, ex: MLB3782694854)
+  const sAdId = String(s.adId || '').replace(/^[#\s]+/, '').trim().toLowerCase();
+  if (sAdId && sAdId.length > 3 && !['sim', 'não', 'nao', 'ml'].includes(sAdId)) {
+    const matchByAdId = productsList.find(p => {
+      const allSkus = getAllProductSkus(p).map(x => String(x).replace(/^[#\s]+/, '').trim().toLowerCase());
+      const pIdClean = String(p.id || '').replace(/^[#\s]+/, '').trim().toLowerCase();
+      const sDigitsOnly = sAdId.replace(/\D/g, '');
+      return allSkus.some(sku => {
+        if (sku === sAdId) return true;
+        const skuDigitsOnly = sku.replace(/\D/g, '');
+        return sDigitsOnly.length >= 6 && skuDigitsOnly.length >= 6 && sDigitsOnly === skuDigitsOnly;
+      }) || (pIdClean && pIdClean === sAdId);
+    });
+    if (matchByAdId) return matchByAdId;
+  }
+
+  // 3. Tentar por SKU (Verificando SKU principal e todas as variações de SKU)
+  const sSku = String(s.sku || (s as any).sku || '').replace(/^[#\s]+/, '').trim().toLowerCase();
   if (sSku && !['sim', 'não', 'nao', 'ml'].includes(sSku)) {
-    const matchBySku = productsList.find(p => (p.sku || '').trim().toLowerCase() === sSku);
+    const matchBySku = productsList.find(p => {
+      const allSkus = getAllProductSkus(p).map(x => String(x).replace(/^[#\s]+/, '').trim().toLowerCase());
+      const pIdClean = String(p.id || '').replace(/^[#\s]+/, '').trim().toLowerCase();
+      const sDigitsOnly = sSku.replace(/\D/g, '');
+      return allSkus.some(sku => {
+        if (sku === sSku) return true;
+        const skuDigitsOnly = sku.replace(/\D/g, '');
+        return sDigitsOnly.length >= 6 && skuDigitsOnly.length >= 6 && sDigitsOnly === skuDigitsOnly;
+      }) || (pIdClean && pIdClean === sSku);
+    });
     if (matchBySku) return matchBySku;
+  }
+
+  // 4. Tentar por ID da Venda no ML
+  const mlId = (s.mlSaleId || s.id || '').replace(/^[#\s]+/, '').trim().toLowerCase();
+  if (mlId && mlId.length > 3) {
+    const matchByMlId = productsList.find(p => {
+      const allSkus = getAllProductSkus(p).map(x => String(x).replace(/^[#\s]+/, '').trim().toLowerCase());
+      const pIdClean = String(p.id || '').replace(/^[#\s]+/, '').trim().toLowerCase();
+      return allSkus.includes(mlId) || (pIdClean && pIdClean === mlId);
+    });
+    if (matchByMlId) return matchByMlId;
+  }
+
+  // 4. Tentar por Nome / Título Normalizado Exato ou Substring
+  const sNameNorm = normalizeName(s.productName || '');
+  if (sNameNorm && sNameNorm.length > 3) {
+    const matchByName = productsList.find(p => {
+      const pNameNorm = normalizeName(p.name || '');
+      return pNameNorm && (pNameNorm === sNameNorm || (pNameNorm.length > 8 && sNameNorm.includes(pNameNorm)) || (sNameNorm.length > 8 && pNameNorm.includes(sNameNorm)));
+    });
+    if (matchByName) return matchByName;
+  }
+
+  // 5. Tentar por Sobreposição de Tokens
+  if (sNameNorm && sNameNorm.length > 3) {
+    const sTokens = extractTokens(s.productName || '');
+    const sType = getCoreProductType(s.productName || '');
+
+    let bestMatch: Product | undefined;
+    let bestScore = 0;
+
+    for (const p of productsList) {
+      const pType = getCoreProductType(p.name || '');
+      if (sType && pType && sType !== pType) continue;
+
+      const pTokens = extractTokens(p.name || '');
+      if (pTokens.length === 0) continue;
+
+      const matchingTokens = pTokens.filter(t => sTokens.includes(t));
+      const score = matchingTokens.length / Math.min(pTokens.length, sTokens.length);
+
+      if (matchingTokens.length >= 2 && score >= 0.5 && score > bestScore) {
+        bestScore = score;
+        bestMatch = p;
+      }
+    }
+
+    if (bestMatch) return bestMatch;
   }
 
   return undefined;
@@ -99,6 +160,7 @@ export function calculateProductSalesVolume(
   const productsList = allProducts && allProducts.length > 0 ? allProducts : [product];
   const targetId = String(product.id || '').trim();
   const targetNameNorm = normalizeName(product.name || '');
+  const targetSkus = getAllProductSkus(product).map(x => x.toLowerCase());
 
   return sales
     .filter(s => s.status !== 'refunded')
@@ -112,12 +174,11 @@ export function calculateProductSalesVolume(
         }
       } else {
         const sPid = String(s.productId || '').trim();
-        const sSku = String((s as any).sku || '').trim().toLowerCase();
-        const targetSkuClean = (product.sku || '').trim().toLowerCase();
+        const sSku = String(s.sku || (s as any).sku || '').trim().toLowerCase();
 
         if (targetId && sPid && sPid === targetId) {
           isMatch = true;
-        } else if (targetSkuClean && targetSkuClean.length > 1 && !['sim', 'não', 'nao', 'ml'].includes(targetSkuClean) && sSku === targetSkuClean) {
+        } else if (sSku && sSku.length > 1 && !['sim', 'não', 'nao', 'ml'].includes(sSku) && targetSkus.includes(sSku)) {
           isMatch = true;
         }
       }
@@ -236,7 +297,7 @@ export function formatDate(dateStr: string): string {
  */
 export const INITIAL_PRODUCTS: Product[] = [
   {
-    id: 'prod_1',
+    id: 'ML-FONE-BT-001',
     name: 'Fone de Ouvido Bluetooth SoundPRO X',
     sku: 'ML-FONE-BT-001',
     purchasePrice: 45.00,
@@ -249,7 +310,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     shippingCost: 0
   },
   {
-    id: 'prod_2',
+    id: 'ML-CARREG-TC-002',
     name: 'Suporte de Celular Veicular Magnético',
     sku: 'ML-SUP-VEIC-002',
     purchasePrice: 8.50,
@@ -262,7 +323,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     shippingCost: 0
   },
   {
-    id: 'prod_3',
+    id: 'ML-CAPA-IP13-003',
     name: 'Teclado Mecânico Gamer RGB Silent',
     sku: 'ML-TEC-GMR-003',
     purchasePrice: 110.00,
@@ -305,7 +366,7 @@ export const INITIAL_PRODUCTS: Product[] = [
 export const INITIAL_SALES: Sale[] = [
   {
     id: 'sale_1',
-    productId: 'prod_1',
+    productId: 'ML-FONE-BT-001',
     productName: 'Fone de Ouvido Bluetooth SoundPRO X',
     quantity: 2,
     salePrice: 129.90,
@@ -318,7 +379,7 @@ export const INITIAL_SALES: Sale[] = [
   },
   {
     id: 'sale_2',
-    productId: 'prod_2',
+    productId: 'ML-CARREG-TC-002',
     productName: 'Suporte de Celular Veicular Magnético',
     quantity: 5,
     salePrice: 38.00,
@@ -331,7 +392,7 @@ export const INITIAL_SALES: Sale[] = [
   },
   {
     id: 'sale_3',
-    productId: 'prod_3',
+    productId: 'ML-CAPA-IP13-003',
     productName: 'Teclado Mecânico Gamer RGB Silent',
     quantity: 1,
     salePrice: 289.00,
@@ -357,7 +418,7 @@ export const INITIAL_SALES: Sale[] = [
   },
   {
     id: 'sale_5',
-    productId: 'prod_1',
+    productId: 'ML-FONE-BT-001',
     productName: 'Fone de Ouvido Bluetooth SoundPRO X',
     quantity: 1,
     salePrice: 125.00, // Preço promocional
@@ -370,7 +431,7 @@ export const INITIAL_SALES: Sale[] = [
   },
   {
     id: 'sale_6',
-    productId: 'prod_2',
+    productId: 'ML-CARREG-TC-002',
     productName: 'Suporte de Celular Veicular Magnético',
     quantity: 4,
     salePrice: 38.00,
@@ -384,7 +445,7 @@ export const INITIAL_SALES: Sale[] = [
   },
   {
     id: 'sale_7',
-    productId: 'prod_3',
+    productId: 'ML-CAPA-IP13-003',
     productName: 'Teclado Mecânico Gamer RGB Silent',
     quantity: 1,
     salePrice: 289.00,
@@ -430,16 +491,130 @@ export function formatShortDate(dateStr: string): string {
 }
 
 /**
- * Calcula a data estimada de liberação somando 30 dias à data da venda
+ * Retorna a data prevista de liberação (+30 dias) formatada no padrão DD/MM/YYYY
  */
 export function getReleaseDateStr(dateStr: string): string {
   if (!dateStr) return '';
-  const date = new Date(dateStr + 'T12:00:00');
-  date.setDate(date.getDate() + 30);
-  const day = String(date.getDate()).padStart(2, '0');
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  return `${day}/${month}`;
+  const parts = dateStr.split('-');
+  let d: Date;
+  if (parts.length === 3) {
+    d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  } else {
+    d = new Date(dateStr);
+  }
+  if (isNaN(d.getTime())) return dateStr;
+  d.setDate(d.getDate() + 30);
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  return `${day}/${month}/${year}`;
 }
+
+/**
+ * Limpa e valida IDs de venda do Mercado Livre, eliminando prefixos sintéticos (ex: ml_v_, rec_, sale_)
+ * e garantindo que apenas identificadores reais do Mercado Livre sejam preservados.
+ */
+export function cleanMlSaleId(id?: string | null): string | undefined {
+  if (!id) return undefined;
+  let str = String(id).trim().replace(/^#/, '').trim();
+  
+  // Rejeita notação científica (ex: 2.00001E+15, 2,00001E+15) pois perde dígitos
+  if (/[eE\+,\.]/.test(str)) {
+    return undefined;
+  }
+
+  // Se contiver sufixo/prefixo de produto, remove totalmente
+  if (str.includes('prod_')) {
+    str = str.replace(/_?prod_\w+/g, '').replace(/^prod_\w+_?/, '').trim();
+  }
+
+  // 1. Se for puramente numérico de 8 a 20 dígitos (ex: 1786574565, 2000001450876553)
+  if (/^\d{8,20}$/.test(str)) {
+    return str;
+  }
+
+  // 2. Se contiver qualquer sequência de 8 a 20 dígitos dentro da string (ex: sale_1786574565 ou 2000014680160261_123)
+  const numMatch = str.match(/\b(\d{8,20})\b/);
+  if (numMatch) {
+    return numMatch[0];
+  }
+
+  // 3. Se contiver partes separadas por _
+  if (str.includes('_')) {
+    const parts = str.split('_');
+    for (const part of parts) {
+      if (!/[eE\+,\.]/.test(part) && /^\d{6,20}$/.test(part)) {
+        return part;
+      }
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Obtém o ID real do Mercado Livre a partir de qualquer objeto de venda
+ */
+export function getSaleMlId(sale?: Partial<Sale> | null): string | undefined {
+  if (!sale) return undefined;
+  
+  // 1. Tenta a partir do campo mlSaleId
+  const fromMlSaleId = cleanMlSaleId(sale.mlSaleId);
+  if (fromMlSaleId) return fromMlSaleId;
+
+  // 2. Tenta a partir do campo id principal da venda
+  if (sale.id) {
+    const fromId = cleanMlSaleId(sale.id);
+    if (fromId) return fromId;
+  }
+
+  return undefined;
+}
+
+/**
+ * Extrai de forma robusta o ID numérico do pedido/pacote do Mercado Livre de qualquer valor de célula
+ */
+export function extractMlOrderId(val: any): string {
+  if (val === undefined || val === null) return '';
+  let str = String(val).trim().replace(/^#/, '').trim();
+  
+  // Tratamento universal para notação científica do Excel (ex: 2.00001E+15, 2.00001468016026E+15, 4.23891E+09)
+  if (/^(\d+(?:\.\d+)?)[eE]\+(\d+)$/i.test(str)) {
+    try {
+      const num = Number(str);
+      if (!isNaN(num) && num > 0) {
+        str = BigInt(Math.round(num)).toString();
+      }
+    } catch {}
+  }
+
+  // 1. Se contiver qualquer sequência de 10 a 24 dígitos (formato oficial de pedidos Mercado Livre 200000...)
+  const mlMatch = str.match(/\b(200\d{7,20}|\d{10,24})\b/);
+  if (mlMatch) {
+    return mlMatch[0];
+  }
+
+  // 2. Se contiver _ busca segmento numérico
+  if (str.includes('_')) {
+    const parts = str.split('_');
+    for (const part of parts) {
+      if (/^\d{8,24}$/.test(part)) {
+        return part;
+      }
+    }
+  }
+
+  // Remove sufixos decimais .0 ou .00 inseridos por conversores numéricos
+  str = str.replace(/\.0+$/, '').trim();
+
+  // Se for puramente numérico com 6 a 24 dígitos
+  if (/^\d{6,24}$/.test(str)) {
+    return str;
+  }
+
+  return str;
+}
+
 
 
 
