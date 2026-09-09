@@ -15,6 +15,7 @@ import StockControl from './components/StockControl';
 import SalesManager from './components/SalesManager';
 import SheetsIntegration from './components/SheetsIntegration';
 import MLImport from './components/MLImport';
+import ProductProfitsPanel from './components/ProductProfitsPanel';
 
 export default function App() {
   // Migração automática do Web App URL para o novo fornecido pelo usuário
@@ -77,23 +78,32 @@ export default function App() {
     return localStorage.getItem('ml_webapp_url') || 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
   });
 
+  const [isFetchingWebAppUrl, setIsFetchingWebAppUrl] = useState<boolean>(true);
+
   // Regra de Sincronização Mestra: Buscar Web App URL da aba "Database" da planilha
-  useEffect(() => {
-    const fetchWebAppUrlFromSheet = async () => {
-      if (!spreadsheetUrl) return;
-      try {
-        const res = await fetch(`/api/get-webapp-url?spreadsheetUrl=${encodeURIComponent(spreadsheetUrl)}`);
-        const data = await res.json();
-        if (data.webAppUrl && data.webAppUrl !== webAppUrl) {
-          console.log('Web App URL atualizada automaticamente da aba Database da planilha!');
-          setWebAppUrl(data.webAppUrl);
-          localStorage.setItem('ml_webapp_url', data.webAppUrl);
-        }
-      } catch (err) {
-        console.error('Erro ao buscar Web App URL da planilha:', err);
+  const forceFetchWebAppUrl = async () => {
+    if (!spreadsheetUrl) {
+      setIsFetchingWebAppUrl(false);
+      return;
+    }
+    setIsFetchingWebAppUrl(true);
+    try {
+      const res = await fetch(`/api/get-webapp-url?spreadsheetUrl=${encodeURIComponent(spreadsheetUrl)}`);
+      const data = await res.json();
+      if (data.webAppUrl && data.webAppUrl !== webAppUrl) {
+        console.log('Web App URL atualizada automaticamente da aba Database da planilha!');
+        setWebAppUrl(data.webAppUrl);
+        localStorage.setItem('ml_webapp_url', data.webAppUrl);
       }
-    };
-    fetchWebAppUrlFromSheet();
+    } catch (err) {
+      console.error('Erro ao buscar Web App URL da planilha:', err);
+    } finally {
+      setIsFetchingWebAppUrl(false);
+    }
+  };
+
+  useEffect(() => {
+    forceFetchWebAppUrl();
   }, [spreadsheetUrl]);
 
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
@@ -109,7 +119,7 @@ export default function App() {
 
   const [initialCapital, setInitialCapital] = useState<number>(() => {
     const saved = localStorage.getItem('ml_initial_capital');
-    return saved ? Number(saved) : 500;
+    return saved ? Number(saved) : 0;
   });
 
   // Salvar no localStorage sempre que houver alterações nos estados principais
@@ -168,6 +178,7 @@ export default function App() {
     const sanitizedProducts = (cloudProducts || [])
       .filter(p => {
         const n = (p.name || '').trim().toLowerCase();
+        if (!n) return false; // Ignorar linhas em branco da planilha
         const isTrash = n === 'sim' || n === 'não' || n === 'nao';
         const isGhost = false;
         return !isTrash && !isGhost;
@@ -472,7 +483,7 @@ export default function App() {
 
   // Buscar dados da planilha na inicialização do aplicativo para manter sincronizado com múltiplos dispositivos
   useEffect(() => {
-    if (!webAppUrl || hasFetchedFromCloud) return;
+    if (!webAppUrl || hasFetchedFromCloud || isFetchingWebAppUrl) return;
 
     const fetchInitialData = async () => {
       setIsFetchingFromCloud(true);
@@ -534,7 +545,7 @@ export default function App() {
     };
 
     fetchInitialData();
-  }, [webAppUrl, hasFetchedFromCloud]);
+  }, [webAppUrl, hasFetchedFromCloud, isFetchingWebAppUrl]);
 
   // Forçar recarregamento/importação manual do banco de dados na planilha do Sheets
   const handlePullFromCloud = async (): Promise<{ status: 'success' | 'error'; message: string }> => {
@@ -592,6 +603,68 @@ export default function App() {
       const errorMsg = err.message || String(err);
       setCloudSyncError(errorMsg);
       return { status: 'error', message: `Erro ao importar dados da planilha: ${errorMsg}. Certifique-se de que o Apps Script foi implantado corretamente como Web App (Qualquer pessoa) e que removeu o "setHeader" dele se estiver usando o modelo antigo.` };
+    } finally {
+      setIsFetchingFromCloud(false);
+    }
+  };
+
+  const handleMasterSync = async (): Promise<{ status: 'success' | 'error'; message: string }> => {
+    let currentWebAppUrl = webAppUrl;
+    if (spreadsheetUrl) {
+      setIsFetchingWebAppUrl(true);
+      try {
+        const res = await fetch(`/api/get-webapp-url?spreadsheetUrl=${encodeURIComponent(spreadsheetUrl)}`);
+        const data = await res.json();
+        if (data.webAppUrl) {
+          currentWebAppUrl = data.webAppUrl;
+          setWebAppUrl(data.webAppUrl);
+          localStorage.setItem('ml_webapp_url', data.webAppUrl);
+        }
+      } catch (err) {
+        console.error('Erro no Master Sync URL:', err);
+      } finally {
+        setIsFetchingWebAppUrl(false);
+      }
+    }
+
+    if (!currentWebAppUrl) {
+      return { status: 'error', message: 'Nenhuma URL de Web App encontrada na aba Database.' };
+    }
+
+    setIsFetchingFromCloud(true);
+    setCloudSyncError(null);
+    try {
+      console.log('Forçando Master Sync...', currentWebAppUrl);
+      const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(currentWebAppUrl)}`;
+      const response = await fetch(url);
+      const result = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        throw new Error(result?.message || `HTTP ${response.status}`);
+      }
+
+      if (result && result.status === 'success') {
+        const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
+        setProducts(sanitized.products);
+        setSales(sanitized.sales);
+        if (result.mlRecords && Array.isArray(result.mlRecords)) setMlRecords(result.mlRecords);
+        if (result.entradaRecords && Array.isArray(result.entradaRecords)) {
+          setEntradaRecords(result.entradaRecords);
+        }
+        if (result.initialCapital !== undefined && typeof result.initialCapital === 'number') {
+           setInitialCapital(result.initialCapital);
+           localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+        }
+
+        setHasFetchedFromCloud(true);
+        setHasPendingWrite(false);
+        return { status: 'success', message: 'Master Sync concluído: URL atualizada e dados puxados com sucesso!' };
+      } else {
+        throw new Error(result?.message || 'Erro no sync.');
+      }
+    } catch (error: any) {
+      console.error('Erro no Master Sync Pull:', error);
+      return { status: 'error', message: String(error.message || error) };
     } finally {
       setIsFetchingFromCloud(false);
     }
@@ -1140,7 +1213,7 @@ export default function App() {
                            + (r.surchargeRevenue || 0) 
                            + (r.installmentFee || 0) 
                            - mlFee 
-                           + shippingRevenue 
+                           + (r.shippingRevenue || 0) 
                            - shippingCost;
           
           const netProfit = saleStatus === 'refunded' ? -shippingCost : (aReceberML - taxAmount - totalCostValue);
@@ -1421,6 +1494,7 @@ export default function App() {
         isFetchingFromCloud={isFetchingFromCloud}
         cloudSyncError={cloudSyncError}
         products={products}
+        onMasterSync={handleMasterSync}
         onLogout={() => {
           setIsAuthenticated(false);
           localStorage.removeItem('is_ml_authenticated');
@@ -1437,6 +1511,17 @@ export default function App() {
             sales={sales}
             initialCapital={initialCapital}
             onUpdateCapital={handleUpdateCapital}
+            onNavigateToTab={(tab) => {
+              setActiveTab(tab);
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }}
+          />
+        )}
+
+        {activeTab === 'product-profits' && (
+          <ProductProfitsPanel
+            products={products}
+            sales={sales}
             onNavigateToTab={(tab) => {
               setActiveTab(tab);
               window.scrollTo({ top: 0, behavior: 'smooth' });

@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react';
-import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut, Calculator } from 'lucide-react';
+import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut, Calculator, BadgePercent } from 'lucide-react';
 import MLCalculatorModal from './MLCalculatorModal';
 
 import { Product } from '../types';
@@ -20,6 +20,7 @@ interface HeaderProps {
   cloudSyncError?: string | null;
   onLogout?: () => void;
   products?: Product[];
+  onMasterSync?: () => Promise<{status: 'success' | 'error', message: string}>;
 }
 
 export default function Header({
@@ -32,9 +33,28 @@ export default function Header({
   isFetchingFromCloud = false,
   cloudSyncError = null,
   onLogout,
-  products = []
+  products = [],
+  onMasterSync
 }: HeaderProps) {
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+  const [isMasterSyncing, setIsMasterSyncing] = useState(false);
+
+  const handleMasterSyncClick = async () => {
+    if (!onMasterSync) return;
+    setIsMasterSyncing(true);
+    try {
+      const res = await onMasterSync();
+      if (res.status === 'success') {
+        // Podemo só ignorar ou mostrar toast, a UI cuida
+      } else {
+        alert('Erro ao sincronizar: ' + res.message);
+      }
+    } catch (e) {
+      alert('Erro inesperado na sincronização.');
+    } finally {
+      setIsMasterSyncing(false);
+    }
+  };
 
   return (
     <header className="bg-[#0d0d0d] text-white shadow-xl border-b border-white/10">
@@ -69,6 +89,19 @@ export default function Header({
 
           {/* Integration Status & Real-time Auto-Sync Info */}
           <div className="flex flex-col sm:flex-row items-center gap-2.5 w-full md:w-auto justify-end">
+            
+            {onMasterSync && (
+              <button
+                onClick={handleMasterSyncClick}
+                disabled={isMasterSyncing}
+                className="flex items-center gap-1.5 bg-[#141414] hover:bg-white/5 border border-white/10 rounded-xl px-3.5 py-2 text-xs font-bold text-white transition-all cursor-pointer disabled:opacity-50"
+                title="Forçar Sincronização com o Database"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isMasterSyncing ? 'animate-spin text-[#FFE600]' : 'text-white/70'}`} />
+                <span>Atualizar</span>
+              </button>
+            )}
+
             {isFetchingFromCloud ? (
               <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/25 rounded-xl px-3.5 py-2 text-xs text-emerald-400 font-extrabold animate-pulse">
                 <RefreshCw className="w-3.5 h-3.5 animate-spin" />
@@ -112,6 +145,19 @@ export default function Header({
           >
             <TrendingUp className="w-4 h-4" />
             Visão Geral / Métricas
+          </button>
+          
+          <button
+            onClick={() => setActiveTab('product-profits')}
+            className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer ${
+              activeTab === 'product-profits'
+                ? 'bg-[#FFE600] text-black shadow-[0_0_15px_rgba(255,230,0,0.2)]'
+                : 'text-white/65 hover:text-white hover:bg-white/5'
+            }`}
+            id="tab-product-profits"
+          >
+            <BadgePercent className="w-4 h-4" />
+            Lucro por Produto
           </button>
           
           <button

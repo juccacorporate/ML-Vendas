@@ -14,18 +14,18 @@ export interface Product {
   id: string;
   name: string;
   sku: string; // SKU Principal / Código Único
-  skus?: string[]; // Variações / Múltiplos SKUs vinculados ao produto (ex: ABC123, ABC345, ABC587)
-  purchasePrice: number; // Preço de Compra
+  skus?: string[]; // Variações / Múltiplos SKUs vinculados ao produto
+  purchasePrice: number; // Preço de Compra (CMV)
   salePrice: number;     // Preço de Venda padrão
   stock: number;         // Estoque atual
   minimalStock: number;  // Estoque mínimo para alerta
-  addedDate: string;     // Data de entrada (para calcular tempo parado)
+  addedDate: string;     // Data de entrada
   category: string;
-  mlFeeType: 'classic' | 'premium' | 'custom' | 'none'; // Tipo de anúncio Mercado Livre
+  mlFeeType: 'classic' | 'premium' | 'custom' | 'none'; // Tipo de anúncio
   customFeePercent?: number; // Comissão customizada
   shippingCost: number;   // Custo de frete padrão
-  status?: 'active' | 'archived'; // Status do produto
-  replenishments?: ProductReplenishment[]; // Histórico de reposição de estoque
+  status?: 'active' | 'archived';
+  replenishments?: ProductReplenishment[];
 }
 
 export interface Sale {
@@ -37,24 +37,24 @@ export interface Sale {
   quantity: number;
   salePrice: number;     // Preço de venda praticado
   date: string;          // Data da venda
-  mlFee: number;         // Taxa total do Mercado Livre (percentual + fixa se < R$79)
+  mlFee: number;         // Taxa total do Mercado Livre
   shippingCost: number;  // Frete pago nesta venda
-  purchasePrice: number; // Preço de compra na época (para lucro exato)
+  purchasePrice: number; // Preço de compra na época
   grossProfit: number;   // Preço Venda - Preço Compra
-  netProfit: number;     // Preço Venda - Preço Compra - Taxas - Frete
-  mlSaleUrl?: string;    // Link opcional do anúncio no ML
-  discount?: number;     // Desconto em R$ aplicado à venda
-  status?: 'pending' | 'completed' | 'refunded' | 'ignored'; // Status da venda
-  completionTime?: number; // Tempo em milissegundos para conclusão no sistema
-  lossAmount?: number;     // Prejuízo extra do estorno/cancelamento
-  lossReason?: string;     // Motivo curto do prejuízo no estorno
-  shippingType?: 'transportadora' | 'full' | 'flex'; // Tipo de Envio: Mercado Livre Full, Transportadora ou Flex
-  isCustomSale?: boolean; // Se a venda teve taxas ajustadas manualmente
-  customMlFee?: number;   // Comissão unitária customizada na venda
-  customShippingCost?: number; // Frete unitário customizado na venda
-  mlSaleId?: string;      // ID da venda do Mercado Livre
-  isMlSale?: boolean;     // Se é uma venda vinda do Mercado Livre
-  shippingRevenue?: number; // Receita por envio / bônus
+  netProfit: number;     // Preço Venda - Preço Compra - Taxas - Frete - Imposto
+  mlSaleUrl?: string;
+  discount?: number;
+  status?: 'pending' | 'completed' | 'refunded' | 'ignored';
+  completionTime?: number;
+  lossAmount?: number;
+  lossReason?: string;
+  shippingType?: 'transportadora' | 'full' | 'flex';
+  isCustomSale?: boolean;
+  customMlFee?: number;
+  customShippingCost?: number;
+  mlSaleId?: string;
+  isMlSale?: boolean;
+  shippingRevenue?: number;
   buyerName?: string;
   buyerDocument?: string;
   buyerAddress?: string;
@@ -76,41 +76,50 @@ export interface MLImportRecord {
   dateStr: string; // Data da venda original
   status: string; // Estado
   statusDescription: string; // Descrição do status
-  multiProduct: boolean; // Pacote de diversos produtos
-  isKit: boolean; // Pertence a um kit
-  units: number; // Unidades
-  productRevenue: number; // Receita por produtos
-  surchargeRevenue: number; // Receita por acréscimo
-  installmentFee: number; // Taxa de parcelamento
-  saleFeeAndTaxes: number; // Tarifa de venda e impostos (valor negativo)
-  shippingRevenue: number; // Receita por envio
-  shippingFee: number; // Tarifas de envio
-  shippingWeightCost: number; // Custo de envio medidas/peso
-  shippingDiffCost: number; // Custo por diferenças
-  discountsAndBonuses: number; // Descontos e bônus
-  refundsAndCancellations: number; // Cancelamentos e reembolsos
-  totalBrl: number; // Total BRL
-  billingMonth: string; // Mês de faturamento
-  isAdSale: boolean; // Venda por publicidade
+  multiProduct: boolean;
+  isKit: boolean;
+  units: number;
+  productRevenue: number; // Coluna H
+  surchargeRevenue: number; // Coluna I
+  installmentFee: number; // Coluna J
+  saleFeeAndTaxes: number; // Coluna K (Tarifa ML)
+  shippingRevenue: number; // Coluna L
+  shippingFee: number; // Coluna M (Tarifa Envio)
+  shippingWeightCost: number;
+  shippingDiffCost: number;
+  discountsAndBonuses: number;
+  refundsAndCancellations: number;
+  totalBrl: number;
+  billingMonth: string;
+  isAdSale: boolean;
   adId: string; // # de anúncio
   adTitle: string; // Título do anúncio
-  variation: string; // Variação
-  adUnitPrice: number; // Preço unitário
-  adType: string; // Tipo de anúncio (Clássico, Premium)
-  invoiceStatus: string; // NF-e em anexo
-  buyerName: string; // Dados pessoais ou da empresa
-  buyerDocument: string; // Tipo e número do documento
-  buyerAddress: string; // Endereço
-  shippingMethod: string; // Forma de entrega
-  shippingDateGo: string; // Data a caminho
-  shippingDateDelivery: string; // Data de entrega
-  carrier: string; // Transportador
-  trackingNumber: string; // Número de rastreamento
-  trackingUrl: string; // URL de acompanhamento
-  isClaimOpen: boolean; // Reclamação aberta
-  isClaimClosed: boolean; // Reclamação encerrada
-  isInMediation: boolean; // Em mediação
-  sku?: string; // SKU do anúncio/venda
+  variation: string;
+  adUnitPrice: number;
+  adType: string;
+  invoiceStatus: string;
+  buyerName: string;
+  buyerDocument: string;
+  buyerAddress: string;
+  shippingMethod: string;
+  shippingDateGo: string;
+  shippingDateDelivery: string;
+  carrier: string;
+  trackingNumber: string;
+  trackingUrl: string;
+  isClaimOpen: boolean;
+  isClaimClosed: boolean;
+  isInMediation: boolean;
+  sku?: string;
+}
+
+export interface EntradaValorRecord {
+  id: string; // N.º de Venda / Operação (ex: "2000001450876553")
+  dateStr: string; // Data da Liberação
+  description?: string;
+  releaseStatus: string; // "Liberação" ou "Disponível"
+  operationStatus?: string;
+  productName: string;
 }
 
 export function normalizeText(str: string): string {
@@ -124,39 +133,80 @@ export function normalizeText(str: string): string {
     .trim();
 }
 
+const STOP_WORDS = new Set(['de', 'da', 'do', 'das', 'dos', 'para', 'com', 'sem', 'em', 'um', 'uma', 'e', 'a', 'o', 'as', 'os', 'por', 'na', 'no', 'nas', 'nos']);
+
 export function extractTokens(str: string): string[] {
+  if (!str) return [];
   const norm = normalizeText(str);
-  const stopWords = new Set(['de', 'da', 'do', 'das', 'dos', 'para', 'com', 'sem', 'em', 'um', 'uma', 'e', 'a', 'o', 'as', 'os', 'por', 'na', 'no', 'nas', 'nos']);
-  return norm.split(/\s+/).filter(w => w.length > 1 && !stopWords.has(w));
+  return norm.split(/\s+/).filter(w => w.length > 1 && !STOP_WORDS.has(w));
 }
+
+const PRODUCT_TYPE_PATTERNS: Record<string, RegExp> = {
+  adaptador: /adaptador|plug/,
+  extensor: /extensor/,
+  cabo: /cabo/,
+  xuxinha: /xuxinha|rabicó|rabico|elástico|elastico/,
+  teclado: /teclado/,
+  fone: /fone|headset/,
+  suporte: /suporte/,
+  garrafa: /garrafa/,
+  carregador: /carregador|fonte/,
+  capa: /capa|case/,
+};
 
 export function getCoreProductType(str: string): string {
   if (!str) return '';
   const s = str.toLowerCase();
-  if (s.includes('adaptador') || s.includes('plug')) return 'adaptador';
-  if (s.includes('extensor') || (s.includes('cabo') && s.includes('extensor'))) return 'extensor';
-  if (s.includes('cabo')) return 'cabo';
-  if (s.includes('xuxinha') || s.includes('rabicó') || s.includes('rabico') || s.includes('elástico') || s.includes('elastico')) return 'xuxinha';
-  if (s.includes('teclado')) return 'teclado';
-  if (s.includes('fone') || s.includes('headset')) return 'fone';
-  if (s.includes('suporte')) return 'suporte';
-  if (s.includes('garrafa')) return 'garrafa';
-  if (s.includes('carregador') || s.includes('fonte')) return 'carregador';
-  if (s.includes('capa') || s.includes('case')) return 'capa';
+  for (const [type, pattern] of Object.entries(PRODUCT_TYPE_PATTERNS)) {
+    if (pattern.test(s)) return type;
+  }
   return '';
 }
 
-/**
- * Normaliza identificadores removendo '#' e espaços extras
- */
+const INVALID_IDENTIFIERS = new Set(['sim', 'não', 'nao', 'ml']);
+const MIN_IDENTIFIER_LENGTH = 3;
+const MIN_DIGIT_LENGTH = 6;
+const MIN_TOKEN_COUNT = 2;
+const MIN_MATCH_SCORE = 0.5;
+const MIN_TEXT_LENGTH = 3;
+
 export function normalizeIdentifier(val: string): string {
   if (!val) return '';
   return String(val).replace(/^[#\s]+/, '').trim().toLowerCase();
 }
 
-/**
- * Retorna todos os SKUs e # de Anúncio válidos associados a um produto (SKU principal + # de anúncio + variações)
- */
+function isValidIdentifier(normalized: string): boolean {
+  return normalized.length > MIN_IDENTIFIER_LENGTH && !INVALID_IDENTIFIERS.has(normalized);
+}
+
+function matchByDigits(val1: string, val2: string): boolean {
+  const digits1 = val1.replace(/\D/g, '');
+  const digits2 = val2.replace(/\D/g, '');
+  return digits1.length >= MIN_DIGIT_LENGTH && digits2.length >= MIN_DIGIT_LENGTH && digits1 === digits2;
+}
+
+function matchesSku(rSkuClean: string, p: Product): boolean {
+  const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
+  const pIdClean = normalizeIdentifier(p.id || '');
+  return allSkus.some(s => s === rSkuClean || matchByDigits(rSkuClean, s)) || (pIdClean && pIdClean === rSkuClean);
+}
+
+function matchesTitleExact(rTitleNorm: string, p: Product): boolean {
+  const pNameNorm = normalizeText(p.name || '');
+  if (!pNameNorm) return false;
+  if (pNameNorm === rTitleNorm) return true;
+  if (pNameNorm.length > 8 && rTitleNorm.includes(pNameNorm)) return true;
+  if (rTitleNorm.length > 8 && pNameNorm.includes(rTitleNorm)) return true;
+  return false;
+}
+
+function scoreTokenMatch(rTokens: string[], p: Product): number {
+  const pTokens = extractTokens(p.name || '');
+  if (pTokens.length === 0) return 0;
+  const matchingTokens = pTokens.filter(t => rTokens.includes(t));
+  return matchingTokens.length / Math.min(pTokens.length, rTokens.length);
+}
+
 export function getAllProductSkus(p: Product): string[] {
   if (!p) return [];
   const list: string[] = [];
@@ -181,57 +231,26 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
   const rTitleNorm = normalizeText(r.adTitle || '');
   const rVariationClean = normalizeIdentifier(r.variation || '');
 
-  // 1. Busca Direta por # de Anúncio (adId / MLB...) no estoque
-  if (rAdIdClean && rAdIdClean.length > 3 && !['sim', 'não', 'nao', 'ml'].includes(rAdIdClean)) {
-    const matchByAdId = products.find(p => {
-      const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
-      const pIdClean = normalizeIdentifier(p.id || '');
-      // Compara exato ou sem prefixo mlb (se ambos forem dígitos)
-      const rDigitsOnly = rAdIdClean.replace(/\D/g, '');
-      return allSkus.some(s => {
-        if (s === rAdIdClean) return true;
-        const sDigitsOnly = s.replace(/\D/g, '');
-        return rDigitsOnly.length >= 6 && sDigitsOnly.length >= 6 && rDigitsOnly === sDigitsOnly;
-      }) || (pIdClean && pIdClean === rAdIdClean);
-    });
+  // 1. Match by Ad ID
+  if (isValidIdentifier(rAdIdClean)) {
+    const matchByAdId = products.find(p => matchesSku(rAdIdClean, p));
     if (matchByAdId) return matchByAdId;
   }
 
-  // 2. Busca por SKU exata ou variações de SKU no estoque (Multi-SKU)
-  if (rSkuClean && !['sim', 'não', 'nao', 'ml'].includes(rSkuClean)) {
-    const matchBySku = products.find(p => {
-      const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
-      const pIdClean = normalizeIdentifier(p.id || '');
-      const rDigitsOnly = rSkuClean.replace(/\D/g, '');
-      return allSkus.some(s => {
-        if (s === rSkuClean) return true;
-        const sDigitsOnly = s.replace(/\D/g, '');
-        return rDigitsOnly.length >= 6 && sDigitsOnly.length >= 6 && rDigitsOnly === sDigitsOnly;
-      }) || (pIdClean && pIdClean === rSkuClean);
-    });
+  // 2. Match by SKU / Variations
+  if (isValidIdentifier(rSkuClean)) {
+    const matchBySku = products.find(p => matchesSku(rSkuClean, p));
     if (matchBySku) return matchBySku;
   }
 
-  // 2.1 Busca por Variação que contenha algum dos # de Anúncio ou SKUs do produto
-  if (rVariationClean && rVariationClean.length > 2) {
-    const matchByVar = products.find(p => {
-      const allSkus = getAllProductSkus(p).map(s => normalizeIdentifier(s));
-      return allSkus.some(sku => sku.length > 2 && rVariationClean.includes(sku));
-    });
-    if (matchByVar) return matchByVar;
-  }
-
-  // 3. Busca por Título Exato ou Substring no Estoque (Regra 1.2 e 6.2 do Manual)
-  if (rTitleNorm && rTitleNorm.length > 3) {
-    const matchByTitle = products.find(p => {
-      const pNameNorm = normalizeText(p.name || '');
-      return pNameNorm && (pNameNorm === rTitleNorm || (pNameNorm.length > 8 && rTitleNorm.includes(pNameNorm)) || (rTitleNorm.length > 8 && pNameNorm.includes(rTitleNorm)));
-    });
+  // 3. Match by Exact Title or Substring
+  if (rTitleNorm.length > MIN_TEXT_LENGTH) {
+    const matchByTitle = products.find(p => matchesTitleExact(rTitleNorm, p));
     if (matchByTitle) return matchByTitle;
   }
 
-  // 4. Busca por Sobreposição de Palavras-Chave (Tokens) com Guarda de Categoria/Tipo
-  if (rTitleNorm && rTitleNorm.length > 3) {
+  // 4. Match by Token Overlap
+  if (rTitleNorm.length > MIN_TEXT_LENGTH) {
     const rTokens = extractTokens(r.adTitle || '');
     const rType = getCoreProductType(r.adTitle || '');
 
@@ -240,15 +259,12 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
 
     for (const p of products) {
       const pType = getCoreProductType(p.name || '');
-      if (rType && pType && rType !== pType) continue; // Evita que adaptador vire cabo ou fone
+      if (rType && pType && rType !== pType) continue;
 
-      const pTokens = extractTokens(p.name || '');
-      if (pTokens.length === 0) continue;
+      const score = scoreTokenMatch(rTokens, p);
+      const matchingTokens = rTokens.filter(t => extractTokens(p.name || '').includes(t));
 
-      const matchingTokens = pTokens.filter(t => rTokens.includes(t));
-      const score = matchingTokens.length / Math.min(pTokens.length, rTokens.length);
-
-      if (matchingTokens.length >= 2 && score >= 0.5 && score > bestScore) {
+      if (matchingTokens.length >= MIN_TOKEN_COUNT && score >= MIN_MATCH_SCORE && score > bestScore) {
         bestScore = score;
         bestMatch = p;
       }
@@ -259,13 +275,3 @@ export function findMatchingProduct(r: MLImportRecord, products: Product[]): Pro
 
   return undefined;
 }
-
-export interface EntradaValorRecord {
-  id: string; // N.º de Venda / Operação / Pacote (ex: "2000001450876553")
-  dateStr: string; // Data da Entrada / Liberação (ex: "23/08/2026")
-  description?: string; // Descrição do Recebimento ("Liberação")
-  releaseStatus: string; // Tipo de Operação ("Liberação" ou "Disponível")
-  operationStatus?: string; // Status da Operação ("Pago", "Cancelado", etc.)
-  productName: string; // Produto Vinculado / Título do Anúncio (ex: "Kit 144 Xuxinha...")
-}
-

@@ -3,10 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Product, Sale } from '../types';
 import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr, calculateMLFee, calculateCurrentStock } from '../utils';
-import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle, Receipt, FileText } from 'lucide-react';
+import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle, Receipt, FileText, BadgePercent, Award, ArrowRight } from 'lucide-react';
 
 interface DashboardOverviewProps {
   products: Product[];
@@ -366,6 +366,28 @@ export default function DashboardOverview({
 
   const maxEquityValue = Math.max(...equityChartData.map(e => e.patrimonio), initialCapital + 100);
   const minEquityValue = Math.min(...equityChartData.map(e => e.patrimonio), initialCapital - 100);
+
+  // Ranking dos produtos mais lucrativos no período selecionado
+  const topProductsProfitList = useMemo(() => {
+    const map = new Map<string, { name: string; units: number; revenue: number; netProfit: number; margin: number }>();
+    filteredAllSales.forEach(s => {
+      if (s.status === 'refunded') return;
+      const key = s.productId || s.productName || 'Desconhecido';
+      const existing = map.get(key) || { name: s.productName || 'Produto', units: 0, revenue: 0, netProfit: 0, margin: 0 };
+      existing.units += s.quantity || 1;
+      existing.revenue += ((s.salePrice || 0) * (s.quantity || 1));
+      existing.netProfit += (s.netProfit || 0);
+      map.set(key, existing);
+    });
+
+    return Array.from(map.values())
+      .map(p => ({
+        ...p,
+        margin: p.revenue > 0 ? (p.netProfit / p.revenue) * 100 : 0
+      }))
+      .sort((a, b) => b.netProfit - a.netProfit)
+      .slice(0, 4);
+  }, [filteredAllSales]);
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -857,6 +879,76 @@ export default function DashboardOverview({
           <span className="absolute bottom-0 left-0 right-0 h-1 bg-red-500" />
         </div>
 
+      </div>
+
+      {/* NOVO: Painel de Lucro Líquido por Produto Vendido (Destaque e Acesso Rápido) */}
+      <div className="bg-[#141414] rounded-2xl border border-emerald-500/20 shadow-md p-5 bg-gradient-to-r from-[#141414] via-[#141414] to-emerald-950/15">
+        <div className="border-b border-white/5 pb-4 mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[10px] font-black tracking-widest bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-sm uppercase">
+                CONTABILIZAÇÃO DE LUCROS
+              </span>
+              <span className="text-xs font-mono text-white/50">
+                Top Produtos Mais Rentáveis
+              </span>
+            </div>
+            <h3 className="text-base font-light text-white flex items-center gap-2">
+              <BadgePercent className="w-5 h-5 text-[#FFE600]" />
+              Lucro Líquido Realizado por Produto Vendido
+            </h3>
+            <p className="text-xs text-white/50 mt-0.5">
+              Demonstrativo consolidado de quanto cada item vendido gerou de margem real após custos de compra, taxas ML, frete e impostos.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onNavigateToTab('product-profits')}
+            className="flex items-center gap-2 bg-[#FFE600] hover:bg-[#FFE600]/90 text-black text-xs font-black py-2.5 px-4 rounded-xl transition-all cursor-pointer shadow-[0_2px_12px_rgba(255,230,0,0.15)] self-start sm:self-auto shrink-0"
+          >
+            <span>Ver Painel Completo de Lucro por Produto</span>
+            <ArrowRight className="w-4 h-4" />
+          </button>
+        </div>
+
+        {topProductsProfitList.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {topProductsProfitList.map((p, idx) => (
+              <div 
+                key={p.name + idx}
+                onClick={() => onNavigateToTab('product-profits')}
+                className="bg-white/5 hover:bg-white/10 p-3.5 rounded-xl border border-white/5 hover:border-emerald-500/30 transition-all cursor-pointer flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between text-[10px] text-white/40 mb-1">
+                    <span className="font-bold flex items-center gap-1 text-[#FFE600]">
+                      <Award className="w-3 h-3" /> #{idx + 1} Rentável
+                    </span>
+                    <span className="font-mono text-white/60">{p.units} un.</span>
+                  </div>
+                  <h4 className="text-xs font-bold text-white truncate" title={p.name}>
+                    {p.name}
+                  </h4>
+                </div>
+
+                <div className="mt-3 pt-2.5 border-t border-white/5 flex items-center justify-between">
+                  <div>
+                    <span className="text-[9px] text-white/40 block">Lucro Líquido</span>
+                    <span className="text-xs font-black font-mono text-emerald-400">
+                      {formatCurrency(p.netProfit)}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-black font-mono text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                    +{p.margin.toFixed(1)}%
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-white/40 py-2">Sem vendas ativas no período filtrado para exibição do ranking.</p>
+        )}
       </div>
 
       {/* NOVO PAINEL: Desempenho por Canal de Envio (Mercado Livre Full vs Transportadora / Catálogo) */}

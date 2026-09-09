@@ -779,13 +779,13 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
 
                   const shippingRevenue = sale.shippingRevenue || 0;
                   const taxAmount = totalSaleValue * 0.04;
-                  const totalFees = effectiveMlFee + effectiveShippingCost - shippingRevenue;
+                  const totalFees = effectiveMlFee + effectiveShippingCost ;
 
                   const effectiveNetProfit = sale.status === 'refunded'
                     ? -effectiveShippingCost
                     : (sale.netProfit !== undefined && sale.netProfit !== null && !isNaN(sale.netProfit)
                         ? sale.netProfit
-                        : (totalSaleValue - effectiveMlFee - effectiveShippingCost + shippingRevenue - taxAmount - totalCostValue));
+                        : (totalSaleValue - effectiveMlFee - effectiveShippingCost  - taxAmount - totalCostValue));
 
                   // Encontrar produto correspondente para analisar diferenciação de margem líq
                   let marginDifference = 0;
@@ -918,7 +918,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                           const defaultMlFeeUnit = calculateMLFee(unitSalePrice, product.mlFeeType, product.customFeePercent);
                           const unitTax = unitSalePrice * 0.04;
                           const unitExpectedProfit = unitSalePrice - purchasePriceUnit - defaultMlFeeUnit - product.shippingCost - unitTax;
-                          const expectedMarginPercent = purchasePriceUnit > 0 ? (unitExpectedProfit / purchasePriceUnit) * 100 : 0;
+                          const expectedMarginPercent = unitSalePrice > 0 ? (unitExpectedProfit / unitSalePrice) * 100 : 0;
                           return (
                             <div className="flex flex-col items-center gap-1">
                               <span className={unitExpectedProfit >= 0 ? "text-emerald-400 font-black font-mono" : "text-red-400 font-black font-mono"}>
@@ -942,32 +942,39 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                       </td>
 
                       {/* Comissão + Frete + Imposto */}
-                      <td className="py-4 px-4 text-center text-red-400 font-mono">
+                      <td className="py-4 px-4 text-center font-mono">
                         {sale.status === 'refunded' ? (
                           <div className="flex flex-col items-center">
-                            <span className="font-bold">-{formatCurrency(effectiveShippingCost)}</span>
+                            <span className="font-bold text-red-400">-{formatCurrency(effectiveShippingCost)}</span>
                             <span className="text-[10px] text-red-400/70 mt-1 font-sans font-bold uppercase tracking-wider">Frete de devolução</span>
                           </div>
-                        ) : (
-                          <>
-                            <span className="font-bold">-{formatCurrency(totalFees + taxAmount)}</span>
-                            <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
-                              <p>Taxa ML: {formatCurrency(effectiveMlFee)}</p>
-                              <p>Frete: {formatCurrency(effectiveShippingCost)}</p>
-                              <p className="text-blue-400 font-semibold">Imposto (4%): {formatCurrency(taxAmount)}</p>
-                              {sale.discount !== undefined && sale.discount > 0 && (
-                                <p className="text-white/30 font-bold" title="Desconto não-dedutível (custeado pelo ML ou já embutido na receita bruta)">
-                                  Desc/Campanha: {formatCurrency(sale.discount)}
-                                </p>
-                              )}
-                              {sale.shippingRevenue !== undefined && sale.shippingRevenue > 0 && (
-                                <p className="text-emerald-400 font-bold" title="Receita por envio adicionada ao payout">
-                                  Rec. Envio: +{formatCurrency(sale.shippingRevenue)}
-                                </p>
-                              )}
-                            </div>
-                          </>
-                        )}
+                        ) : (() => {
+                          const netDeductions = effectiveMlFee + effectiveShippingCost - shippingRevenue + taxAmount;
+                          return (
+                            <>
+                              <span className="font-bold text-red-400">-{formatCurrency(netDeductions)}</span>
+                              <div className="text-[10px] text-white/40 mt-1 space-y-0.5 font-sans font-medium">
+                                <p>Taxa ML: {formatCurrency(effectiveMlFee)}</p>
+                                {shippingRevenue > 0 ? (
+                                  <>
+                                    <p title="Frete cobrado pelo ML">Frete Bruto: {formatCurrency(effectiveShippingCost)}</p>
+                                    <p className="text-emerald-400 font-bold" title="Receita de envio paga pelo comprador que abate o frete">
+                                      Rec. Envio: +{formatCurrency(shippingRevenue)}
+                                    </p>
+                                  </>
+                                ) : (
+                                  <p>Frete: {formatCurrency(effectiveShippingCost)}</p>
+                                )}
+                                <p className="text-blue-400 font-semibold">Imposto (4%): {formatCurrency(taxAmount)}</p>
+                                {sale.discount !== undefined && sale.discount > 0 && (
+                                  <p className="text-white/30 font-bold" title="Desconto não-dedutível (custeado pelo ML ou já embutido na receita bruta)">
+                                    Desc/Campanha: {formatCurrency(sale.discount)}
+                                  </p>
+                                )}
+                              </div>
+                            </>
+                          );
+                        })()}
                       </td>
 
                       {/* Lucro Liquido */}
@@ -1001,7 +1008,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                                 ? 'text-emerald-600 bg-emerald-600/10 border border-emerald-600/20'
                                 : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
                           }`}>
-                            {effectiveNetProfit > 0 ? '+' : ''}{((effectiveNetProfit / (totalCostValue || 1)) * 100).toFixed(0)}% Margem
+                            {effectiveNetProfit > 0 ? '+' : ''}{totalSaleValue > 0 ? ((effectiveNetProfit / totalSaleValue) * 100).toFixed(0) : '0'}% Margem
                           </span>
                         ) : (
                           <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
