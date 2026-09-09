@@ -231,8 +231,9 @@ function doPost(e) {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
     // 1. Sincronizar Produtos (Garante que adições, edições, arquivamentos e exclusões reflitam exatamente no Google Sheets)
-    var productSheet = ss.getSheetByName("Produtos") || ss.insertSheet("Produtos");
-    if (payload.products && Array.isArray(payload.products)) {
+    // Trava de Segurança: NUNCA limpar a aba de produtos se a lista enviada estiver vazia
+    if (payload.products && Array.isArray(payload.products) && payload.products.length > 0) {
+      var productSheet = ss.getSheetByName("Produtos") || ss.insertSheet("Produtos");
       var prodHeaders = [
         "ID Produto", "Nome Produto", "SKU", "# de Anúncio / SKUs Vinculados", "Preço de Compra", "Preço de Venda",
         "Estoque Inicial", "Saídas", "Estoque Atual", "Estoque Mínimo", "Data de Entrada",
@@ -243,75 +244,73 @@ function doPost(e) {
       productSheet.clear();
       productSheet.appendRow(prodHeaders);
       
-      if (payload.products.length > 0) {
-        var prodRows = [];
-        for (var pIdx = 0; pIdx < payload.products.length; pIdx++) {
-          var pItem = payload.products[pIdx];
-          var pRowNumber = pIdx + 2;
-          var totalSold = calculateProductSalesVolumeScript(pItem, payload.sales || [], payload.products || []);
-          
-          var replenJson = "";
-          if (pItem.replenishments && pItem.replenishments.length > 0) {
-            try {
-              replenJson = JSON.stringify(pItem.replenishments);
-            } catch(err) {}
-          }
-
-          var skusJoined = "";
-          if (pItem.skus && Array.isArray(pItem.skus) && pItem.skus.length > 0) {
-            skusJoined = pItem.skus.join(", ");
-          } else if (typeof pItem.skus === 'string') {
-            skusJoined = pItem.skus;
-          }
-          
-          prodRows.push([
-            pItem.id || pItem.sku,
-            pItem.name,
-            pItem.sku,
-            skusJoined,
-            pItem.purchasePrice || 0,
-            pItem.salePrice || 0,
-            pItem.stock || 0,
-            totalSold,
-            "=G" + pRowNumber + "-H" + pRowNumber,
-            pItem.minimalStock !== undefined ? pItem.minimalStock : 5,
-            pItem.addedDate || "",
-            pItem.category || "Geral",
-            pItem.mlFeeType || "none",
-            pItem.customFeePercent || 0,
-            pItem.shippingCost || 0,
-            "=F" + pRowNumber + "-E" + pRowNumber,
-            "=(F" + pRowNumber + "*12/100)+6",
-            "=TODAY()-K" + pRowNumber,
-            pItem.status || "active",
-            replenJson
-          ]);
+      var prodRows = [];
+      for (var pIdx = 0; pIdx < payload.products.length; pIdx++) {
+        var pItem = payload.products[pIdx];
+        var pRowNumber = pIdx + 2;
+        var totalSold = calculateProductSalesVolumeScript(pItem, payload.sales || [], payload.products || []);
+        
+        var replenJson = "";
+        if (pItem.replenishments && pItem.replenishments.length > 0) {
+          try {
+            replenJson = JSON.stringify(pItem.replenishments);
+          } catch(err) {}
         }
-        productSheet.getRange(2, 1, prodRows.length, prodHeaders.length).setValues(prodRows);
+
+        var skusJoined = "";
+        if (pItem.skus && Array.isArray(pItem.skus) && pItem.skus.length > 0) {
+          skusJoined = pItem.skus.join(", ");
+        } else if (typeof pItem.skus === 'string') {
+          skusJoined = pItem.skus;
+        }
+        
+        prodRows.push([
+          pItem.id || pItem.sku,
+          pItem.name,
+          pItem.sku,
+          skusJoined,
+          pItem.purchasePrice || 0,
+          pItem.salePrice || 0,
+          pItem.stock || 0,
+          totalSold,
+          "=G" + pRowNumber + "-H" + pRowNumber,
+          pItem.minimalStock !== undefined ? pItem.minimalStock : 5,
+          pItem.addedDate || "",
+          pItem.category || "Geral",
+          pItem.mlFeeType || "none",
+          pItem.customFeePercent || 0,
+          pItem.shippingCost || 0,
+          "=F" + pRowNumber + "-E" + pRowNumber,
+          "=(F" + pRowNumber + "*12/100)+6",
+          "=TODAY()-K" + pRowNumber,
+          pItem.status || "active",
+          replenJson
+        ]);
       }
+      productSheet.getRange(2, 1, prodRows.length, prodHeaders.length).setValues(prodRows);
     }
 
     // 2. Sincronizar Vendas (Dividindo em andamento, finalizadas e desprezadas)
-    var salesSheetActive = ss.getSheetByName("Vendas em Andamento") || ss.insertSheet("Vendas em Andamento");
-    var salesSheetFinished = ss.getSheetByName("Vendas Finalizadas") || ss.insertSheet("Vendas Finalizadas");
-    var salesSheetIgnored = ss.getSheetByName("Dados e Vendas Desprezadas") || ss.insertSheet("Dados e Vendas Desprezadas");
+    // Trava de Segurança: NUNCA limpar as abas de vendas se a lista enviada estiver vazia
+    if (payload.sales && Array.isArray(payload.sales) && payload.sales.length > 0) {
+      var salesSheetActive = ss.getSheetByName("Vendas em Andamento") || ss.insertSheet("Vendas em Andamento");
+      var salesSheetFinished = ss.getSheetByName("Vendas Finalizadas") || ss.insertSheet("Vendas Finalizadas");
+      var salesSheetIgnored = ss.getSheetByName("Dados e Vendas Desprezadas") || ss.insertSheet("Dados e Vendas Desprezadas");
+      
+      salesSheetActive.clear();
+      salesSheetFinished.clear();
+      salesSheetIgnored.clear();
+      
+      var salesHeaders = [
+        "ID Venda", "Nome Produto", "Quantidade", "Preço Venda", "Data", 
+        "Taxa ML", "Custo Frete", "Receita por Envio", "Preço Compra", "Lucro Bruto", "A Receber do ML", "Lucro Líquido", "Imposto", "Desconto", "Status", "Tempo Conclusão",
+        "ID Venda Mercado Livre", "Nome do Cliente", "Prejuízo Extra", "Motivo Prejuízo", "Tipo de Frete", "Venda Customizada", "Comissão Customizada", "Frete Customizado",
+        "# de Anúncio", "SKU"
+      ];
+      salesSheetActive.appendRow(salesHeaders);
+      salesSheetFinished.appendRow(salesHeaders);
+      salesSheetIgnored.appendRow(salesHeaders);
     
-    // Atualiza apenas as vendas em andamento e finalizadas (limpa e reescreve o full state)
-    salesSheetActive.clear();
-    salesSheetFinished.clear();
-    salesSheetIgnored.clear();
-    
-    var salesHeaders = [
-      "ID Venda", "Nome Produto", "Quantidade", "Preço Venda", "Data", 
-      "Taxa ML", "Custo Frete", "Receita por Envio", "Preço Compra", "Lucro Bruto", "A Receber do ML", "Lucro Líquido", "Imposto", "Desconto", "Status", "Tempo Conclusão",
-      "ID Venda Mercado Livre", "Nome do Cliente", "Prejuízo Extra", "Motivo Prejuízo", "Tipo de Frete", "Venda Customizada", "Comissão Customizada", "Frete Customizado",
-      "# de Anúncio", "SKU"
-    ];
-    salesSheetActive.appendRow(salesHeaders);
-    salesSheetFinished.appendRow(salesHeaders);
-    salesSheetIgnored.appendRow(salesHeaders);
-    
-    if (payload.sales && payload.sales.length > 0) {
       var activeRows = [];
       var finishedRows = [];
       var ignoredRows = [];

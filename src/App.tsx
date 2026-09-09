@@ -709,12 +709,14 @@ export default function App() {
     return () => clearInterval(interval);
   }, [webAppUrl, hasFetchedFromCloud, products, sales, mlRecords, hasPendingWrite]);
 
-  // Sincronização automática em background sempre que 'products', 'sales', 'mlRecords' ou 'initialCapital' mudarem!
+  // Sincronização em background: SOMENTE executa se o usuário fez uma alteração MANUAL EXPLÍCITA (hasPendingWrite === true)
+  // e NUNCA grava se a lista de produtos estiver vazia, garantindo a integridade absoluta da database (SSOT)
   useEffect(() => {
     if (!webAppUrl) return;
     
-    // Se ainda estamos buscando dados do cloud, se o fetch inicial não rodou, ou se não há alterações locais novas, evite escrever!
-    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite) return;
+    // Trava de segurança máxima: se não houve alteração manual pelo usuário, se ainda está buscando,
+    // ou se a lista de produtos estiver vazia, BLOQUEIA totalmente qualquer envio à nuvem!
+    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite || !products || products.length === 0) return;
 
     const syncTimeout = setTimeout(async () => {
       setIsCloudSyncing(true);
@@ -737,10 +739,10 @@ export default function App() {
         if (result.status !== 'success') {
           throw new Error(result.message || 'Erro no Apps Script');
         }
-        console.log('Sincronização em tempo real realizada com sucesso!');
+        console.log('Sincronização manual salva com sucesso na planilha!');
         setHasPendingWrite(false); // Reseta a flag de alterações pendentes após sucesso
       } catch (err: any) {
-        console.error('Erro na sincronização em tempo real:', err);
+        console.error('Erro na sincronização:', err);
         setCloudSyncError(err.message || String(err));
       } finally {
         setIsCloudSyncing(false);
@@ -748,9 +750,9 @@ export default function App() {
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite, handlePullFromCloud]);
+  }, [products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
 
-  // Loop de atualização das vendas pendentes (conclusão automática por período de 30 dias)
+  // Atualização em memória das vendas pendentes (conclusão por 30 dias apenas para exibição no painel, sem disparar escrita na nuvem)
   useEffect(() => {
     let changed = false;
     const now = new Date();
@@ -779,11 +781,9 @@ export default function App() {
 
     if (changed) {
       setSales(updatedSales);
-      if (hasFetchedFromCloud) {
-        setHasPendingWrite(true);
-      }
+      // NUNCA acionar setHasPendingWrite(true) aqui para evitar que abertura do site envie POST para a planilha!
     }
-  }, [sales, hasFetchedFromCloud]);
+  }, [sales]);
 
   // Função para concluir venda pendente manualmente
   const handleCompleteSale = (saleId: string) => {

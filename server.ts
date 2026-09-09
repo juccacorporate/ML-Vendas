@@ -149,6 +149,15 @@ async function startServer() {
       });
     }
 
+    // Trava de segurança SSOT: Nunca enviar gravação vazia que possa apagar a planilha do usuário
+    if (!products || !Array.isArray(products) || products.length === 0) {
+      console.warn('[Proxy Sync POST] Gravação cancelada por segurança: lista de produtos vazia.');
+      return res.json({ 
+        status: 'success', 
+        message: 'Gravação ignorada para proteger a integridade do banco de dados (lista de produtos vazia).' 
+      });
+    }
+
     try {
       console.log(`Disparando envio ao Web App do Google Sheets: ${webAppUrl}`);
       
