@@ -964,22 +964,22 @@ export default function ProductProfitsPanel({
                         className={`hover:bg-white/[0.03] transition-colors cursor-pointer ${isExpanded ? 'bg-white/[0.04]' : ''}`}
                       >
                         {/* Produto & SKU */}
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center gap-2.5">
-                            <div className={`p-2 rounded-xl shrink-0 ${isNegative ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-[#FFE600] border border-white/10'}`}>
+                        <td className="py-3.5 px-4 min-w-[260px] max-w-[400px]">
+                          <div className="flex items-start gap-2.5">
+                            <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${isNegative ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-[#FFE600] border border-white/10'}`}>
                               <Package className="w-4 h-4" />
                             </div>
-                            <div className="min-w-0 max-w-[280px]">
-                              <p className="font-bold text-white truncate text-xs" title={item.productName}>
+                            <div className="min-w-0 flex-1">
+                              <p className="font-bold text-white text-xs leading-snug break-words whitespace-normal" title={item.productName}>
                                 {item.productName}
                               </p>
-                              <div className="flex items-center gap-1.5 mt-0.5">
-                                <span className="text-[9.5px] font-mono text-white/40 bg-white/5 px-1.5 py-0.2 rounded border border-white/5">
+                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
+                                <span className="text-[9.5px] font-mono text-white/60 bg-white/5 px-1.5 py-0.5 rounded border border-white/10 font-medium">
                                   SKU: {item.sku || 'Sem SKU'}
                                 </span>
                                 {item.category && (
-                                  <span className="text-[9px] text-white/30 truncate">
-                                    • {item.category}
+                                  <span className="text-[9px] text-white/40 bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/5">
+                                    {item.category}
                                   </span>
                                 )}
                               </div>
