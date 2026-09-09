@@ -918,7 +918,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                           const defaultMlFeeUnit = calculateMLFee(unitSalePrice, product.mlFeeType, product.customFeePercent);
                           const unitTax = unitSalePrice * 0.04;
                           const unitExpectedProfit = unitSalePrice - purchasePriceUnit - defaultMlFeeUnit - product.shippingCost - unitTax;
-                          const expectedMarginPercent = unitSalePrice > 0 ? (unitExpectedProfit / unitSalePrice) * 100 : 0;
+                          const expectedMarginPercent = purchasePriceUnit > 0 ? (unitExpectedProfit / purchasePriceUnit) * 100 : 0;
                           return (
                             <div className="flex flex-col items-center gap-1">
                               <span className={unitExpectedProfit >= 0 ? "text-emerald-400 font-black font-mono" : "text-red-400 font-black font-mono"}>
@@ -930,7 +930,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                                     ? "text-emerald-400 bg-emerald-500/20 border-emerald-500/30" 
                                     : "text-red-400 bg-red-500/20 border-red-500/30"
                                 }`} 
-                                title="Margem de lucro cadastrada sobre o custo do produto (já deduzindo 4% de imposto)"
+                                title="Margem de ganho projetada sobre o preço de compra (CMV)"
                               >
                                 {expectedMarginPercent.toFixed(0)}% Margem
                               </span>
@@ -1001,14 +1001,17 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                         )}
                         
                         {sale.status === 'completed' || sale.status === 'pending' ? (
-                          <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 ${
-                            effectiveNetProfit < 0
-                              ? 'text-red-400 bg-red-500/10 border border-red-500/20'
-                              : isPending
-                                ? 'text-emerald-600 bg-emerald-600/10 border border-emerald-600/20'
-                                : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
-                          }`}>
-                            {effectiveNetProfit > 0 ? '+' : ''}{totalSaleValue > 0 ? ((effectiveNetProfit / totalSaleValue) * 100).toFixed(0) : '0'}% Margem
+                          <span 
+                            className={`text-[10px] font-bold px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5 ${
+                              effectiveNetProfit < 0
+                                ? 'text-red-400 bg-red-500/10 border border-red-500/20'
+                                : isPending
+                                  ? 'text-emerald-600 bg-emerald-600/10 border border-emerald-600/20'
+                                  : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                            }`}
+                            title="Porcentagem de ganho sobre o preço de compra (CMV)"
+                          >
+                            {effectiveNetProfit > 0 ? '+' : ''}{totalCostValue > 0 ? ((effectiveNetProfit / totalCostValue) * 100).toFixed(0) : '0'}% Margem
                           </span>
                         ) : (
                           <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded block w-fit mx-auto mt-0.5">
