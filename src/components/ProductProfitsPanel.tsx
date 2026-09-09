@@ -312,8 +312,9 @@ export default function ProductProfitsPanel({
       }
 
       const avgProfitPerUnit = activeUnits > 0 ? (activeProfit / activeUnits) : 0;
-      const margin = item.grossRevenue > 0 ? (activeProfit / item.grossRevenue) * 100 : 0;
-      const markup = item.cmvTotal > 0 ? (activeProfit / item.cmvTotal) * 100 : 0;
+      // Regra de Ouro do Sistema: A Margem Líquida Real é calculada sobre o Custo de Compra (CMV)
+      const margin = item.cmvTotal > 0 ? (activeProfit / item.cmvTotal) * 100 : 0;
+      const markup = margin;
 
       return {
         ...item,
@@ -344,13 +345,13 @@ export default function ProductProfitsPanel({
         if (!matchName && !matchSku && !matchCat && !matchSales) return false;
       }
 
-      // Filtro de rentabilidade
+      // Filtro de rentabilidade (Margem sobre Custo CMV)
       if (profitFilter === 'high') {
-        if (item.netMarginPercent < 25) return false;
+        if (item.netMarginPercent < 30) return false;
       } else if (profitFilter === 'medium') {
-        if (item.netMarginPercent < 10 || item.netMarginPercent >= 25) return false;
+        if (item.netMarginPercent < 15 || item.netMarginPercent >= 30) return false;
       } else if (profitFilter === 'low') {
-        if (item.netMarginPercent < 0 || item.netMarginPercent >= 10) return false;
+        if (item.netMarginPercent < 0 || item.netMarginPercent >= 15) return false;
       } else if (profitFilter === 'negative') {
         if (item.totalNetProfit >= 0 && item.netMarginPercent >= 0) return false;
       }
@@ -429,14 +430,14 @@ export default function ProductProfitsPanel({
       totalOrders += p.totalOrdersCount;
     });
 
-    const averageMargin = totalGrossRevenue > 0 ? (totalProfit / totalGrossRevenue) * 100 : 0;
+    const averageMargin = totalCMV > 0 ? (totalProfit / totalCMV) * 100 : 0;
     const averageProfitPerUnit = totalUnits > 0 ? (totalProfit / totalUnits) : 0;
 
     // Top Produtos
     const sortedByProfit = [...productSummaries].filter(p => p.totalUnitsSold > 0).sort((a, b) => b.totalNetProfit - a.totalNetProfit);
     const topProfitProduct = sortedByProfit.length > 0 ? sortedByProfit[0] : null;
 
-    const sortedByMargin = [...productSummaries].filter(p => p.totalUnitsSold > 0 && p.grossRevenue > 0).sort((a, b) => b.netMarginPercent - a.netMarginPercent);
+    const sortedByMargin = [...productSummaries].filter(p => p.totalUnitsSold > 0 && p.cmvTotal > 0).sort((a, b) => b.netMarginPercent - a.netMarginPercent);
     const topMarginProduct = sortedByMargin.length > 0 ? sortedByMargin[0] : null;
 
     const sortedByUnits = [...productSummaries].filter(p => p.totalUnitsSold > 0).sort((a, b) => b.totalUnitsSold - a.totalUnitsSold);
@@ -946,7 +947,7 @@ export default function ProductProfitsPanel({
                   <th className="py-3 px-3 text-right">Imposto (4%)</th>
                   <th className="py-3 px-4 text-right">Lucro Líquido Real</th>
                   <th className="py-3 px-3 text-right">Lucro/Un</th>
-                  <th className="py-3 px-3 text-center">Margem</th>
+                  <th className="py-3 px-3 text-center" title="Margem líquida real calculada sobre o Custo de Compra (CMV)">Margem</th>
                   <th className="py-3 px-3 text-center">Detalhes</th>
                 </tr>
               </thead>
@@ -954,8 +955,8 @@ export default function ProductProfitsPanel({
                 {filteredAndSortedList.map((item) => {
                   const isExpanded = expandedProductKey === item.key;
                   const isNegative = item.totalNetProfit < 0;
-                  const isHighMargin = item.netMarginPercent >= 25;
-                  const isMediumMargin = item.netMarginPercent >= 10 && item.netMarginPercent < 25;
+                  const isHighMargin = item.netMarginPercent >= 30;
+                  const isMediumMargin = item.netMarginPercent >= 15 && item.netMarginPercent < 30;
 
                   return (
                     <React.Fragment key={item.key}>
@@ -964,22 +965,22 @@ export default function ProductProfitsPanel({
                         className={`hover:bg-white/[0.03] transition-colors cursor-pointer ${isExpanded ? 'bg-white/[0.04]' : ''}`}
                       >
                         {/* Produto & SKU */}
-                        <td className="py-3.5 px-4 min-w-[260px] max-w-[400px]">
-                          <div className="flex items-start gap-2.5">
-                            <div className={`p-2 rounded-xl shrink-0 mt-0.5 ${isNegative ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-[#FFE600] border border-white/10'}`}>
+                        <td className="py-3.5 px-4">
+                          <div className="flex items-center gap-2.5">
+                            <div className={`p-2 rounded-xl shrink-0 ${isNegative ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-white/5 text-[#FFE600] border border-white/10'}`}>
                               <Package className="w-4 h-4" />
                             </div>
-                            <div className="min-w-0 flex-1">
-                              <p className="font-bold text-white text-xs leading-snug break-words whitespace-normal" title={item.productName}>
+                            <div className="min-w-0 max-w-[280px]">
+                              <p className="font-bold text-white truncate text-xs" title={item.productName}>
                                 {item.productName}
                               </p>
-                              <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                                <span className="text-[9.5px] font-mono text-white/60 bg-white/5 px-1.5 py-0.5 rounded border border-white/10 font-medium">
+                              <div className="flex items-center gap-1.5 mt-0.5">
+                                <span className="text-[9.5px] font-mono text-white/40 bg-white/5 px-1.5 py-0.2 rounded border border-white/5">
                                   SKU: {item.sku || 'Sem SKU'}
                                 </span>
                                 {item.category && (
-                                  <span className="text-[9px] text-white/40 bg-white/[0.03] px-1.5 py-0.5 rounded border border-white/5">
-                                    {item.category}
+                                  <span className="text-[9px] text-white/30 truncate">
+                                    • {item.category}
                                   </span>
                                 )}
                               </div>
@@ -1215,12 +1216,13 @@ export default function ProductProfitsPanel({
                                           <th className="py-2.5 px-3">ID Venda / Mercado Livre</th>
                                           <th className="py-2.5 px-2 text-center">Qtd</th>
                                           <th className="py-2.5 px-3 text-right">Preço Venda</th>
-                                          <th className="py-2.5 px-3 text-right">Custo (CMV)</th>
+                                          <th className="py-2.5 px-3 text-right">Custo Compra (CMV)</th>
                                           <th className="py-2.5 px-3 text-right">Taxa ML</th>
                                           <th className="py-2.5 px-3 text-right">Frete</th>
                                           <th className="py-2.5 px-3 text-right">Imposto 4%</th>
                                           <th className="py-2.5 px-3 text-right text-emerald-400">Rec. Envio</th>
                                           <th className="py-2.5 px-3 text-right font-bold text-white">Lucro Líquido</th>
+                                          <th className="py-2.5 px-3 text-center font-bold text-[#FFE600]" title="Porcentagem de ganho sobre o preço de compra (CMV)">Margem (% CMV)</th>
                                           <th className="py-2.5 px-3 text-center">Status</th>
                                         </tr>
                                       </thead>
@@ -1230,6 +1232,7 @@ export default function ProductProfitsPanel({
                                           const isSaleCompleted = s.status === 'completed';
                                           const saleTax = (s.salePrice * s.quantity) * 0.04;
                                           const cmv = s.purchasePrice * s.quantity;
+                                          const saleMarginPercent = cmv > 0 ? (s.netProfit / cmv) * 100 : 0;
                                           
                                           // Calculamos a diferença exata para bater a matemática visual,
                                           // caso a venda tenha tido acréscimos, receita de envio ou juros absorvidos
@@ -1255,8 +1258,9 @@ export default function ProductProfitsPanel({
                                               <td className="py-2 px-3 text-right font-mono font-semibold text-white">
                                                 {formatCurrency(s.salePrice * s.quantity)}
                                               </td>
-                                              <td className="py-2 px-3 text-right font-mono text-white/50">
-                                                -{formatCurrency(cmv)}
+                                              <td className="py-2 px-3 text-right font-mono">
+                                                <span className="text-white/80 font-semibold block">-{formatCurrency(cmv)}</span>
+                                                <span className="text-[9px] text-white/40 block">({formatCurrency(s.purchasePrice)}/un)</span>
                                               </td>
                                               <td className="py-2 px-3 text-right font-mono text-amber-400">
                                                 -{formatCurrency(s.mlFee)}
@@ -1274,6 +1278,24 @@ export default function ProductProfitsPanel({
                                                 <span className={s.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}>
                                                   {formatCurrency(s.netProfit)}
                                                 </span>
+                                              </td>
+                                              <td className="py-2 px-3 text-center">
+                                                {s.status === 'completed' || s.status === 'pending' ? (
+                                                  <span 
+                                                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded inline-block font-mono ${
+                                                      s.netProfit < 0
+                                                        ? 'text-red-400 bg-red-500/10 border border-red-500/20'
+                                                        : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                                                    }`}
+                                                    title={`Lucro (${formatCurrency(s.netProfit)}) ÷ Custo de Compra (${formatCurrency(cmv)})`}
+                                                  >
+                                                    {saleMarginPercent >= 0 ? '+' : ''}{saleMarginPercent.toFixed(0)}%
+                                                  </span>
+                                                ) : (
+                                                  <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded inline-block">
+                                                    Devolvido
+                                                  </span>
+                                                )}
                                               </td>
                                               <td className="py-2 px-3 text-center">
                                                 {isSaleCompleted ? (
