@@ -512,12 +512,22 @@ export function getReleaseDateStr(dateStr: string): string {
 
 /**
  * Limpa e valida IDs de venda do Mercado Livre, eliminando prefixos sintéticos (ex: ml_v_, rec_, sale_)
- * e garantindo que apenas identificadores reais do Mercado Livre sejam preservados.
+ * e garantindo que apenas identificadores reais do Mercado Livre (10 a 20 dígitos) sejam preservados.
  */
 export function cleanMlSaleId(id?: string | null): string | undefined {
   if (!id) return undefined;
   let str = String(id).trim().replace(/^#/, '').trim();
   
+  // Rejeita strings que começam explicitamente com 'sale_' ou 'rec_' seguido de timestamp
+  if (str.startsWith('sale_') || str.startsWith('rec_') || str.startsWith('fake_')) {
+    // Se a string contiver um ID do ML após o prefixo (ex: sale_2000013941981249), extrai o 20000...
+    const mlMatch = str.match(/\b(200\d{7,17}|\d{14,18})\b/);
+    if (mlMatch) {
+      return mlMatch[0];
+    }
+    return undefined;
+  }
+
   // Rejeita notação científica (ex: 2.00001E+15, 2,00001E+15) pois perde dígitos
   if (/[eE\+,\.]/.test(str)) {
     return undefined;
@@ -528,13 +538,13 @@ export function cleanMlSaleId(id?: string | null): string | undefined {
     str = str.replace(/_?prod_\w+/g, '').replace(/^prod_\w+_?/, '').trim();
   }
 
-  // 1. Se for puramente numérico de 8 a 20 dígitos (ex: 1786574565, 2000001450876553)
-  if (/^\d{8,20}$/.test(str)) {
+  // 1. Se for puramente numérico oficial de 10 a 20 dígitos (ex: 2000001450876553)
+  if (/^\d{10,20}$/.test(str)) {
     return str;
   }
 
-  // 2. Se contiver qualquer sequência de 8 a 20 dígitos dentro da string (ex: sale_1786574565 ou 2000014680160261_123)
-  const numMatch = str.match(/\b(\d{8,20})\b/);
+  // 2. Se contiver qualquer sequência padrão de 10 a 20 dígitos dentro da string (ex: 2000014680160261_123)
+  const numMatch = str.match(/\b(200\d{7,17}|\d{10,20})\b/);
   if (numMatch) {
     return numMatch[0];
   }
@@ -543,7 +553,7 @@ export function cleanMlSaleId(id?: string | null): string | undefined {
   if (str.includes('_')) {
     const parts = str.split('_');
     for (const part of parts) {
-      if (!/[eE\+,\.]/.test(part) && /^\d{6,20}$/.test(part)) {
+      if (!/[eE\+,\.]/.test(part) && /^(200\d{7,17}|\d{10,20})$/.test(part)) {
         return part;
       }
     }

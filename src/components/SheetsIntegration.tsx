@@ -342,22 +342,20 @@ function doPost(e) {
         var rNum = targetList.length + 2;
         
         // Obter puramente o ID numérico da venda sem sufixos de produto
-        var pureSaleId = cleanMlSaleId(s.mlSaleId) || cleanMlSaleId(s.id);
-        if (!pureSaleId && s.id) {
-          var cleanStr = String(s.id)
-            .replace(/^sale_/, '')
-            .replace(/^ml_v_\d+_/, '')
-            .replace(/_?prod_\w+/g, '')
-            .replace(/^prod_\w+_?/, '')
-            .trim();
-          pureSaleId = cleanStr || s.id;
+        var pureSaleId = cleanMlSaleIdScript(s.mlSaleId) || cleanMlSaleIdScript(s.id);
+        
+        // REGRA DE OURO (MANUAL POP 1.4, 4.2 & 5.2):
+        // 1. O ID de Venda DEVE ser exclusivamente o código numérico padrão de 10 a 20 dígitos do Mercado Livre (ex: 2000013941981249).
+        // 2. NUNCA aceitar nem salvar registros com IDs sintéticos ('sale_...', 'rec_...') ou saídas manuais com preço R$ 0,00 na planilha.
+        if (!pureSaleId || !/^\d{10,24}$/.test(pureSaleId)) {
+          return; // Ignora e não grava na planilha para não poluir
         }
-        if (pureSaleId && pureSaleId.indexOf('prod_') !== -1) {
-          pureSaleId = pureSaleId.replace(/_?prod_\w+/g, '').replace(/^prod_\w+_?/, '').trim();
+        if (Number(s.salePrice) <= 0 && (!s.productName || s.productName === 'Venda Desconhecida')) {
+          return;
         }
 
         targetList.push([
-          pureSaleId || s.id,
+          pureSaleId,
           s.productName, 
           s.quantity, 
           s.salePrice, 
@@ -373,7 +371,7 @@ function doPost(e) {
           s.discount || 0,
           s.status || "pending",
           s.completionTime || 0,
-          pureSaleId || cleanMlSaleId(s.mlSaleId) || "",
+          pureSaleId,
           s.buyerName || "",
           s.lossAmount || 0,
           s.lossReason || "",
@@ -814,6 +812,17 @@ function doGet(e) {
             if (!row || row.length === 0) continue;
             var saleIdRaw = row[idxSaleId] !== undefined ? String(row[idxSaleId]).trim() : "";
             if (!saleIdRaw) continue;
+
+            // Filtro Anti-Ruído e Limpeza (POP): Rejeita completamente linhas com prefixo 'sale_' ou preços zerados com IDs sintéticos
+            if (saleIdRaw.indexOf('sale_') === 0 || saleIdRaw.indexOf('rec_') === 0) {
+              continue;
+            }
+            
+            var qtyVal = sanitizeNumber(row[idxQty]) || 1;
+            var salePriceVal = sanitizeNumber(row[idxPrice]);
+            if (salePriceVal <= 0 && !/^\d{10,24}$/.test(saleIdRaw)) {
+              continue;
+            }
             
             var dateStr = formatSheetDate(row[idxDate]);
             

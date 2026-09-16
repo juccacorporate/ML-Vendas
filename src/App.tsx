@@ -198,8 +198,17 @@ export default function App() {
         customFeePercent: p.customFeePercent !== undefined ? Number(p.customFeePercent) : undefined
       }));
 
-    // 2. Mapear vendas e DESCARTAR qualquer venda que não possua um produto correspondente no estoque oficial.
-    const sanitizedSales = (cloudSales || []).map(s => {
+    // 2. Mapear vendas e DESCARTAR qualquer venda que não possua um produto correspondente no estoque oficial ou que seja um registro sintético corrompido.
+    const validCloudSales = (cloudSales || []).filter(s => {
+      const sId = String(s.id || '').trim();
+      // Descarta linhas artificiais geradas com prefixo sale_ e preço zerado
+      if (sId.startsWith('sale_') && (Number(s.salePrice) <= 0 || !s.productName || s.productName === 'Venda Desconhecida')) {
+        return false;
+      }
+      return true;
+    });
+
+    const sanitizedSales = validCloudSales.map(s => {
       let salePrice = Number(s.salePrice) || 0;
       const quantity = Number(s.quantity) || 1;
       const discount = Number(s.discount) || 0;
@@ -277,14 +286,7 @@ export default function App() {
       
       const mlSaleId = getSaleMlId(s) || (localSale && getSaleMlId(localSale)) || cleanMlSaleId(s.mlSaleId);
       const isMlSale = s.isMlSale || !!mlSaleId;
-      let cleanSaleId = mlSaleId || cleanMlSaleId(s.id);
-      if (!cleanSaleId) {
-        let rawClean = String(s.id || '').replace(/^sale_/, '').replace(/^ml_v_\d+_/, '').replace(/_?prod_\w+/g, '').replace(/^prod_\w+_?/, '').trim();
-        if (!rawClean || rawClean === 'null' || rawClean === 'undefined') {
-          rawClean = `sale_${Date.now()}_${Math.random().toString(36).substring(2, 5)}`;
-        }
-        cleanSaleId = rawClean;
-      }
+      let cleanSaleId = mlSaleId || cleanMlSaleId(s.id) || String(s.id || '').trim();
 
       let mlFee = Number(s.mlFee) || 0;
       let shippingCost = Number(s.shippingCost) || 0;
@@ -852,9 +854,13 @@ export default function App() {
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     const status = newSale.status === 'refunded' ? 'refunded' : (diffDays >= 30 ? 'completed' : 'pending');
 
+    const validMlId = cleanMlSaleId(newSale.mlSaleId);
+    const saleId = validMlId || (newSale.mlSaleId ? String(newSale.mlSaleId).trim() : `manual_${Date.now()}`);
+
     const freshSale: Sale = {
       ...newSale,
-      id: `sale_${Date.now()}`,
+      id: saleId,
+      mlSaleId: validMlId || newSale.mlSaleId,
       grossProfit: Number(grossProfit.toFixed(2)),
       netProfit: Number(netProfit.toFixed(2)),
       status

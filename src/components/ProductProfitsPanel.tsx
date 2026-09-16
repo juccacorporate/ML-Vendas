@@ -178,6 +178,8 @@ export default function ProductProfitsPanel({
           avgNetProfitPerUnit: 0,
           netMarginPercent: 0,
           markupPercent: 0,
+          shippingGrossTotal: 0,
+          shippingRevenueTotal: 0,
           sales: []
         });
       });
