@@ -3,28 +3,52 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
+import * as XLSX from 'xlsx';
 import { Product, Sale, getAllProductSkus } from '../types';
-import { calculateMLFee, calculateTax, calculateDaysInStock, formatCurrency, calculateCurrentStock, calculateProductSalesVolume } from '../utils';
-import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers, X, Hash } from 'lucide-react';
+import { calculateMLFee, calculateTax, calculateDaysInStock, formatCurrency, calculateCurrentStock, calculateProductSalesVolume, getProductSalesActivity, isValidProductTitle } from '../utils';
+import { Edit, Trash2, Plus, Search, Tag, Settings, Activity, Clock, SlidersHorizontal, Eye, RefreshCw, Layers, X, Hash, Package, Check, ArrowLeft, CheckCircle2, Unlink, FileSpreadsheet, Ban } from 'lucide-react';
+import ManualStockAdjustPanel from './ManualStockAdjustPanel';
+import QuickStockModal from './QuickStockModal';
 
 interface StockControlProps {
   products: Product[];
   sales: Sale[];
+  bannedProducts?: string[];
   onAddProduct: (product: Omit<Product, 'id'>) => void;
   onEditProduct: (product: Product) => void;
   onDeleteProduct: (id: string) => void;
+  onBanProduct?: (productName: string) => void;
+  onUnbanProduct?: (productName: string) => void;
   onClearDatabase: () => void;
+  onUnlinkAllProducts?: () => void;
 }
 
 export default function StockControl({
   products,
   sales,
+  bannedProducts = [],
   onAddProduct,
   onEditProduct,
   onDeleteProduct,
-  onClearDatabase
+  onBanProduct,
+  onUnbanProduct,
+  onClearDatabase,
+  onUnlinkAllProducts
 }: StockControlProps) {
+  // Modo de visualização: Catálogo ou Indicação Manual de Estoque
+  const [tabMode, setTabMode] = useState<'catalog' | 'manual_stock'>('catalog');
+
+  // Estado para modal de produtos banidos
+  const [isBannedModalOpen, setIsBannedModalOpen] = useState(false);
+
+  // Estados para vinculação rápida de ID de anúncio em linha
+  const [linkingProductId, setLinkingProductId] = useState<string | null>(null);
+  const [linkingInput, setLinkingInput] = useState('');
+
+  // Estado para modal de indicação rápida de estoque individual
+  const [quickStockProduct, setQuickStockProduct] = useState<Product | null>(null);
+
   // Estados para pesquisa e filtros
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('all');
@@ -36,9 +60,80 @@ export default function StockControl({
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
   const [deletingProductId, setDeletingProductId] = useState<string | null>(null);
+  const [banningProductId, setBanningProductId] = useState<string | null>(null);
+  const productFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Importar Produtos em Lote via Planilha (XLSX / CSV)
+  const handleImportProductSpreadsheet = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const data = await file.arrayBuffer();
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const rows: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+
+      if (!rows || rows.length < 2) {
+        alert('A planilha importada parece estar vazia.');
+        return;
+      }
+
+      const headers = rows[0].map(h => String(h || '').trim());
+      
+      let idxName = headers.findIndex(h => /nome|produto|título|titulo|descriç/i.test(h));
+      let idxSku = headers.findIndex(h => /^sku$/i.test(h) || /código|codigo|id/i.test(h));
+      let idxPurchase = headers.findIndex(h => /compra|cmv|custo/i.test(h));
+      let idxSale = headers.findIndex(h => /venda|preço|preco/i.test(h));
+      let idxStock = headers.findIndex(h => /estoque|quantidade|unidade/i.test(h));
+      let idxCategory = headers.findIndex(h => /categoria/i.test(h));
+
+      if (idxName === -1) idxName = 0;
+      if (idxSku === -1) idxSku = 1;
+      if (idxPurchase === -1) idxPurchase = 2;
+      if (idxSale === -1) idxSale = 3;
+      if (idxStock === -1) idxStock = 4;
+
+      let addedCount = 0;
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row || row.length === 0) continue;
+
+        const nameVal = String(row[idxName] || '').trim();
+        if (!nameVal || nameVal.toLowerCase().includes('total') || !isValidProductTitle(nameVal)) continue;
+
+        const skuVal = String(row[idxSku] || '').trim() || `SKU_${Date.now()}_${i}`;
+        const purchaseVal = Number(String(row[idxPurchase]).replace('R$', '').replace(',', '.')) || 0;
+        const saleVal = Number(String(row[idxSale]).replace('R$', '').replace(',', '.')) || 0;
+        const stockVal = Number(row[idxStock]) || 0;
+        const catVal = idxCategory !== -1 && row[idxCategory] ? String(row[idxCategory]).trim() : 'Geral';
+
+        onAddProduct({
+          name: nameVal,
+          sku: skuVal,
+          purchasePrice: purchaseVal,
+          salePrice: saleVal,
+          stock: stockVal,
+          minimalStock: 5,
+          category: catVal,
+          mlFeeType: 'classic',
+          shippingCost: 0,
+          addedDate: new Date().toISOString().split('T')[0]
+        });
+        addedCount++;
+      }
+
+      alert(`Sucesso! ${addedCount} produtos cadastrados no controle de estoque com sucesso.`);
+    } catch (err: any) {
+      alert(`Erro ao ler planilha: ${err?.message || 'Arquivo inválido'}`);
+    } finally {
+      e.target.value = '';
+    }
+  };
 
   // Estados para Modal de Reposição de Estoque
   const [isReplenishOpen, setIsReplenishOpen] = useState(false);
+  const [isUnlinkAllOpen, setIsUnlinkAllOpen] = useState(false);
   const [replenishProduct, setReplenishProduct] = useState<Product | null>(null);
   const [replenishQuantity, setReplenishQuantity] = useState<number>(0);
   const [replenishPrice, setReplenishPrice] = useState<number>(0);
@@ -86,8 +181,61 @@ export default function StockControl({
     setAdditionalSkus(prev => prev.filter((_, idx) => idx !== indexToRemove));
   };
 
+  // Helper para vincular novo ID de anúncio diretamente na linha do produto
+  const handleConfirmLink = (product: Product) => {
+    if (!linkingInput.trim()) return;
+    const parts = linkingInput.split(/[,;\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+    const existingSkus = product.skus || [];
+    const newSkus = [...existingSkus];
+    parts.forEach(p => {
+      if (!newSkus.includes(p) && p !== (product.sku || '').toUpperCase()) {
+        newSkus.push(p);
+      }
+    });
+    onEditProduct({
+      ...product,
+      skus: newSkus
+    });
+    setLinkingProductId(null);
+    setLinkingInput('');
+  };
+
+  // Helper para desvincular ID de anúncio
+  const handleUnlinkSku = (product: Product, skuToRemove: string) => {
+    const updatedSkus = (product.skus || []).filter(s => s.toLowerCase() !== skuToRemove.toLowerCase());
+    onEditProduct({
+      ...product,
+      skus: updatedSkus
+    });
+  };
+
+  // Helper para desmembrar todos os IDs vinculados de um produto específico
+  const handleUnlinkAllForProduct = (product: Product) => {
+    onEditProduct({
+      ...product,
+      skus: []
+    });
+  };
+
+  // Salvar lote de ajustes manuais de estoque
+  const handleSaveBatchStock = (updates: Array<{ id: string; stock: number; purchasePrice: number; salePrice: number; minimalStock: number }>) => {
+    updates.forEach(u => {
+      const prod = products.find(p => p.id === u.id);
+      if (prod) {
+        onEditProduct({
+          ...prod,
+          stock: u.stock,
+          purchasePrice: u.purchasePrice,
+          salePrice: u.salePrice,
+          minimalStock: u.minimalStock
+        });
+      }
+    });
+  };
+
   // Filter products
   const filteredProducts = products.filter(p => {
+    if (!p || !p.name || !isValidProductTitle(p.name)) return false;
     const allProdSkus = getAllProductSkus(p).map(s => s.toLowerCase());
     const searchLower = searchTerm.toLowerCase().trim();
     const matchesSearch = !searchLower || 
@@ -98,29 +246,16 @@ export default function StockControl({
     const matchesCategory = categoryFilter === 'all' || p.category === categoryFilter;
     const currentStock = calculateCurrentStock(p, sales, products);
     
-    const productStatus = p.status || 'active';
-    const matchesActiveStatus = activeStatusFilter === 'all' || productStatus === activeStatusFilter;
+    // Regra dos 30 dias de vendas
+    const activity = getProductSalesActivity(p, sales, products);
+    const matchesActiveStatus = activeStatusFilter === 'all' || 
+      (activeStatusFilter === 'active' ? !activity.isArchived : activity.isArchived);
 
     let matchesStatus = true;
     if (stockStatusFilter === 'low') {
       matchesStatus = currentStock <= p.minimalStock;
     } else if (stockStatusFilter === 'idle') {
-      // Calcular dias sem giro reais
-      const lastSale = sales
-        .filter(s => s.productId === p.id && s.status !== 'refunded')
-        .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-        
-      let daysWithoutSale = 0;
-      if (lastSale) {
-        const lastDate = new Date(lastSale.date + 'T12:00:00');
-        const diffTime = new Date().getTime() - lastDate.getTime();
-        daysWithoutSale = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-      } else {
-        const addedDate = new Date(p.addedDate + 'T12:00:00');
-        const diffTime = new Date().getTime() - addedDate.getTime();
-        daysWithoutSale = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-      }
-      matchesStatus = daysWithoutSale >= 30;
+      matchesStatus = activity.isArchived || activity.daysWithoutSale >= 30;
     }
 
     return matchesSearch && matchesCategory && matchesStatus && matchesActiveStatus;
@@ -226,89 +361,263 @@ export default function StockControl({
     setEditingProduct(null);
   };
 
+  // Métricas do Topo
+  const activeProducts = products.filter(p => !getProductSalesActivity(p, sales, products).isArchived);
+  const archivedProducts = products.filter(p => getProductSalesActivity(p, sales, products).isArchived);
+  
+  let totalStockUnits = 0;
+  let totalStockCostValue = 0;
+  let totalUnitsSold30d = 0;
+
+  products.forEach(p => {
+    const curStock = calculateCurrentStock(p, sales, products);
+    totalStockUnits += curStock;
+    totalStockCostValue += (curStock * p.purchasePrice);
+    const act = getProductSalesActivity(p, sales, products);
+    totalUnitsSold30d += act.unitsSold30d;
+  });
+
   return (
     <div className="space-y-6 animate-fade-in">
       
-      {/* Barra de Filtro e Pesquisa */}
-      <div className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-md flex flex-col md:flex-row gap-4 items-center justify-between">
-        <div className="flex-1 w-full md:w-auto relative">
-          <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 text-white/40 w-4.5 h-4.5" />
-          <input
-            type="text"
-            placeholder="Buscar por fone, suporte, SKU, marca..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 text-xs bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 text-white font-medium"
-          />
+      {/* Banner de Filosofia e Navegação de Modos */}
+      <div className="bg-[#141414] border border-white/10 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="space-y-1.5 max-w-3xl">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black tracking-widest bg-[#FFE600] text-black px-2.5 py-0.5 rounded-full uppercase">
+                Estoque Baseado em Vendas 📦
+              </span>
+              <span className="text-xs text-white/50 font-bold">Leitura Inteligente por Anúncio e # de ID</span>
+            </div>
+            <h2 className="text-xl font-light text-white">Controle de Estoque & Catálogo Dinâmico</h2>
+            <p className="text-xs text-white/60 leading-relaxed">
+              Não é necessário cadastrar produtos previamente. O sistema lê e cria produtos automaticamente a partir do <strong>Título do Anúncio</strong> e <strong># de Anúncio (MLB)</strong> da sua planilha de vendas Mercado Livre. Você pode vincular múltiplos IDs (# MLB) para somar as vendas e indicar manualmente a quantidade em estoque físico quando desejar. Produtos sem giro há mais de 30 dias são arquivados automaticamente.
+            </p>
+          </div>
+
+          {/* Seletor de Modo Principal */}
+          <div className="flex flex-col sm:flex-row items-center gap-2.5 shrink-0">
+            <div className="inline-flex bg-white/5 p-1 rounded-2xl border border-white/10 w-full sm:w-auto">
+              <button
+                onClick={() => setTabMode('catalog')}
+                className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  tabMode === 'catalog'
+                    ? 'bg-[#FFE600] text-black shadow-md'
+                    : 'text-white/70 hover:text-white'
+                }`}
+              >
+                <span>📋 Catálogo & Análise</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                  tabMode === 'catalog' ? 'bg-black/20 text-black' : 'bg-white/10 text-white/70'
+                }`}>
+                  {products.length}
+                </span>
+              </button>
+
+              <button
+                onClick={() => setTabMode('manual_stock')}
+                className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl font-extrabold text-xs transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                  tabMode === 'manual_stock'
+                    ? 'bg-[#FFE600] text-black shadow-md'
+                    : 'text-white/70 hover:text-white'
+                }`}
+              >
+                <Package className="w-3.5 h-3.5" />
+                <span>📦 Indicar / Ajustar Estoque</span>
+              </button>
+            </div>
+          </div>
         </div>
 
-          <div className="flex flex-wrap gap-2 w-full md:w-auto">
-          <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
-            <Layers className="w-3.5 h-3.5 text-[#FFE600]" />
-            <select
-              value={activeStatusFilter}
-              onChange={(e) => setActiveStatusFilter(e.target.value as any)}
-              className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
-            >
-              <option value="active" className="bg-[#121212] text-white">Ativos</option>
-              <option value="archived" className="bg-[#121212] text-white">Arquivados (Histórico)</option>
-              <option value="all" className="bg-[#121212] text-white">Todos</option>
-            </select>
-          </div>
-          {/* Categoria */}
-          <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
-            <Tag className="w-3.5 h-3.5 text-[#FFE600]" />
-            <select
-              value={categoryFilter}
-              onChange={(e) => setCategoryFilter(e.target.value)}
-              className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
-            >
-              <option value="all" className="bg-[#121212] text-white">Todas categorias</option>
-              {categories.map((cat, idx) => (
-                <option key={idx} value={cat} className="bg-[#121212] text-white">{cat}</option>
-              ))}
-            </select>
+        {/* 4 Cards de Métricas Rápidas de Estoque */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-5 pt-4 border-t border-white/5">
+          <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+            <span className="text-[10px] text-white/40 block font-bold uppercase tracking-wider">Com Giro (&lt;30d)</span>
+            <div className="flex items-baseline gap-1.5 mt-0.5">
+              <span className="text-lg font-black text-emerald-400 font-mono">{activeProducts.length}</span>
+              <span className="text-[10px] text-white/40">produtos ativos</span>
+            </div>
+            <span className="text-[9.5px] text-emerald-400/80 block mt-0.5 font-medium">
+              +{totalUnitsSold30d} un. vendidas em 30d
+            </span>
           </div>
 
-          {/* Estado de Alerta */}
-          <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
-            <SlidersHorizontal className="w-3.5 h-3.5 text-[#FFE600]" />
-            <select
-              value={stockStatusFilter}
-              onChange={(e) => setStockStatusFilter(e.target.value as any)}
-              className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
-            >
-              <option value="all" className="bg-[#121212] text-white">Status de Estoque</option>
-              <option value="low" className="bg-[#121212] text-white">Reposição Crítica</option>
-              <option value="idle" className="bg-[#121212] text-white">Estagnados (+30 dias)</option>
-            </select>
+          <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+            <span className="text-[10px] text-white/40 block font-bold uppercase tracking-wider">Arquivados (+30d)</span>
+            <div className="flex items-baseline gap-1.5 mt-0.5">
+              <span className="text-lg font-black text-amber-400 font-mono">{archivedProducts.length}</span>
+              <span className="text-[10px] text-white/40">sem giro recente</span>
+            </div>
+            <span className="text-[9.5px] text-amber-400/80 block mt-0.5 font-medium">
+              Arquivados por inatividade
+            </span>
           </div>
 
-          {/* Adicionar Produto */}
-          <button
-            onClick={handleOpenAdd}
-            className="bg-[#FFE600] hover:bg-[#FFE600]/85 text-black font-extrabold text-xs px-4 py-2 rounded-xl transition-all shadow-[0_0_15px_rgba(255,230,0,0.25)] cursor-pointer flex items-center gap-1.5"
-            id="add-product-btn"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Novo Produto</span>
-          </button>
+          <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+            <span className="text-[10px] text-white/40 block font-bold uppercase tracking-wider">Estoque Físico Total</span>
+            <div className="flex items-baseline gap-1.5 mt-0.5">
+              <span className="text-lg font-black text-white font-mono">{totalStockUnits}</span>
+              <span className="text-[10px] text-white/40">unidades disponíveis</span>
+            </div>
+            <span className="text-[9.5px] text-white/40 block mt-0.5 font-medium">
+              Prateleira física atual
+            </span>
+          </div>
 
-          {/* Apagar Tudo */}
-          <button
-            onClick={() => {
-              setIsClearOpen(true);
-              setClearPassword('');
-              setClearError(null);
-            }}
-            className="bg-red-600/20 hover:bg-red-600 border border-red-500/30 text-red-100 hover:text-white font-extrabold text-xs px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.1"
-            id="clear-all-stock-btn"
-          >
-            <Trash2 className="w-4 h-4" />
-            <span>Apagar Tudo ⚠️</span>
-          </button>
+          <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+            <span className="text-[10px] text-white/40 block font-bold uppercase tracking-wider">Patrimônio em Estoque</span>
+            <div className="flex items-baseline gap-1.5 mt-0.5">
+              <span className="text-lg font-black text-[#FFE600] font-mono">{formatCurrency(totalStockCostValue)}</span>
+            </div>
+            <span className="text-[9.5px] text-[#FFE600]/70 block mt-0.5 font-medium">
+              A preço de custo (CMV)
+            </span>
+          </div>
         </div>
       </div>
+
+      {/* Condicional de Renderização: Modo de Ajuste Manual ou Modo de Catálogo */}
+      {tabMode === 'manual_stock' ? (
+        <ManualStockAdjustPanel
+          products={products}
+          sales={sales}
+          onSaveBatchStock={handleSaveBatchStock}
+          onBackToCatalog={() => setTabMode('catalog')}
+        />
+      ) : (
+        <>
+          {/* Barra de Filtro e Pesquisa */}
+          <div className="bg-[#141414] p-5 rounded-2xl border border-white/5 shadow-md flex flex-col md:flex-row gap-4 items-center justify-between">
+            <div className="flex-1 w-full md:w-auto relative">
+              <Search className="absolute left-3.5 top-1/2 transform -translate-y-1/2 text-white/40 w-4.5 h-4.5" />
+              <input
+                type="text"
+                placeholder="Buscar por nome do anúncio, código MLB, SKU..."
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className="w-full pl-10 pr-4 py-2.5 text-xs bg-white/5 border border-white/10 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 text-white font-medium"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-2 w-full md:w-auto">
+              {/* Filtro de Atividade 30 dias */}
+              <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
+                <Clock className="w-3.5 h-3.5 text-[#FFE600]" />
+                <select
+                  value={activeStatusFilter}
+                  onChange={(e) => setActiveStatusFilter(e.target.value as any)}
+                  className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
+                >
+                  <option value="active" className="bg-[#121212] text-white">Com Vendas (&lt;30d)</option>
+                  <option value="archived" className="bg-[#121212] text-white">Arquivados (+30d sem giro)</option>
+                  <option value="all" className="bg-[#121212] text-white">Todos os Produtos</option>
+                </select>
+              </div>
+
+              {/* Categoria */}
+              <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
+                <Tag className="w-3.5 h-3.5 text-[#FFE600]" />
+                <select
+                  value={categoryFilter}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
+                >
+                  <option value="all" className="bg-[#121212] text-white">Todas categorias</option>
+                  {categories.map((cat, idx) => (
+                    <option key={idx} value={cat} className="bg-[#121212] text-white">{cat}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Estado de Alerta */}
+              <div className="flex items-center gap-1.5 bg-white/5 border border-white/10 px-3 py-2 rounded-xl text-xs font-semibold text-white/75">
+                <SlidersHorizontal className="w-3.5 h-3.5 text-[#FFE600]" />
+                <select
+                  value={stockStatusFilter}
+                  onChange={(e) => setStockStatusFilter(e.target.value as any)}
+                  className="bg-transparent focus:outline-none text-white font-bold cursor-pointer"
+                >
+                  <option value="all" className="bg-[#121212] text-white">Status de Estoque</option>
+                  <option value="low" className="bg-[#121212] text-white">Reposição Crítica</option>
+                  <option value="idle" className="bg-[#121212] text-white">Estagnados (+30 dias)</option>
+                </select>
+              </div>
+
+              {/* Botão rápido para ir ao modo de indicação de estoque */}
+              <button
+                onClick={() => setTabMode('manual_stock')}
+                className="bg-[#FFE600]/15 hover:bg-[#FFE600]/25 text-[#FFE600] border border-[#FFE600]/30 font-bold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Package className="w-3.5 h-3.5" />
+                <span>Indicar Estoque</span>
+              </button>
+
+              {/* Adicionar Produto Manual */}
+              <button
+                onClick={handleOpenAdd}
+                className="bg-white/10 hover:bg-white/15 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                id="add-product-btn"
+                title="Cadastrar produto manualmente se desejar"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Produto</span>
+              </button>
+
+              {/* Importar Planilha de Produtos */}
+              <input
+                type="file"
+                ref={productFileInputRef}
+                onChange={handleImportProductSpreadsheet}
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+              />
+              <button
+                onClick={() => productFileInputRef.current?.click()}
+                className="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-bold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                title="Importar lista de produtos a partir de uma planilha Excel / CSV"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Importar Planilha 📥</span>
+              </button>
+
+              {/* Produtos Banidos */}
+              {bannedProducts && bannedProducts.length > 0 && (
+                <button
+                  onClick={() => setIsBannedModalOpen(true)}
+                  className="bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-300 font-bold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                  title="Ver produtos banidos permanentemente do estoque"
+                >
+                  <Ban className="w-3.5 h-3.5 text-red-400" />
+                  <span>Banidos ({bannedProducts.length})</span>
+                </button>
+              )}
+
+              {/* Desmembrar Todos os IDs */}
+              <button
+                onClick={() => setIsUnlinkAllOpen(true)}
+                className="bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-200 hover:text-amber-100 font-bold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                title="Desmembrar todas as vinculações de múltiplos IDs de anúncio de todos os produtos"
+              >
+                <Unlink className="w-3.5 h-3.5" />
+                <span>Desmembrar IDs</span>
+              </button>
+
+              {/* Apagar Tudo */}
+              <button
+                onClick={() => {
+                  setIsClearOpen(true);
+                  setClearPassword('');
+                  setClearError(null);
+                }}
+                className="bg-red-600/20 hover:bg-red-600 border border-red-500/30 text-red-100 hover:text-white font-extrabold text-xs px-3.5 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1"
+                id="clear-all-stock-btn"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Apagar ⚠️</span>
+              </button>
+            </div>
+          </div>
 
       {/* Tabela Administrativa Complexa de Estoque */}
       <div className="bg-[#141414] rounded-2xl border border-white/5 shadow-md overflow-hidden">
@@ -347,21 +656,8 @@ export default function StockControl({
                 </tr>
               ) : (
                 filteredProducts.map((p) => {
-                  const lastSale = sales
-                    .filter(s => s.productId === p.id && s.status !== 'refunded')
-                    .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())[0];
-                    
-                  let days = 0;
-                  if (lastSale) {
-                    const lastDate = new Date(lastSale.date + 'T12:00:00');
-                    const diffTime = new Date().getTime() - lastDate.getTime();
-                    days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                  } else {
-                    const addedDate = new Date(p.addedDate + 'T12:00:00');
-                    const diffTime = new Date().getTime() - addedDate.getTime();
-                    days = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                  }
-
+                  const activity = getProductSalesActivity(p, sales, products);
+                  const days = activity.daysWithoutSale;
                   const totalSoldForProd = calculateProductSalesVolume(p, sales, products);
                   const currentStock = calculateCurrentStock(p, sales, products);
                   const isCritical = currentStock <= p.minimalStock;
@@ -375,26 +671,117 @@ export default function StockControl({
 
                   return (
                     <tr key={p.id} className="hover:bg-white/5 transition-colors">
-                      {/* Name and SKU */}
+                      {/* Name, Linked IDs and Sales Activity */}
                       <td className="py-4 px-5">
                         <div className="max-w-md">
                           <p className="text-white font-bold text-xs sm:text-sm leading-snug break-words whitespace-normal">{p.name}</p>
-                          <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                            <span className="text-[10px] bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/30 px-1.5 py-0.5 rounded font-mono font-bold" title="SKU Principal / Código Master">
-                              {p.sku}
-                            </span>
+                          
+                          {/* Tags: Status dos 30 dias, SKU e IDs Vinculados */}
+                          <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                            {activity.isArchived ? (
+                              <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-md font-bold inline-flex items-center gap-1" title="Sem vendas nos últimos 30 dias">
+                                <Clock className="w-3 h-3" /> Arquivado (+30d sem giro)
+                              </span>
+                            ) : (
+                              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold inline-flex items-center gap-1" title="Produto ativo com vendas nos últimos 30 dias">
+                                🟢 Ativo • {activity.unitsSold30d} un. em 30d
+                              </span>
+                            )}
+
+                            {p.sku && (
+                              <span className="text-[10px] bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/30 px-2 py-0.5 rounded font-mono font-bold" title="SKU Principal / Código Master">
+                                SKU: {p.sku}
+                              </span>
+                            )}
+
+                            {/* IDs de anúncios vinculados (MLB...) com opção de desvincular */}
                             {p.skus && p.skus.length > 0 && p.skus.map((altSku, sIdx) => (
-                              <span key={sIdx} className="text-[9.5px] bg-sky-500/10 text-sky-300 border border-sky-500/20 px-1.5 py-0.5 rounded font-mono" title="Variação de SKU Vinculada">
-                                {altSku}
+                              <span key={sIdx} className="text-[9.5px] bg-sky-500/15 text-sky-300 border border-sky-500/30 pl-2 pr-1 py-0.5 rounded font-mono flex items-center gap-1" title="ID de Anúncio Vinculado">
+                                #{altSku}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleUnlinkSku(p, altSku);
+                                  }}
+                                  className="text-sky-300/60 hover:text-red-400 font-bold ml-0.5 text-[11px] leading-none cursor-pointer"
+                                  title="Desvincular este ID do produto"
+                                >
+                                  ×
+                                </button>
                               </span>
                             ))}
+
+                            {p.skus && p.skus.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleUnlinkAllForProduct(p);
+                                }}
+                                className="text-[9.5px] bg-amber-500/10 hover:bg-amber-500/20 text-amber-300/80 hover:text-amber-200 border border-amber-500/20 px-1.5 py-0.5 rounded cursor-pointer transition-colors flex items-center gap-1"
+                                title="Desmembrar todos os IDs vinculados deste produto"
+                              >
+                                <Unlink className="w-2.5 h-2.5" />
+                                <span>Desmembrar</span>
+                              </button>
+                            )}
+
                             <span className="text-[10px] bg-white/5 text-white/40 border border-white/5 px-1.5 py-0.5 rounded">
                               {p.category}
                             </span>
-                            {p.status === 'archived' && (
-                              <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-1.5 py-0.5 rounded font-bold">
-                                Arquivado
-                              </span>
+                          </div>
+
+                          {/* Inline Vincular Novo ID (# MLB) */}
+                          <div className="mt-2">
+                            {linkingProductId === p.id ? (
+                              <div className="inline-flex items-center gap-1.5 bg-black/60 border border-sky-400/50 p-1 rounded-lg">
+                                <input
+                                  type="text"
+                                  placeholder="Cole ID # MLB..."
+                                  value={linkingInput}
+                                  onChange={(e) => setLinkingInput(e.target.value)}
+                                  className="bg-transparent text-white text-[10px] font-mono px-2 py-0.5 w-32 focus:outline-none"
+                                  autoFocus
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleConfirmLink(p);
+                                    if (e.key === 'Escape') {
+                                      setLinkingProductId(null);
+                                      setLinkingInput('');
+                                    }
+                                  }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => handleConfirmLink(p)}
+                                  className="bg-sky-500 hover:bg-sky-400 text-black text-[10px] font-extrabold px-2 py-0.5 rounded cursor-pointer"
+                                >
+                                  Vincular
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setLinkingProductId(null);
+                                    setLinkingInput('');
+                                  }}
+                                  className="text-white/40 hover:text-white text-xs px-1 cursor-pointer"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setLinkingProductId(p.id);
+                                  setLinkingInput('');
+                                }}
+                                className="text-[9.5px] text-sky-400 hover:text-sky-300 bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/20 px-2 py-0.5 rounded flex items-center gap-1 cursor-pointer transition-colors"
+                                title="Vincular outro ID de anúncio Mercado Livre (# MLB) a este produto para somar vendas"
+                              >
+                                <Plus className="w-3 h-3" />
+                                <span>Vincular ID (# MLB)</span>
+                              </button>
                             )}
                           </div>
                         </div>
@@ -465,23 +852,30 @@ export default function StockControl({
                         {p.shippingCost > 0 ? formatCurrency(p.shippingCost) : 'Grátis'}
                       </td>
 
-                      {/* Estoque */}
+                      {/* Estoque Interativo */}
                       <td className="py-4 px-4 text-center">
                         <div className="flex flex-col items-center gap-1">
-                          <span className={`px-2.5 py-1 rounded text-xs font-bold font-mono block ${
-                            currentStock === 0 
-                              ? 'bg-red-500 text-white' 
-                              : isCritical 
-                              ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
-                              : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                          }`}>
-                            {currentStock} un. (Atual)
-                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setQuickStockProduct(p)}
+                            title="Clique para indicar ou alterar o estoque físico deste produto"
+                            className={`px-2.5 py-1 rounded text-xs font-bold font-mono inline-flex items-center gap-1.5 cursor-pointer hover:scale-105 transition-all shadow-sm ${
+                              currentStock === 0 
+                                ? 'bg-red-500 text-white' 
+                                : isCritical 
+                                ? 'bg-red-500/20 text-red-400 border border-red-500/30' 
+                                : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                            }`}
+                          >
+                            <Package className="w-3.5 h-3.5" />
+                            <span>{currentStock} un.</span>
+                            <span className="text-[9px] bg-white/10 px-1 rounded">✏️</span>
+                          </button>
                           <div className="text-[9.5px] text-white/50 font-medium leading-tight flex flex-col items-center">
-                            <span>Inicial: <strong className="text-white/80 font-mono">{p.stock}</strong> un.</span>
+                            <span>Físico declar.: <strong className="text-white/80 font-mono">{p.stock}</strong> un.</span>
                             {totalSoldForProd > 0 ? (
                               <span className="text-amber-400 font-bold">
-                                Saídas: -{totalSoldForProd} un.
+                                Saídas registradas: -{totalSoldForProd} un.
                               </span>
                             ) : (
                               <span className="text-white/40">Saídas: 0 un.</span>
@@ -505,15 +899,35 @@ export default function StockControl({
 
                       {/* Ações */}
                       <td className="py-4 px-5 text-right">
-                        <div className="flex items-center gap-2 justify-end">
-                          {deletingProductId === p.id ? (
+                        <div className="flex items-center gap-1.5 justify-end">
+                          {banningProductId === p.id ? (
+                            <div className="flex items-center gap-1.5 justify-end bg-red-500/10 border border-red-500/30 p-1 rounded-xl">
+                              <span className="text-[10px] text-red-300 font-bold hidden sm:inline pl-1">Banir produto?</span>
+                              <button
+                                onClick={() => {
+                                  if (onBanProduct) onBanProduct(p.name);
+                                  setBanningProductId(null);
+                                }}
+                                className="bg-red-600 hover:bg-red-700 text-white font-extrabold text-[10px] px-2.5 py-1 rounded-lg cursor-pointer animate-pulse flex items-center gap-1 shadow-md"
+                              >
+                                <Ban className="w-3 h-3" />
+                                <span>Sim, Banir</span>
+                              </button>
+                              <button
+                                onClick={() => setBanningProductId(null)}
+                                className="bg-white/10 hover:bg-white/20 text-white text-[10px] px-2 py-1 rounded-lg cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          ) : deletingProductId === p.id ? (
                             <div className="flex items-center gap-1.5 justify-end">
                               <button
                                 onClick={() => {
                                   onDeleteProduct(p.id);
                                   setDeletingProductId(null);
                                 }}
-                                className="bg-red-650 hover:bg-red-700 bg-red-650 hover:bg-red-700 text-white font-extrabold text-[10px] px-2 py-1 rounded cursor-pointer animate-pulse"
+                                className="bg-red-650 hover:bg-red-700 text-white font-extrabold text-[10px] px-2 py-1 rounded cursor-pointer animate-pulse"
                               >
                                 Excluir definitivo
                               </button>
@@ -526,6 +940,15 @@ export default function StockControl({
                             </div>
                           ) : (
                             <>
+                              {/* Botão rápido para Indicar / Ajustar Estoque Físico */}
+                              <button
+                                onClick={() => setQuickStockProduct(p)}
+                                className="bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border border-[#FFE600]/30 text-[#FFE600] p-1.5 rounded-lg transition-colors cursor-pointer"
+                                title="Indicar / Ajustar Estoque Físico"
+                              >
+                                <Package className="w-4 h-4" />
+                              </button>
+
                               <button
                                 onClick={() => {
                                   onEditProduct({
@@ -533,7 +956,7 @@ export default function StockControl({
                                     status: (p.status === 'archived') ? 'active' : 'archived'
                                   });
                                 }}
-                                className={`${p.status === 'archived' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20' : 'bg-amber-500/10 border-amber-500/20 text-amber-400 hover:bg-amber-500/20'} border p-1.5 rounded-lg transition-colors cursor-pointer mr-1`}
+                                className={`${p.status === 'archived' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20' : 'bg-amber-500/10 border-amber-500/20 text-amber-400 hover:bg-amber-500/20'} border p-1.5 rounded-lg transition-colors cursor-pointer`}
                                 title={p.status === 'archived' ? 'Desarquivar Produto' : 'Arquivar Produto'}
                               >
                                 <Layers className="w-4 h-4" />
@@ -546,7 +969,7 @@ export default function StockControl({
                                   setReplenishDate(new Date().toISOString().split('T')[0]);
                                   setIsReplenishOpen(true);
                                 }}
-                                className="bg-sky-500/10 border border-sky-500/20 text-sky-400 hover:bg-sky-500/20 p-1.5 rounded-lg transition-colors cursor-pointer mr-1"
+                                className="bg-sky-500/10 border border-sky-500/20 text-sky-400 hover:bg-sky-500/20 p-1.5 rounded-lg transition-colors cursor-pointer"
                                 title="Repor Estoque / Recompra"
                               >
                                 <Plus className="w-4 h-4" />
@@ -554,17 +977,24 @@ export default function StockControl({
                               <button
                                 onClick={() => handleOpenEdit(p)}
                                 className="bg-white/5 hover:bg-white/10 border border-white/10 text-white hover:text-[#FFE600] p-1.5 rounded-lg transition-colors cursor-pointer"
-                                title="Editar Dados"
+                                title="Editar Ficha Técnica"
                               >
                                 <Edit className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={() => setDeletingProductId(p.id)}
                                 className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 p-1.5 rounded-lg transition-colors cursor-pointer"
-                                title="Deletar"
+                                title="Deletar da lista local"
                                 id={`delete-product-btn-${p.id}`}
                               >
                                 <Trash2 className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => setBanningProductId(p.id)}
+                                className="bg-red-600/15 hover:bg-red-600/30 border border-red-500/30 text-red-300 p-1.5 rounded-lg transition-colors cursor-pointer"
+                                title="Banir da Lista (Ocultar permanentemente)"
+                              >
+                                <Ban className="w-4 h-4" />
                               </button>
                             </>
                           )}
@@ -578,6 +1008,22 @@ export default function StockControl({
           </table>
         </div>
       </div>
+      </>
+      )}
+
+      {/* Modal Rápido de Indicação / Ajuste de Estoque Físico */}
+      {quickStockProduct && (
+        <QuickStockModal
+          product={quickStockProduct}
+          sales={sales}
+          products={products}
+          onSave={(updated) => {
+            onEditProduct(updated);
+            setQuickStockProduct(null);
+          }}
+          onClose={() => setQuickStockProduct(null)}
+        />
+      )}
 
       {/* Formulário Modal para Adicionar Produto */}
       {isAddOpen && (
@@ -1262,6 +1708,53 @@ export default function StockControl({
         </div>
       )}
 
+      {/* Modal de Desmembramento Geral de IDs */}
+      {isUnlinkAllOpen && (
+        <div className="fixed inset-0 bg-[#000000]/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
+          <div className="bg-[#141414] rounded-2xl border border-amber-500/40 max-w-md w-full p-6 shadow-2xl relative">
+            <h3 className="text-lg font-bold text-amber-400 mb-2 flex items-center gap-2">
+              <Unlink className="w-5 h-5" />
+              <span>Desmembrar Todos os IDs</span>
+            </h3>
+            <p className="text-xs text-white/70 mb-4 leading-relaxed">
+              Esta ação irá <strong>remover todas as vinculações de múltiplos IDs de anúncio</strong> de todos os produtos do estoque.
+            </p>
+            <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3 mb-5 text-[11px] text-amber-200/90 leading-relaxed">
+              💡 <strong>Regra:</strong> Cada produto passará a operar estritamente de forma individual com seu próprio SKU master ("produto por produto"). Você poderá vincular manualmente qualquer ID que desejar a qualquer momento.
+            </div>
+
+            <div className="flex justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setIsUnlinkAllOpen(false)}
+                className="bg-white/10 hover:bg-white/15 text-white text-xs font-bold py-2 px-4 rounded-xl cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onUnlinkAllProducts) {
+                    onUnlinkAllProducts();
+                  } else {
+                    products.forEach(p => {
+                      if (p.skus && p.skus.length > 0) {
+                        onEditProduct({ ...p, skus: [] });
+                      }
+                    });
+                  }
+                  setIsUnlinkAllOpen(false);
+                }}
+                className="bg-amber-500 hover:bg-amber-400 text-black text-xs font-extrabold py-2 px-4 rounded-xl cursor-pointer shadow-[0_0_15px_rgba(245,158,11,0.3)] flex items-center gap-1.5"
+              >
+                <Unlink className="w-4 h-4" />
+                <span>Confirmar Desmembramento</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isClearOpen && (
         <div className="fixed inset-0 bg-[#000000]/80 backdrop-blur-md flex items-center justify-center p-4 z-50">
           <div className="bg-[#141414] rounded-2xl border border-red-500/30 max-w-md w-full p-6 shadow-2xl relative">
@@ -1318,6 +1811,59 @@ export default function StockControl({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Produtos Banidos */}
+      {isBannedModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#121212] border border-white/10 rounded-2xl p-6 max-w-xl w-full shadow-2xl relative">
+            <button
+              onClick={() => setIsBannedModalOpen(false)}
+              className="absolute top-4 right-4 text-white/50 hover:text-white transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2.5 bg-red-500/20 text-red-400 rounded-xl">
+                <Ban className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Produtos Banidos do Estoque</h3>
+                <p className="text-xs text-white/60">Estes itens são filtrados permanentemente e ignorados do Controle de Estoque.</p>
+              </div>
+            </div>
+
+            {(!bannedProducts || bannedProducts.length === 0) ? (
+              <p className="text-center py-8 text-white/40 text-sm">Nenhum produto banido no momento.</p>
+            ) : (
+              <div className="max-h-80 overflow-y-auto space-y-2 pr-1 my-4">
+                {bannedProducts.map((bName, idx) => (
+                  <div key={idx} className="flex items-center justify-between bg-white/5 border border-white/10 p-3 rounded-xl">
+                    <span className="text-sm font-medium text-white/90 truncate max-w-[360px]">{bName}</span>
+                    <button
+                      onClick={() => {
+                        if (onUnbanProduct) onUnbanProduct(bName);
+                      }}
+                      className="bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/30 text-emerald-300 font-semibold text-xs px-3 py-1.5 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Desbanir</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setIsBannedModalOpen(false)}
+                className="bg-white/10 hover:bg-white/15 text-white font-bold text-xs px-4 py-2.5 rounded-xl transition-colors cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
           </div>
         </div>
       )}

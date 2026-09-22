@@ -5,7 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { Product, Sale, MLImportRecord, EntradaValorRecord, findMatchingProduct } from './types';
-import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale } from './utils';
+import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale, getProductSalesActivity, isValidProductTitle, isDateLikeString, parseMLDate, toStandardDateISO } from './utils';
 import { Lock, Unlock, Key, LogOut } from 'lucide-react';
 
 // Importando componentes modulares
@@ -18,10 +18,11 @@ import MLImport from './components/MLImport';
 import ProductProfitsPanel from './components/ProductProfitsPanel';
 
 export default function App() {
-  // Migração automática do Web App URL para o novo fornecido pelo usuário
-  const defaultNewUrl = 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
+  // Migração automática do Web App URL para o novo ativo fornecido pelo usuário na aba Database (linha 1, coluna A)
+  const defaultNewUrl = 'https://script.google.com/macros/s/AKfycbxUZXSIzp-0hgv1PMuyqThl98Vj9igr3lvNhXx31GBXbMoInTed24ANzbOkm38yT7uE/exec';
+  const defaultSpreadsheetUrl = 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?gid=1782622408#gid=1782622408';
   const storedUrl = localStorage.getItem('ml_webapp_url');
-  if (!storedUrl || storedUrl.includes('AKfycbyesx-83QVMrWKiaFOtfaVesZP4uWIXn2BSL-QBo2q5JNjZun5k8Vc4DTOaMohLLmdG')) {
+  if (!storedUrl || storedUrl.includes('AKfycbyesx') || storedUrl.includes('AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j') || storedUrl.includes('AKfycbz_GaOVZTAI')) {
     localStorage.setItem('ml_webapp_url', defaultNewUrl);
   }
 
@@ -71,32 +72,38 @@ export default function App() {
   });
   
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string>(() => {
-    return localStorage.getItem('ml_spreadsheet_url') || 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?usp=sharing';
+    return localStorage.getItem('ml_spreadsheet_url') || defaultSpreadsheetUrl;
   });
 
   const [webAppUrl, setWebAppUrl] = useState<string>(() => {
-    return localStorage.getItem('ml_webapp_url') || 'https://script.google.com/macros/s/AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j/exec';
+    const current = localStorage.getItem('ml_webapp_url');
+    if (current && !current.includes('AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j')) {
+      return current;
+    }
+    return defaultNewUrl;
   });
 
   const [isFetchingWebAppUrl, setIsFetchingWebAppUrl] = useState<boolean>(true);
 
   // Regra de Sincronização Mestra: Buscar Web App URL da aba "Database" da planilha
-  const forceFetchWebAppUrl = async () => {
-    if (!spreadsheetUrl) {
-      setIsFetchingWebAppUrl(false);
-      return;
-    }
+  const forceFetchWebAppUrl = async (): Promise<string | null> => {
+    const urlToUse = spreadsheetUrl || defaultSpreadsheetUrl;
     setIsFetchingWebAppUrl(true);
     try {
-      const res = await fetch(`/api/get-webapp-url?spreadsheetUrl=${encodeURIComponent(spreadsheetUrl)}`);
+      const res = await fetch(`/api/get-webapp-url?spreadsheetUrl=${encodeURIComponent(urlToUse)}`);
       const data = await res.json();
-      if (data.webAppUrl && data.webAppUrl !== webAppUrl) {
-        console.log('Web App URL atualizada automaticamente da aba Database da planilha!');
-        setWebAppUrl(data.webAppUrl);
-        localStorage.setItem('ml_webapp_url', data.webAppUrl);
+      if (data.webAppUrl) {
+        if (data.webAppUrl !== webAppUrl) {
+          console.log('Web App URL atualizada automaticamente da aba Database da planilha:', data.webAppUrl);
+          setWebAppUrl(data.webAppUrl);
+          localStorage.setItem('ml_webapp_url', data.webAppUrl);
+        }
+        return data.webAppUrl;
       }
+      return webAppUrl;
     } catch (err) {
       console.error('Erro ao buscar Web App URL da planilha:', err);
+      return null;
     } finally {
       setIsFetchingWebAppUrl(false);
     }
@@ -121,6 +128,19 @@ export default function App() {
     const saved = localStorage.getItem('ml_initial_capital');
     return saved ? Number(saved) : 0;
   });
+
+  const [bannedProducts, setBannedProducts] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem('ml_banned_products');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('ml_banned_products', JSON.stringify(bannedProducts));
+  }, [bannedProducts]);
 
   // Salvar no localStorage sempre que houver alterações nos estados principais
   useEffect(() => {
@@ -173,15 +193,22 @@ export default function App() {
     const recordsToUse = cloudMlRecords || mlRecords || [];
     const recordsToUseEntrada = cloudEntradaRecords || entradaRecords || [];
     
-    // 1. Manter APENAS produtos que foram cadastrados manualmente.
-    // Ignorar "fantasmas" auto-criados (prod_ml_...) e lixos ("sim", "nao").
-    const sanitizedProducts = (cloudProducts || [])
+    // 1. Manter APENAS produtos reais válidos.
+    // Ignorar lixos ("sim", "nao"), datas ou registros corrompidos.
+    const sanitizedProducts: Product[] = (cloudProducts || [])
       .filter(p => {
-        const n = (p.name || '').trim().toLowerCase();
-        if (!n) return false; // Ignorar linhas em branco da planilha
-        const isTrash = n === 'sim' || n === 'não' || n === 'nao';
-        const isGhost = false;
-        return !isTrash && !isGhost;
+        if (!p || !p.name) return false;
+        if (!isValidProductTitle(p.name)) return false;
+        if (isDateLikeString(p.name)) return false;
+        const lower = String(p.name).toLowerCase().trim();
+        if (/\b(outubro|setembro|agosto|julho|junho|maio|abril|mar[cç]o|fevereiro|janeiro)\b/i.test(lower)) {
+          return false;
+        }
+        // Filtrar produtos banidos pelo usuário
+        if (bannedProducts.some(b => String(b).trim().toLowerCase() === lower || (p.sku && String(b).trim().toLowerCase() === String(p.sku).trim().toLowerCase()))) {
+          return false;
+        }
+        return true;
       })
       .map(p => ({
         ...p,
@@ -208,276 +235,224 @@ export default function App() {
       return true;
     });
 
-    const sanitizedSales = validCloudSales.map(s => {
-      let salePrice = Number(s.salePrice) || 0;
-      const quantity = Number(s.quantity) || 1;
-      const discount = Number(s.discount) || 0;
-
-      const cleanSaleProductName = (s.productName || '').trim();
-      const isBadName = !cleanSaleProductName || ['sim', 'não', 'nao', 'produto mercado livre'].includes(cleanSaleProductName.toLowerCase());
-
-      // Tentar re-vincular usando o registro do ML caso exista
-      const idToSearch = (s.mlSaleId || s.id || '').split('_')[0];
-      const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
-
-      let realAdTitle = cleanSaleProductName;
-      if (originalRecord && originalRecord.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(originalRecord.adTitle.trim().toLowerCase())) {
-        realAdTitle = originalRecord.adTitle.trim();
+    // Mapear vendas existentes por ID para preservação de customizações do usuário (ex: perdas manuais, custos de envio customizados)
+    const existingSalesMap = new Map<string, Sale>();
+    validCloudSales.forEach(s => {
+      const sCleanId = cleanMlSaleId(s.mlSaleId) || cleanMlSaleId(s.id) || String(s.id || '').trim();
+      if (sCleanId) {
+        existingSalesMap.set(sCleanId, s);
       }
+    });
 
-      // 1. CHAVE PRIMÁRIA (SSOT): Se a venda já tem um ID de Produto válido associado, verificar no estoque
-      let matchingProd: Product | undefined;
-      if (s.productId) {
-        matchingProd = sanitizedProducts.find(p => p.id === s.productId || p.sku === s.productId);
+    // Mapear a tabela de entrada de valores (liberações financeiras do Mercado Pago)
+    const entradaMap = new Map<string, EntradaValorRecord>();
+    recordsToUseEntrada.forEach(e => {
+      const eCleanId = cleanMlSaleId(e.id) || String(e.id || '').trim();
+      if (eCleanId) {
+        entradaMap.set(eCleanId, e);
       }
-      
-      // 2. Fallback de Correção: Se não tinha ID de produto (ou foi renomeado), tentar vincular pelo registro original ou título
-      if (!matchingProd) {
-        if (originalRecord) {
-          matchingProd = findMatchingProduct(originalRecord, sanitizedProducts);
+    });
+
+    const reconciledSales: Sale[] = [];
+    const processedSaleIds = new Set<string>();
+
+    // Processar cada registro de vendas brutas do Mercado Livre (aba "Importe Mercado Livre")
+    // de acordo com as regras invioláveis do Manual POP (Seções 1.2, 4.3, 6.2 e 7)
+    if (recordsToUse && recordsToUse.length > 0) {
+      recordsToUse.forEach(r => {
+        const rawId = String(r.id || '').trim();
+        const rCleanId = cleanMlSaleId(rawId) || rawId;
+        if (!rCleanId) return;
+
+        // Evitar duplicidades: um registro por venda (Seção 7.1.1)
+        if (processedSaleIds.has(rCleanId)) return;
+        processedSaleIds.add(rCleanId);
+
+        const existingSale = existingSalesMap.get(rCleanId);
+
+        // 1. CHAVE PRIMÁRIA & SSOT (Seção 1.2 e 6.2):
+        // Buscar correspondência estrita com produto cadastrado no Controle de Estoque
+        let matchingProd: Product | undefined;
+        if (existingSale?.productId) {
+          matchingProd = sanitizedProducts.find(p => p.id === existingSale.productId || p.sku === existingSale.productId || (p.skus && p.skus.includes(existingSale.productId)));
         }
         if (!matchingProd) {
-          matchingProd = findProductForSale({ ...s, productName: realAdTitle }, sanitizedProducts);
+          matchingProd = findMatchingProduct(r, sanitizedProducts);
         }
-      }
+        if (!matchingProd && isValidProductTitle(r.adTitle)) {
+          matchingProd = findProductForSale({ productName: r.adTitle } as any, sanitizedProducts);
+        }
 
-      // O Título da venda DEVE ser o realAdTitle se for válido, preservando a informação do ML
-      const productName = (!isBadName && realAdTitle) ? realAdTitle : (matchingProd ? matchingProd.name : 'Venda Desconhecida');
-      
-      // Regra 1.2, 1.4 e 6.2 do Manual: Normalizar status
-      const rawStatusStr = String(s.status || '').toLowerCase().trim();
-      let finalStatus: 'pending' | 'completed' | 'refunded' | 'ignored' = 'pending';
-      if (['completed', 'concluido', 'concluído', 'liberado', 'liberada', 'finalizado', 'finalizada', 'entregue', 'pago'].includes(rawStatusStr)) {
-        finalStatus = 'completed';
-      } else if (['refunded', 'estornado', 'cancelado', 'devolvido'].includes(rawStatusStr)) {
-        finalStatus = 'refunded';
-      } else if (['ignored', 'desprezado', 'desprezada', 'ignorado', 'lixo'].includes(rawStatusStr)) {
-        finalStatus = 'ignored';
-      }
+        // Se o produto NÃO existe no estoque, mandar para "Dados e Vendas Desprezadas" (status: 'ignored')
+        // conforme Seção 1.2, 4.4 e 6.2 do Manual POP
+        if (!matchingProd) {
+          reconciledSales.push({
+            id: rCleanId,
+            productId: 'desprezado',
+            productName: r.adTitle || 'Produto Não Cadastrado no Estoque',
+            quantity: Number(r.units) || 1,
+            salePrice: Number(r.adUnitPrice) || 0,
+            date: toStandardDateISO(r.dateStr || ''),
+            mlFee: Math.abs(r.saleFeeAndTaxes || 0),
+            shippingCost: Math.abs(r.shippingFee || 0) + Math.abs(r.shippingWeightCost || 0) + Math.abs(r.shippingDiffCost || 0),
+            shippingRevenue: Math.abs(r.shippingRevenue || 0),
+            purchasePrice: 0,
+            grossProfit: 0,
+            netProfit: 0,
+            status: 'ignored',
+            mlSaleId: rCleanId,
+            isMlSale: true,
+            adId: r.adId,
+            sku: r.sku
+          });
+          return;
+        }
 
-      // Vendas pendentes sem produto no estoque são ignoradas. Vendas finalizadas são fidelizadas para sempre (Regra 7.1.1)
-      if (!matchingProd && finalStatus !== 'completed') {
-        finalStatus = 'ignored';
-      }
-
-      // O ID do produto vincula ao estoque se houver match real, senão gera ID seguro sem corromper vendas
-      const pureMlId = cleanMlSaleId(s.mlSaleId) || cleanMlSaleId(s.id);
-      const productId = matchingProd ? matchingProd.id : s.productId;
-
-      // Preço de Compra: se o produto está cadastrado no estoque, herda o preço de compra do estoque se válido!
-      let purchasePrice = (matchingProd && matchingProd.purchasePrice > 0)
-        ? matchingProd.purchasePrice
-        : (Number(s.purchasePrice) > 0 ? Number(s.purchasePrice) : (matchingProd ? matchingProd.purchasePrice : 0));
-
-      // Corrigir preços corrompidos
-      if (salePrice <= 0 || salePrice > 1000000) {
-        if (Number(s.grossProfit) > 0 && purchasePrice > 0) {
-          salePrice = Number(s.grossProfit) + purchasePrice + discount;
-        } else if (matchingProd) {
+        // Produto VÁLIDO no estoque (Oficial)
+        const quantity = Number(r.units) || (existingSale ? Number(existingSale.quantity) : 1) || 1;
+        let salePrice = Number(r.adUnitPrice) || 0;
+        if (salePrice <= 0 && r.productRevenue) {
+          salePrice = Math.abs(r.productRevenue) / quantity;
+        }
+        if (salePrice <= 0 && existingSale && existingSale.salePrice > 0) {
+          salePrice = existingSale.salePrice;
+        }
+        if (salePrice <= 0 && matchingProd.salePrice > 0) {
           salePrice = matchingProd.salePrice;
         }
-      }
 
-      const totalSaleValue = salePrice * quantity;
-      const totalCostValue = purchasePrice * quantity;
+        const purchasePrice = matchingProd.purchasePrice > 0
+          ? matchingProd.purchasePrice
+          : (existingSale?.purchasePrice || 0);
 
-      // Preservar propriedades locais se a planilha ainda não as tiver por usar script antigo
-      const localSale = sales.find(ls => ls.id === s.id);
-      
-      const mlSaleId = getSaleMlId(s) || (localSale && getSaleMlId(localSale)) || cleanMlSaleId(s.mlSaleId);
-      const isMlSale = s.isMlSale || !!mlSaleId;
-      let cleanSaleId = mlSaleId || cleanMlSaleId(s.id) || String(s.id || '').trim();
+        const cleanSaleProductName = (r.adTitle && isValidProductTitle(r.adTitle))
+          ? r.adTitle.trim()
+          : (existingSale?.productName || matchingProd.name);
 
-      let mlFee = Number(s.mlFee) || 0;
-      let shippingCost = Number(s.shippingCost) || 0;
-      let shipRev = s.shippingRevenue || 0;
-      let grossProfit = 0;
-      let netProfit = 0;
+        const dateISO = toStandardDateISO(r.dateStr || existingSale?.date || '');
 
-      if (isMlSale || mlSaleId) {
-        const idToSearch = (mlSaleId || s.id || '').split('_')[0];
-        const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
-        
-        if (originalRecord) {
-          const rawRecordFee = Math.abs(originalRecord.saleFeeAndTaxes || 0);
-          const rawShipCost = Math.abs(originalRecord.shippingFee || 0) + Math.abs(originalRecord.shippingWeightCost || 0) + Math.abs(originalRecord.shippingDiffCost || 0);
-          shipRev = finalStatus === 'refunded' ? 0 : Math.abs(originalRecord.shippingRevenue || 0);
-          
-          if (finalStatus === 'refunded') {
-            mlFee = 0;
-            shippingCost = rawShipCost > 0 ? rawShipCost : ((matchingProd && matchingProd.shippingCost > 0) ? matchingProd.shippingCost : 6.65);
-          } else {
-            // Se o relatório original tem a tarifa de venda discriminada, usa ela. Senão calcula a partir da comissão do produto
-            if (rawRecordFee > 0) {
-              mlFee = rawRecordFee;
-            } else if (matchingProd) {
-              mlFee = calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity;
+        // Tarifas e Envio
+        const mlFee = (r.saleFeeAndTaxes !== undefined && r.saleFeeAndTaxes !== 0)
+          ? Math.abs(r.saleFeeAndTaxes)
+          : (existingSale ? existingSale.mlFee : calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity);
+
+        const shippingCost = (r.shippingFee !== undefined || r.shippingWeightCost !== undefined || r.shippingDiffCost !== undefined)
+          ? (Math.abs(r.shippingFee || 0) + Math.abs(r.shippingWeightCost || 0) + Math.abs(r.shippingDiffCost || 0))
+          : (existingSale ? existingSale.shippingCost : (matchingProd.shippingCost || 0));
+
+        const shippingRevenue = Math.abs(r.shippingRevenue || 0);
+        const surchargeRev = Number(r.surchargeRevenue || 0);
+        const installmentFee = Number(r.installmentFee || 0);
+
+        // Seção 4.3.1 do Manual POP - Cálculo do A Receber do ML (Repasse Líquido / Payout)
+        // A Receber = Receita produtos + Acréscimo + Taxa parcelamento - Tarifa ML + Receita envio - Tarifa envio
+        const totalGross = salePrice * quantity;
+        const aReceberML = totalGross + surchargeRev + installmentFee - mlFee + shippingRevenue - shippingCost;
+
+        // Seção 4.3.2 do Manual POP - Lucro Líquido Real = A Receber - Custo Compra - Imposto Provisionado (4%)
+        const taxAmount = totalGross * 0.04;
+        let netProfit = aReceberML - (purchasePrice * quantity) - taxAmount;
+        let grossProfit = totalGross - (purchasePrice * quantity);
+
+        // Determinação de Status (Seção 7 e 7.1 do Manual POP)
+        let status: 'pending' | 'completed' | 'refunded' | 'ignored' = 'pending';
+
+        const rStatusLower = (r.status || '').toLowerCase();
+        const rDescLower = (r.statusDescription || '').toLowerCase();
+        const isRefunded = rStatusLower.includes('cancelad') || rStatusLower.includes('devolv') ||
+                           rStatusLower.includes('estorn') || rStatusLower.includes('reembols') ||
+                           rDescLower.includes('cancelad') || rDescLower.includes('devolv') ||
+                           rDescLower.includes('estorn') || rDescLower.includes('reembols');
+
+        if (isRefunded) {
+          status = 'refunded';
+          netProfit = -shippingCost; // Em devolução/cancelamento, o frete é retido/perdido e não há lucro
+          grossProfit = 0;
+        } else {
+          // Cruzamento de dados com a aba Entrada de Valores (Seção 7.1)
+          const entradaRecord = entradaMap.get(rCleanId);
+          const hasLiberacao = entradaRecord && (
+            (entradaRecord.releaseStatus && /libera[cç][aã]o|dispon[ií]vel/i.test(entradaRecord.releaseStatus)) ||
+            (entradaRecord.description && /libera[cç][aã]o/i.test(entradaRecord.description))
+          );
+
+          // Regra temporal: prazo de 30 dias do Mercado Livre expirado (Seção 7)
+          let isExpired30Days = false;
+          if (dateISO) {
+            const saleDateObj = parseMLDate(dateISO);
+            if (saleDateObj) {
+              const nowObj = new Date();
+              const diffDays = Math.floor((nowObj.getTime() - saleDateObj.getTime()) / (1000 * 60 * 60 * 24));
+              if (diffDays >= 30) {
+                isExpired30Days = true;
+              }
             }
-
-            // O custo de frete real cobrado pelo ML é o do relatório (se for 0, o vendedor NÃO pagou frete)
-            shippingCost = rawShipCost;
           }
-        } else {
-          // Fallback se não encontrar o registro bruto em mlRecords
-          if (finalStatus === 'refunded') {
-            mlFee = 0;
-            shippingCost = s.shippingCost > 0 ? s.shippingCost : ((matchingProd && matchingProd.shippingCost > 0) ? matchingProd.shippingCost : 6.65);
+
+          if (hasLiberacao || isExpired30Days || existingSale?.status === 'completed') {
+            status = 'completed'; // Vendas Finalizadas / Liberadas
           } else {
-            if (mlFee === 0 && matchingProd) {
-              mlFee = calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity;
-            }
-            // Para vendas do ML, respeitar o frete registrado na venda (não forçar frete do cadastro)
-            shippingCost = Number(s.shippingCost) || 0;
+            status = 'pending'; // Vendas em Andamento / Faturamento Previsto
           }
         }
-      } else {
-        // Venda manual direta
-        if (!s.isCustomSale && matchingProd) {
-          mlFee = calculateMLFee(salePrice, matchingProd.mlFeeType, matchingProd.customFeePercent) * quantity;
-          if (shippingCost === 0 && matchingProd.shippingCost > 0) {
-            shippingCost = matchingProd.shippingCost;
-          }
-        }
-      }
 
-      const taxAmount = totalSaleValue * 0.04;
-      if (finalStatus === 'refunded') {
-        netProfit = -shippingCost;
-        grossProfit = 0;
-      } else {
-        grossProfit = totalSaleValue - totalCostValue;
-        
-        let surchargeRev = 0;
-        let installmentFee = 0;
-        if (isMlSale || mlSaleId) {
-          const idToSearch = (mlSaleId || s.id || '').split('_')[0];
-          const originalRecord = recordsToUse.find(r => r.id === idToSearch || s.id.startsWith(r.id));
-          if (originalRecord) {
-            surchargeRev = originalRecord.surchargeRevenue || 0;
-            installmentFee = originalRecord.installmentFee || 0;
-          }
-        }
-        
-        const aReceberML = totalSaleValue + surchargeRev + installmentFee - mlFee + shipRev - shippingCost;
-        netProfit = aReceberML - taxAmount - totalCostValue;
-      }
+        // Logística (Full vs Transportadora/Flex)
+        const isFull = (r.shippingMethod && r.shippingMethod.toLowerCase().includes('full')) ||
+                       (existingSale?.shippingType === 'full');
+        const shippingType: 'full' | 'transportadora' = isFull ? 'full' : 'transportadora';
 
-      const lossAmount = s.lossAmount !== undefined ? s.lossAmount : (localSale ? localSale.lossAmount : undefined);
-      const lossReason = s.lossReason || (localSale && localSale.lossReason) || undefined;
-      const shippingType = s.shippingType || (localSale && localSale.shippingType) || 'transportadora';
-      const isCustomSale = s.isCustomSale !== undefined ? s.isCustomSale : (localSale ? localSale.isCustomSale : undefined);
-      const customMlFee = s.customMlFee !== undefined ? s.customMlFee : (localSale ? localSale.customMlFee : undefined);
-      const customShippingCost = s.customShippingCost !== undefined ? s.customShippingCost : (localSale ? localSale.customShippingCost : undefined);
-      const buyerName = s.buyerName || (localSale && localSale.buyerName) || undefined;
-      const buyerDocument = s.buyerDocument || (localSale && localSale.buyerDocument) || undefined;
-      const buyerAddress = s.buyerAddress || (localSale && localSale.buyerAddress) || undefined;
-      const trackingNumber = s.trackingNumber || (localSale && localSale.trackingNumber) || undefined;
-      const carrier = s.carrier || (localSale && localSale.carrier) || undefined;
-      const trackingUrl = s.trackingUrl || (localSale && localSale.trackingUrl) || undefined;
+        // Preservar anotações manuais se houver (ex: perda lançada com ID de 16 dígitos - Seção 2.2.7)
+        const lossAmount = existingSale?.lossAmount !== undefined
+          ? existingSale.lossAmount
+          : (status === 'refunded' ? shippingCost : undefined);
+        const lossReason = existingSale?.lossReason || (status === 'refunded' ? 'Devolução / Estorno ML' : undefined);
 
-      const searchId = cleanSaleId || mlSaleId || s.id;
-
-      // Filtrar estritamente apenas entradas válidas com Liberação e Pago (descarta cancelados e outros status)
-      const isExplicitlyCanceledInEntrada = (recordsToUseEntrada || []).some(eRec => {
-        const eId = String(eRec.id || '').trim();
-        if (eId !== searchId && !searchId.includes(eId) && !eId.includes(searchId)) return false;
-        const opStat = String(eRec.operationStatus || '').toLowerCase().trim();
-        const tipo = String(eRec.releaseStatus || eRec.description || '').toLowerCase().trim();
-        return opStat.includes('cancelad') || opStat.includes('estorn') || tipo.includes('estorno') || tipo.includes('cancel');
+        reconciledSales.push({
+          id: rCleanId,
+          productId: matchingProd.id,
+          productName: cleanSaleProductName,
+          quantity,
+          salePrice,
+          purchasePrice,
+          date: dateISO || new Date().toISOString().split('T')[0],
+          mlFee,
+          shippingCost,
+          shippingRevenue,
+          grossProfit,
+          netProfit,
+          status,
+          mlSaleId: rCleanId,
+          isMlSale: true,
+          shippingType,
+          lossAmount,
+          lossReason,
+          buyerName: r.buyerName || existingSale?.buyerName,
+          buyerDocument: r.buyerDocument || existingSale?.buyerDocument,
+          buyerAddress: r.buyerAddress || existingSale?.buyerAddress,
+          trackingNumber: r.trackingNumber || existingSale?.trackingNumber,
+          carrier: r.carrier || existingSale?.carrier,
+          trackingUrl: r.trackingUrl || existingSale?.trackingUrl,
+          adId: r.adId || existingSale?.adId,
+          sku: r.sku || existingSale?.sku
+        });
       });
+    }
 
-      const isExplicitlyPaidInEntrada = (recordsToUseEntrada || []).some(eRec => {
-        const eId = String(eRec.id || '').trim();
-        if (eId !== searchId && !searchId.includes(eId) && !eId.includes(searchId)) return false;
-        const tipo = String(eRec.releaseStatus || eRec.description || '').toLowerCase().trim();
-        if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
-        const opStat = String(eRec.operationStatus || '').toLowerCase().trim();
-        if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
-          return false;
-        }
-        return true;
-      });
-
-      let protectedStatus: 'pending' | 'completed' | 'refunded' | 'ignored' = 'pending';
-      if (finalStatus === 'ignored') {
-        protectedStatus = 'ignored';
-      } else if (finalStatus === 'refunded') {
-        protectedStatus = 'refunded';
-      } else if (isExplicitlyCanceledInEntrada) {
-        // Se foi cancelado no extrato do Mercado Pago / Entrada de Valores, a venda NUNCA fica como liberada
-        protectedStatus = 'pending';
-      } else if (isExplicitlyPaidInEntrada) {
-        // Confirmado como Pago e Liberação na Entrada de Valores
-        protectedStatus = 'completed';
-      } else if (s.date) {
-        // Regra do Manual: Vendas sem Entrada de Valores confirmada ficam como Pendente (Faturamento Previsto)
-        // a menos que já tenham completado 30 dias desde a venda
-        const saleDateObj = new Date(s.date + 'T12:00:00');
-        const nowObj = new Date();
-        saleDateObj.setHours(0, 0, 0, 0);
-        nowObj.setHours(0, 0, 0, 0);
-        const diffTime = nowObj.getTime() - saleDateObj.getTime();
-        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays >= 30) {
-          protectedStatus = 'completed';
-        } else {
-          protectedStatus = 'pending';
-        }
-      } else {
-        protectedStatus = 'pending';
+    // Incluir vendas manuais ou vendas diretas pré-existentes que não sejam do relatório ML
+    validCloudSales.forEach(s => {
+      const sCleanId = cleanMlSaleId(s.mlSaleId) || cleanMlSaleId(s.id) || String(s.id || '').trim();
+      if (!processedSaleIds.has(sCleanId) && !s.isMlSale) {
+        processedSaleIds.add(sCleanId);
+        reconciledSales.push(s);
       }
+    });
 
-      return {
-        ...s,
-        id: cleanSaleId,
-        productId,
-        productName,
-        status: protectedStatus,
-        salePrice,
-        purchasePrice,
-        quantity,
-        discount,
-        mlFee,
-        shippingCost,
-        shippingRevenue: shipRev,
-        grossProfit,
-        netProfit,
-        mlSaleId,
-        isMlSale,
-        lossAmount,
-        lossReason,
-        shippingType,
-        isCustomSale,
-        customMlFee,
-        customShippingCost,
-        buyerName,
-        buyerDocument,
-        buyerAddress,
-        trackingNumber,
-        carrier,
-        trackingUrl,
-        adId: s.adId || (originalRecord ? originalRecord.adId : undefined),
-        sku: s.sku || (originalRecord ? originalRecord.sku : undefined)
-      };
-    }).filter(s => s !== null);
+    const finalSanitizedSales = reconciledSales;
 
-    const uniqueSalesMap = new Map<string, any>();
-    const finalSanitizedSales: any[] = [];
-    
-    sanitizedSales.forEach(s => {
-      if (s.isMlSale && s.mlSaleId) {
-        if (!uniqueSalesMap.has(s.mlSaleId)) {
-          uniqueSalesMap.set(s.mlSaleId, s);
-          finalSanitizedSales.push(s);
-        } else {
-          const existing = uniqueSalesMap.get(s.mlSaleId)!;
-          if (s.lossAmount && !existing.lossAmount) {
-            Object.assign(existing, s);
-          }
-        }
-      } else {
-        finalSanitizedSales.push(s);
-      }
+    // Avaliar status de arquivamento dos produtos (Regra dos 30 dias sem vendas)
+    sanitizedProducts.forEach(p => {
+      const activity = getProductSalesActivity(p, finalSanitizedSales, sanitizedProducts);
+      p.status = activity.isArchived ? 'archived' : 'active';
     });
 
     return { products: sanitizedProducts, sales: finalSanitizedSales };
@@ -492,9 +467,20 @@ export default function App() {
       setCloudSyncError(null);
       try {
         console.log('Buscando dados em tempo real da planilha do Google Sheets...', webAppUrl);
-        const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
-        const response = await fetch(url);
-        const result = await response.json().catch(() => null);
+        let activeUrlToTry = webAppUrl;
+        let response = await fetch(`/api/sync-sheets?webAppUrl=${encodeURIComponent(activeUrlToTry)}`);
+        let result = await response.json().catch(() => null);
+        
+        // Se a URL falhou (404/500/abort), tenta recuperar automaticamente a URL atualizada da aba Database da planilha
+        if (!response.ok || (result && result.status === 'error' && (result.message?.includes('404') || result.message?.includes('aborted')))) {
+          console.warn('Tentativa de sincronização falhou. Recuperando Web App URL atualizada da planilha...');
+          const freshUrl = await forceFetchWebAppUrl();
+          if (freshUrl && freshUrl !== activeUrlToTry) {
+            activeUrlToTry = freshUrl;
+            response = await fetch(`/api/sync-sheets?webAppUrl=${encodeURIComponent(activeUrlToTry)}`);
+            result = await response.json().catch(() => null);
+          }
+        }
         
         if (!response.ok) {
           throw new Error(result?.message || `HTTP ${response.status}`);
@@ -522,6 +508,22 @@ export default function App() {
             setEntradaRecords(filtered);
           }
           
+          // Sincronizar produtos banidos do Google Sheets
+          if (result.bannedProducts && Array.isArray(result.bannedProducts)) {
+            setBannedProducts(prev => {
+              const setNames = new Set(prev.map(b => String(b).trim().toLowerCase()));
+              const newItems = [...prev];
+              result.bannedProducts.forEach((b: any) => {
+                const str = typeof b === 'string' ? b : (b.name || String(b));
+                if (str && !setNames.has(str.trim().toLowerCase())) {
+                  setNames.add(str.trim().toLowerCase());
+                  newItems.push(str.trim());
+                }
+              });
+              return newItems;
+            });
+          }
+
           // Sincronizar o capital inicial / aporte
           if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
             if (result.hasConfigSheet || result.initialCapital !== 500) {
@@ -537,7 +539,10 @@ export default function App() {
         }
       } catch (err: any) {
         console.error('Erro ao recuperar dados iniciais da nuvem:', err);
-        const detailMsg = err.message || String(err);
+        let detailMsg = err.message || String(err);
+        if (detailMsg.includes('aborted') || detailMsg.includes('AbortError') || detailMsg.includes('timeout')) {
+          detailMsg = 'A resposta da planilha excedeu o tempo limite. Clique em "Atualizar Agora" no topo para tentar novamente.';
+        }
         setCloudSyncError(`Sincronização pendente: ${detailMsg}`);
         // Se falhar o carregamento, NÃO marcamos como fetched para bloquear escrita acidental e incentivar nova tentativa manual
         setHasFetchedFromCloud(false);
@@ -583,6 +588,21 @@ export default function App() {
             return true;
           });
           setEntradaRecords(filtered);
+        }
+
+        if (result.bannedProducts && Array.isArray(result.bannedProducts)) {
+          setBannedProducts(prev => {
+            const setNames = new Set(prev.map(b => String(b).trim().toLowerCase()));
+            const newItems = [...prev];
+            result.bannedProducts.forEach((b: any) => {
+              const str = typeof b === 'string' ? b : (b.name || String(b));
+              if (str && !setNames.has(str.trim().toLowerCase())) {
+                setNames.add(str.trim().toLowerCase());
+                newItems.push(str.trim());
+              }
+            });
+            return newItems;
+          });
         }
         
         // Sincronizar o capital inicial / aporte
@@ -716,9 +736,8 @@ export default function App() {
   useEffect(() => {
     if (!webAppUrl) return;
     
-    // Trava de segurança máxima: se não houve alteração manual pelo usuário, se ainda está buscando,
-    // ou se a lista de produtos estiver vazia, BLOQUEIA totalmente qualquer envio à nuvem!
-    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite || !products || products.length === 0) return;
+    // Trava de segurança: se não houve alteração pendente pelo usuário ou se ainda está buscando da nuvem, bloqueia o envio
+    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite) return;
 
     const syncTimeout = setTimeout(async () => {
       setIsCloudSyncing(true);
@@ -729,7 +748,7 @@ export default function App() {
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix })
+          body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, bannedProducts })
         });
 
         if (!response.ok) {
@@ -754,6 +773,29 @@ export default function App() {
     return () => clearTimeout(syncTimeout);
   }, [products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
 
+  const handlePushToCloudExplicit = async () => {
+    if (!webAppUrl) return;
+    setIsCloudSyncing(true);
+    setCloudSyncError(null);
+    try {
+      const response = await fetch('/api/sync-sheets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.status !== 'success') {
+        throw new Error(result.message || `HTTP ${response.status}`);
+      }
+      setHasPendingWrite(false);
+    } catch (err: any) {
+      console.error('Erro ao enviar para o Sheets:', err);
+      setCloudSyncError(err.message || String(err));
+    } finally {
+      setIsCloudSyncing(false);
+    }
+  };
+
   // Atualização em memória das vendas pendentes (conclusão por 30 dias apenas para exibição no painel, sem disparar escrita na nuvem)
   useEffect(() => {
     let changed = false;
@@ -766,7 +808,8 @@ export default function App() {
         return s;
       }
 
-      const saleDate = new Date(s.date + 'T12:00:00');
+      const saleDate = parseMLDate(s.date);
+      if (!saleDate) return s;
       saleDate.setHours(0, 0, 0, 0);
       const diffTime = now.getTime() - saleDate.getTime();
       const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
@@ -827,6 +870,46 @@ export default function App() {
 
   const handleDeleteProduct = (id: string) => {
     const nextProducts = products.filter(p => p.id !== id);
+    setProducts(nextProducts);
+    const reSanitized = sanitizeCloudData(nextProducts, sales, mlRecords, entradaRecords);
+    setSales(reSanitized.sales);
+    setHasPendingWrite(true);
+  };
+
+  const handleBanProduct = (productTarget: string) => {
+    const normName = String(productTarget || '').trim();
+    if (!normName) return;
+
+    const lowerName = normName.toLowerCase();
+
+    setBannedProducts(prev => {
+      if (prev.some(b => b.trim().toLowerCase() === lowerName)) return prev;
+      return [...prev, normName];
+    });
+
+    const nextProducts = products.filter(p => {
+      const pNameLower = String(p.name || '').trim().toLowerCase();
+      const pSkuLower = String(p.sku || '').trim().toLowerCase();
+      return pNameLower !== lowerName && pSkuLower !== lowerName;
+    });
+
+    setProducts(nextProducts);
+    const reSanitized = sanitizeCloudData(nextProducts, sales, mlRecords, entradaRecords);
+    setSales(reSanitized.sales);
+    setHasPendingWrite(true);
+  };
+
+  const handleUnbanProduct = (productName: string) => {
+    const normName = productName.trim().toLowerCase();
+    setBannedProducts(prev => prev.filter(b => b.trim().toLowerCase() !== normName));
+    setHasPendingWrite(true);
+  };
+
+  const handleUnlinkAllProducts = () => {
+    const nextProducts = products.map(p => ({
+      ...p,
+      skus: []
+    }));
     setProducts(nextProducts);
     const reSanitized = sanitizeCloudData(nextProducts, sales, mlRecords, entradaRecords);
     setSales(reSanitized.sales);
@@ -1089,63 +1172,40 @@ export default function App() {
   };
 
   const handleImportMLRecords = async (records: MLImportRecord[]) => {
-    // 0. Remover do estoque quaisquer produtos criados indevidamente com nomes booleanos ("Sim", "Não")
-    let updatedProducts = products.filter(p => {
-      const n = (p.name || '').trim().toLowerCase();
-      return n !== 'sim' && n !== 'não' && n !== 'nao';
-    });
+    // 0. Filtrar rigorosamente produtos no estoque garantindo que apenas títulos válidos permaneçam
+    let updatedProducts = products.filter(p => p && isValidProductTitle(p.name));
     let updatedSales = [...sales];
     
     records.forEach((r, idx) => {
           // Limpar e sanitizar adTitle
           let cleanTitle = (r.adTitle || '').trim();
-          if (['sim', 'não', 'nao', 'true', 'false', 'produto mercado livre'].includes(cleanTitle.toLowerCase())) {
+          if (!isValidProductTitle(cleanTitle)) {
             cleanTitle = '';
           }
-          if (!cleanTitle && r.sku && !['sim', 'não', 'nao', 'true', 'false'].includes(r.sku.trim().toLowerCase())) {
+          if (!cleanTitle && r.sku && isValidProductTitle(r.sku)) {
             cleanTitle = r.sku;
           }
           r.adTitle = cleanTitle;
 
-          // 1. O Princípio da Fonte Única de Verdade (SSOT): Se o produto não existe no estoque, ignorar.
+          // Formatar data da venda de forma segura e padronizada (YYYY-MM-DD)
+          let formattedDate = toStandardDateISO(r.dateStr || '');
+
+          // 1. Localizar produto no catálogo
           let matchingProduct = findMatchingProduct(r, updatedProducts);
 
-          const finalSaleTitle = (r.adTitle && !['sim', 'não', 'nao', 'produto mercado livre'].includes(r.adTitle.trim().toLowerCase()))
+          let isIgnored = false;
+          if (!matchingProduct) {
+            // Regra POP 1.2 SSOT e 1.4: Se o produto não existe no estoque fornecido pelo usuário, a venda é isolada e enviada para Vendas Ignoradas
+            isIgnored = true;
+          }
+          // Regra do Usuário: O sistema NUNCA auto-vincula IDs de anúncio ao produto.
+          // Vinculação é realizada EXCLUSIVAMENTE pelo usuário de forma manual se ele desejar.
+
+          const finalSaleTitle = (r.adTitle && isValidProductTitle(r.adTitle))
             ? r.adTitle
             : (matchingProduct ? matchingProduct.name : 'Venda Desconhecida');
 
           let finalProductId = matchingProduct ? matchingProduct.id : '';
-
-          let isIgnored = false;
-          if (!matchingProduct) {
-            // Regra do Manual 1.2: Todo produto que não conste imputado manualmente deve ser ignorado.
-            finalProductId = r.sku || r.adId || '';
-            isIgnored = false; // was true
-          }
-          
-          // Formatar data da venda (de "6 de julho de 2026 20:02" para "2026-07-06")
-          let formattedDate = new Date().toISOString().split('T')[0];
-          if (r.dateStr) {
-            if (r.dateStr.includes('de')) {
-              const parts = r.dateStr.split(' ');
-              if (parts.length >= 5) {
-                const day = parts[0].padStart(2, '0');
-                const monthStr = parts[2].toLowerCase();
-                const year = parts[4];
-                const monthMap: { [key: string]: string } = {
-                  janeiro: '01', fevereiro: '02', marco: '03', abril: '04', maio: '05', junho: '06',
-                  julho: '07', agosto: '08', setembro: '09', outubro: '10', novembro: '11', dezembro: '12'
-                };
-                const month = monthMap[monthStr] || '07';
-                formattedDate = `${year}-${month}-${day}`;
-              }
-            } else if (r.dateStr.includes('-')) {
-              const parts = r.dateStr.split('-');
-              if (parts.length === 3) {
-                formattedDate = r.dateStr;
-              }
-            }
-          }
 
           // 2. Mapear status do ML para status da venda com base estrita no período de 30 dias se não for reembolsada
           let saleStatus: 'completed' | 'pending' | 'refunded' | 'ignored' = 'completed';
@@ -1168,13 +1228,17 @@ export default function App() {
           } else if (isRefunded) {
             saleStatus = 'refunded';
           } else {
-            const saleDateObj = new Date(formattedDate + 'T12:00:00');
-            const nowObj = new Date();
-            saleDateObj.setHours(0, 0, 0, 0);
-            nowObj.setHours(0, 0, 0, 0);
-            const diffTime = nowObj.getTime() - saleDateObj.getTime();
-            const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-            saleStatus = diffDays < 30 ? 'pending' : 'completed';
+            const saleDateObj = parseMLDate(formattedDate);
+            if (saleDateObj) {
+              const nowObj = new Date();
+              saleDateObj.setHours(0, 0, 0, 0);
+              nowObj.setHours(0, 0, 0, 0);
+              const diffTime = nowObj.getTime() - saleDateObj.getTime();
+              const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+              saleStatus = diffDays < 30 ? 'pending' : 'completed';
+            } else {
+              saleStatus = 'pending';
+            }
           }
           
           const totalSaleValue = r.productRevenue;
@@ -1330,6 +1394,12 @@ export default function App() {
       } else {
         deduplicatedSales.push(s);
       }
+    });
+
+    // Atualizar status de arquivamento dos produtos (Regra de 30 dias sem vendas)
+    updatedProducts.forEach(p => {
+      const activity = getProductSalesActivity(p, deduplicatedSales, updatedProducts);
+      p.status = activity.isArchived ? 'archived' : 'active';
     });
 
     setSales(deduplicatedSales);
@@ -1539,10 +1609,14 @@ export default function App() {
           <StockControl
             products={products}
             sales={sales}
+            bannedProducts={bannedProducts}
             onAddProduct={handleAddProduct}
             onEditProduct={handleEditProduct}
             onDeleteProduct={handleDeleteProduct}
+            onBanProduct={handleBanProduct}
+            onUnbanProduct={handleUnbanProduct}
             onClearDatabase={handleClearDatabase}
+            onUnlinkAllProducts={handleUnlinkAllProducts}
           />
         )}
 
@@ -1581,7 +1655,7 @@ export default function App() {
             onImportRecords={handleImportMLRecords}
             onClearRecords={handleClearMLRecords}
             isSheetsConnected={!!webAppUrl || !!spreadsheetUrl}
-            onPushToCloud={() => setHasPendingWrite(true)}
+            onPushToCloud={handlePushToCloudExplicit}
             isSyncing={isCloudSyncing}
             onImportRecebimentos={handleImportRecebimentos}
           />

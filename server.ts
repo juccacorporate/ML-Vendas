@@ -94,7 +94,7 @@ async function startServer() {
 
     try {
       console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
-      const response = await fetchWithTimeout(webAppUrl, {}, 45000);
+      const response = await fetchWithTimeout(webAppUrl, {}, 60000, 1);
 
       if (!response.ok) {
         let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
@@ -127,13 +127,14 @@ async function startServer() {
       return res.json(responseData);
     } catch (error: any) {
       console.error('Erro de Sincronização no Servidor Proxy (GET):', error);
+      const isAbort = error.name === 'AbortError' || error.code === 'ABORT_ERR' || String(error).includes('aborted') || String(error).includes('AbortError');
       let errorMsg = error.message || String(error);
-      if (error.name === 'AbortError') {
-        errorMsg = 'A planilha do Google Sheets demorou demais para responder (Tempo Limite de 45s Excedido). Certifique-se de que o link do Web App do Apps Script está correto, ativo e que sua planilha não possui centenas de milhares de linhas vazias que atrasam a resposta.';
+      if (isAbort) {
+        errorMsg = 'A conexão com o Google Sheets demorou mais do que o esperado (Tempo limite excedido). Por favor, clique em "Atualizar Agora" para re-tentar.';
       }
       return res.status(500).json({
         status: 'error',
-        message: `Ocorreu um erro ao buscar os dados na sua planilha: ${errorMsg}`
+        message: errorMsg
       });
     }
   });
@@ -168,7 +169,7 @@ async function startServer() {
           'Content-Type': 'text/plain;charset=utf-8'
         },
         body: JSON.stringify({ products, sales, initialCapital, mlRecords, entradaRecords: req.body.entradaRecords, entradaRawMatrix: req.body.entradaRawMatrix })
-      }, 45000);
+      }, 60000, 1);
 
       if (!response.ok) {
         let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
@@ -201,13 +202,14 @@ async function startServer() {
       return res.json(responseData);
     } catch (error: any) {
       console.error('Erro de Sincronização no Servidor Proxy:', error);
+      const isAbort = error.name === 'AbortError' || error.code === 'ABORT_ERR' || String(error).includes('aborted') || String(error).includes('AbortError');
       let errorMsg = error.message || String(error);
-      if (error.name === 'AbortError') {
-        errorMsg = 'O envio demorou demais para responder (Tempo Limite de 45s Excedido). Verifique o Web App do Apps Script.';
+      if (isAbort) {
+        errorMsg = 'O envio de dados demorou mais do que o esperado (Tempo limite excedido). Verifique sua conexão e tente salvar novamente.';
       }
       return res.status(500).json({
         status: 'error',
-        message: `Ocorreu um erro ao gravar os dados na sua planilha: ${errorMsg}`
+        message: errorMsg
       });
     }
   });

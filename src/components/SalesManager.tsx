@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product, Sale } from '../types';
-import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock, normalizeName, cleanMlSaleId, getSaleMlId } from '../utils';
+import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock, normalizeName, cleanMlSaleId, getSaleMlId, isValidProductTitle } from '../utils';
 import { ShoppingCart, Plus, Search, Calendar, Landmark, Info, Trash2, ArrowRightCircle, AlertCircle, TrendingUp, Clock, Edit3, X } from 'lucide-react';
 
 interface SalesManagerProps {
@@ -235,6 +235,10 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
   const uniqueSales = React.useMemo(() => {
     const uniqueSalesMap = new Map<string, Sale>();
     sales.forEach(sale => {
+      // Regra Anti-Ruído: descartar qualquer venda cujo título seja inválido (números avulsos, datas, booleanos)
+      if (sale.productName && !isValidProductTitle(sale.productName)) {
+        return;
+      }
       const realMlId = getSaleMlId(sale);
       const key = realMlId ? `ml_${realMlId}` : sale.id;
       if (!uniqueSalesMap.has(key)) {
@@ -323,7 +327,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                   className="w-full bg-white/5 border border-white/10 rounded-xl p-3 text-xs text-white font-bold focus:outline-none focus:ring-2 focus:ring-[#FFE600]/30 cursor-pointer"
                 >
                   <option value="" className="bg-[#121212] text-white">-- Escolha um produto do estoque --</option>
-                  {products.map(p => {
+                  {products.filter(p => isValidProductTitle(p.name)).map(p => {
                     const cStock = calculateCurrentStock(p, sales, products);
                     return (
                       <option key={p.id} value={p.id} disabled={cStock === 0} className="bg-[#121212] text-white">

@@ -38,10 +38,20 @@ interface SheetsIntegrationProps {
   entradaRawMatrix?: any[][];
 }
 
-const APPS_SCRIPT_CODE = `function cleanMlSaleId(raw) {
+const APPS_SCRIPT_CODE = `function cleanMlSaleIdScript(raw) {
   if (!raw && raw !== 0) return "";
   var str = String(raw).trim();
   if (!str) return "";
+
+  // Tratamento de notação científica originada do Excel (ex: 2.00001E+15)
+  if (/^(\\d+(?:\\.\\d+)?)[eE]\\+(\\d+)$/i.test(str)) {
+    try {
+      var num = Number(str);
+      if (!isNaN(num) && num > 0) {
+        str = Math.round(num).toString();
+      }
+    } catch(e) {}
+  }
 
   // 1. Sequência numérica oficial de pedidos do Mercado Livre (ex: 200000...)
   var mlMatch = str.match(/\\b(200\\d{7,20}|\\d{10,24})\\b/);
@@ -76,6 +86,10 @@ const APPS_SCRIPT_CODE = `function cleanMlSaleId(raw) {
   }
 
   return str;
+}
+
+function cleanMlSaleId(raw) {
+  return cleanMlSaleIdScript(raw);
 }
 
 function normalizeNameScript(str) {
@@ -233,7 +247,12 @@ function doPost(e) {
     // 1. Sincronizar Produtos (Garante que adições, edições, arquivamentos e exclusões reflitam exatamente no Google Sheets)
     // Trava de Segurança: NUNCA limpar a aba de produtos se a lista enviada estiver vazia
     if (payload.products && Array.isArray(payload.products) && payload.products.length > 0) {
-      var productSheet = ss.getSheetByName("Produtos") || ss.insertSheet("Produtos");
+      var productSheet = ss.getSheetByName("Produtos") || 
+                         ss.getSheetByName("Database ML") || 
+                         ss.getSheetByName("Database") || 
+                         ss.getSheetByName("Estoque") || 
+                         ss.getSheetByName("Controle de Estoque") || 
+                         ss.insertSheet("Produtos");
       var prodHeaders = [
         "ID Produto", "Nome Produto", "SKU", "# de Anúncio / SKUs Vinculados", "Preço de Compra", "Preço de Venda",
         "Estoque Inicial", "Saídas", "Estoque Atual", "Estoque Mínimo", "Data de Entrada",
@@ -542,7 +561,22 @@ function doPost(e) {
       }
     }
     
-    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas de vendas, produtos e Entrada de Valores atualizadas na planilha. 🚀", products: payload.products }))
+    // 3. Sincronizar Produtos Banidos (Cria/atualiza a aba "Produtos Banidos")
+    if (payload.bannedProducts && Array.isArray(payload.bannedProducts)) {
+      var bannedSheet = ss.getSheetByName("Produtos Banidos") || ss.insertSheet("Produtos Banidos");
+      bannedSheet.clear();
+      bannedSheet.appendRow(["Nome do Produto / ID Banido", "Data do Banimento"]);
+      if (payload.bannedProducts.length > 0) {
+        var bannedRows = payload.bannedProducts.map(function(bItem) {
+          var bName = typeof bItem === 'string' ? bItem : (bItem.name || bItem.id || String(bItem));
+          var bDate = (typeof bItem === 'object' && bItem.date) ? bItem.date : Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), "yyyy-MM-dd");
+          return [bName, bDate];
+        });
+        bannedSheet.getRange(2, 1, bannedRows.length, 2).setValues(bannedRows);
+      }
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ status: "success", message: "Conectado e gravado com sucesso! Abas de vendas, produtos, Entrada de Valores e Produtos Banidos atualizadas na planilha. 🚀", products: payload.products }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
@@ -588,9 +622,48 @@ function doGet(e) {
       return String(val);
     }
 
+    // 0. Ler Produtos Banidos
+    var bannedProducts = [];
+    var bannedSheet = ss.getSheetByName("Produtos Banidos");
+    if (bannedSheet) {
+      var bannedData = bannedSheet.getDataRange().getValues();
+      if (bannedData.length > 1) {
+        for (var bI = 1; bI < bannedData.length; bI++) {
+          var bName = String(bannedData[bI][0] || "").trim();
+          if (bName && bannedProducts.indexOf(bName) === -1) {
+            bannedProducts.push(bName);
+          }
+        }
+      }
+    }
+
     // 1. Ler Produtos
     var products = [];
-    var productSheet = ss.getSheetByName("Produtos");
+    var productSheet = ss.getSheetByName("Produtos") || 
+                       ss.getSheetByName("Database ML") || 
+                       ss.getSheetByName("Database") || 
+                       ss.getSheetByName("Estoque") || 
+                       ss.getSheetByName("Controle de Estoque") || 
+                       ss.getSheetByName("Cadastro de Produtos") || 
+                       ss.getSheetByName("Produtos / Estoque");
+
+    if (!productSheet && ss.getSheets().length > 0) {
+      var allSheets = ss.getSheets();
+      for (var sIdx = 0; sIdx < allSheets.length; sIdx++) {
+        var shName = allSheets[sIdx].getName();
+        if (shName !== "Vendas em Andamento" && shName !== "Vendas Finalizadas" && shName !== "Vendas" && shName !== "Importe Mercado Livre" && shName !== "Entrada de Valores" && shName !== "Dados e Vendas Desprezadas" && shName !== "Config") {
+          var testData = allSheets[sIdx].getDataRange().getValues();
+          if (testData && testData.length > 0) {
+            var firstRowStr = testData[0].join(" ").toLowerCase();
+            if (firstRowStr.indexOf("produto") !== -1 || firstRowStr.indexOf("sku") !== -1 || firstRowStr.indexOf("anúncio") !== -1 || firstRowStr.indexOf("anuncio") !== -1 || firstRowStr.indexOf("estoque") !== -1) {
+              productSheet = allSheets[sIdx];
+              break;
+            }
+          }
+        }
+      }
+    }
+
     if (productSheet) {
       var prodData = productSheet.getDataRange().getValues();
       if (prodData.length > 1) {
@@ -623,8 +696,42 @@ function doGet(e) {
         
         for (var i = 1; i < prodData.length; i++) {
           var row = prodData[i];
-          if (!row[idxId]) continue;
+          if (!row[idxId] && !row[idxName]) continue;
           
+          var pNameStr = String(row[idxName] || "").trim();
+          if (!pNameStr || pNameStr.length < 3) continue;
+          var lowerPName = pNameStr.toLowerCase();
+          
+          // Filtrar lixos, datas e produtos de teste
+          if (
+            lowerPName === "sim" || lowerPName === "não" || lowerPName === "nao" ||
+            lowerPName === "cabo teste" || lowerPName === "cb293c" || lowerPName === "produto teste" ||
+            lowerPName.indexOf("cabo teste") !== -1 || lowerPName.indexOf("produto mercado livre") !== -1 ||
+            lowerPName.indexOf("venda desconhecida") !== -1 || lowerPName.indexOf("null") !== -1 ||
+            lowerPName.indexOf("undefined") !== -1
+          ) {
+            continue;
+          }
+          
+          // Checar se o nome é uma data ou mês/ano
+          if (
+            /(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de)?\s*\d{4}/i.test(pNameStr) ||
+            /^\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}/.test(pNameStr) ||
+            /^\d{4}[\/\.-]\d{1,2}[\/\.-]\d{1,2}/.test(pNameStr)
+          ) {
+            continue;
+          }
+
+          // Checar se é um produto banido pelo usuário
+          var isBannedProd = false;
+          for (var bIdx = 0; bIdx < bannedProducts.length; bIdx++) {
+            if (bannedProducts[bIdx].toLowerCase().trim() === lowerPName) {
+              isBannedProd = true;
+              break;
+            }
+          }
+          if (isBannedProd) continue;
+
           var addedDateStr = formatSheetDate(row[idxAddedDate]);
           
           var statusVal = idxStatus !== -1 ? String(row[idxStatus]) : 'active';
@@ -1134,7 +1241,8 @@ function doGet(e) {
       initialCapital: initialCapital,
       hasConfigSheet: hasConfigSheet,
       mlRecords: mlRecords,
-      entradaRecords: entradaRecords
+      entradaRecords: entradaRecords,
+      bannedProducts: bannedProducts
     }))
     .setMimeType(ContentService.MimeType.JSON);
     

@@ -52,10 +52,95 @@ export function extractTokens(str: string): string[] {
 }
 
 /**
+ * Detecta se uma string representa uma data ou horário (ex: "25 de agosto de 2026 09:59 hs.", "8 de outubro 2026", "outubro 2026")
+ */
+export function isDateLikeString(val: any): boolean {
+  if (!val && val !== 0) return false;
+  const str = String(val).trim().toLowerCase();
+  if (!str) return false;
+  
+  const monthRegex = /(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)/i;
+
+  // Se a string inteira é apenas um mês (ex: "outubro") ou mês com ano (ex: "outubro 2026", "setembro 2026", "outubro de 2026")
+  if (monthRegex.test(str)) {
+    // Se contém ano de 4 dígitos ou dia
+    if (/\b(20\d{2}|19\d{2})\b/.test(str) || /\b\d{1,2}\b/.test(str)) {
+      return true;
+    }
+    // Se a string consiste quase inteiramente apenas do nome do mês
+    const stripped = str.replace(monthRegex, '').replace(/[\s\-_,\.\/de]+/g, '').trim();
+    if (!stripped) return true;
+  }
+
+  // Padrão com meses por extenso em português
+  if (/\b\d{1,2}\s+de\s+(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)/i.test(str)) {
+    return true;
+  }
+  if (/\b(janeiro|fevereiro|mar[cç]o|abril|maio|junho|julho|agosto|setembro|outubro|novembro|dezembro)\s*(?:de)?\s*\d{4}/i.test(str)) {
+    return true;
+  }
+  // Padrão numérico dd/mm/aaaa ou aaaa-mm-dd
+  if (/^\d{1,2}[\/\.-]\d{1,2}[\/\.-]\d{2,4}/.test(str)) {
+    return true;
+  }
+  if (/^\d{4}[\/\.-]\d{1,2}[\/\.-]\d{1,2}/.test(str)) {
+    return true;
+  }
+  // Horários e marcadores de hora de relatórios
+  if (str.includes('hs.') || str.includes('hrs.') || /\b\d{1,2}:\d{2}\b/.test(str)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Valida rigorosamente se um texto pode ser um Título de Anúncio / Nome de Produto real
+ */
+export function isValidProductTitle(val: any): boolean {
+  if (!val && val !== 0) return false;
+  const str = String(val).trim();
+  if (str.length < 3) return false;
+  const lower = str.toLowerCase();
+  
+  // Nomes de teste, gerados automaticamente ou lixos
+  const banned = [
+    'sim', 'não', 'nao', 'true', 'false', 'sem sku', 'sem id', 'produto mercado livre', 
+    'venda desconhecida', 'produto', 'null', 'undefined', 'n/a', 'total', 'subtotal',
+    'entregue', 'a caminho', 'chegou', 'cancelado', 'em preparação', 'processando no centro de distribuição',
+    'mercado envios', 'classico', 'clássico', 'premium', 'cabo teste', 'teste', 'cb293c',
+    'cabo de teste', 'produto teste', 'item mercado livre'
+  ];
+  if (banned.includes(lower)) return false;
+  
+  // Rejeitar qualquer título que contenha "cabo teste", "teste" isolado, etc
+  if (/\b(cabo teste|cb293c|produto teste|anúncio mlb|anuncio mlb)\b/i.test(lower)) return false;
+  if (lower.startsWith('anúncio ') || lower.startsWith('anuncio ') || lower.startsWith('prod_')) return false;
+
+  if (isDateLikeString(str)) return false;
+  
+  // Rejeita se for puramente números
+  if (/^[0-9\.\,\-\s]+$/.test(str)) return false;
+  
+  // Rejeita se for puramente código de anúncio (MLB...)
+  if (/^mlb\d+$/i.test(str)) return false;
+
+  // Rejeita se for apenas códigos de modelo/SKU curtos ou isolados (ex: CB309C, B01, etc) sem descrição textual
+  if (/^[a-z0-9\-_]{2,8}$/i.test(str) && !/\s/.test(str) && !/[a-z]{3,}/i.test(str)) {
+    return false;
+  }
+  
+  return true;
+}
+
+/**
  * Encontra o produto correspondente para uma venda no catálogo de produtos
  */
 export function findProductForSale(s: Sale, productsList: Product[]): Product | undefined {
   if (!productsList || productsList.length === 0) return undefined;
+
+  // Filtrar apenas produtos com nomes válidos (elimina produtos espúrios de datas)
+  const validProducts = productsList.filter(p => p && isValidProductTitle(p.name));
+  if (validProducts.length === 0) return undefined;
 
   // 1. Tentar por ID de produto EXATO
   const sPid = String(s.productId || '').trim();
@@ -96,17 +181,6 @@ export function findProductForSale(s: Sale, productsList: Product[]): Product | 
     if (matchBySku) return matchBySku;
   }
 
-  // 4. Tentar por ID da Venda no ML
-  const mlId = (s.mlSaleId || s.id || '').replace(/^[#\s]+/, '').trim().toLowerCase();
-  if (mlId && mlId.length > 3) {
-    const matchByMlId = productsList.find(p => {
-      const allSkus = getAllProductSkus(p).map(x => String(x).replace(/^[#\s]+/, '').trim().toLowerCase());
-      const pIdClean = String(p.id || '').replace(/^[#\s]+/, '').trim().toLowerCase();
-      return allSkus.includes(mlId) || (pIdClean && pIdClean === mlId);
-    });
-    if (matchByMlId) return matchByMlId;
-  }
-
   // 4. Tentar por Nome / Título Normalizado Exato ou Substring
   const sNameNorm = normalizeName(s.productName || '');
   if (sNameNorm && sNameNorm.length > 3) {
@@ -117,7 +191,7 @@ export function findProductForSale(s: Sale, productsList: Product[]): Product | 
     if (matchByName) return matchByName;
   }
 
-  // 5. Tentar por Sobreposição de Tokens
+  // 5. Tentar por Sobreposição Alta de Tokens
   if (sNameNorm && sNameNorm.length > 3) {
     const sTokens = extractTokens(s.productName || '');
     const sType = getCoreProductType(s.productName || '');
@@ -135,7 +209,7 @@ export function findProductForSale(s: Sale, productsList: Product[]): Product | 
       const matchingTokens = pTokens.filter(t => sTokens.includes(t));
       const score = matchingTokens.length / Math.min(pTokens.length, sTokens.length);
 
-      if (matchingTokens.length >= 2 && score >= 0.5 && score > bestScore) {
+      if (matchingTokens.length >= 3 && score >= 0.8 && score > bestScore) {
         bestScore = score;
         bestMatch = p;
       }
@@ -227,26 +301,66 @@ export function calculateMLFee(salePrice: number, feeType: 'classic' | 'premium'
 }
 
 /**
+ * Faz parse robusto de qualquer formato de data do Mercado Livre (ex: "21 de setembro de 2026 15:46 hs.", "21/09/2026", "2026-09-21")
+ */
+export function parseMLDate(dateStr: string): Date | null {
+  if (!dateStr) return null;
+  const s = String(dateStr).trim();
+  
+  // Formato YYYY-MM-DD
+  const isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (isoMatch) {
+    return new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+  }
+  
+  // Formato DD/MM/YYYY
+  const brMatch = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})/);
+  if (brMatch) {
+    return new Date(parseInt(brMatch[3], 10), parseInt(brMatch[2], 10) - 1, parseInt(brMatch[1], 10));
+  }
+  
+  // Formato por extenso: "21 de setembro de 2026", "21 de setembro 2026 15:46 hs."
+  const monthMap: Record<string, number> = {
+    janeiro: 0, fevereiro: 1, marco: 2, 'março': 2, abril: 3, maio: 4, junho: 5,
+    julho: 6, agosto: 7, setembro: 8, outubro: 9, novembro: 10, dezembro: 11
+  };
+  const textMatch = s.match(/(\d{1,2})\s+de\s+([a-zç]+)(?:\s+de)?\s+(\d{4})/i);
+  if (textMatch) {
+    const day = parseInt(textMatch[1], 10);
+    const monthName = textMatch[2].toLowerCase();
+    const year = parseInt(textMatch[3], 10);
+    if (monthMap[monthName] !== undefined) {
+      return new Date(year, monthMap[monthName], day);
+    }
+  }
+
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * Converte qualquer formato de data para o padrão ISO YYYY-MM-DD
+ */
+export function toStandardDateISO(dateStr: string): string {
+  if (!dateStr) return new Date().toISOString().split('T')[0];
+  const d = parseMLDate(dateStr);
+  if (!d) return dateStr;
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
  * Calcula os dias que um produto está parado em estoque de forma imune a fusos horários
  */
 export function calculateDaysInStock(addedDateStr: string): number {
   if (!addedDateStr) return 0;
   
-  // Garante parsing local dividindo partes
-  const parts = addedDateStr.split('-');
-  let addedDate: Date;
-  if (parts.length === 3) {
-    const year = parseInt(parts[0], 10);
-    const month = parseInt(parts[1], 10) - 1;
-    const day = parseInt(parts[2], 10);
-    addedDate = new Date(year, month, day);
-  } else {
-    addedDate = new Date(addedDateStr);
-  }
+  const addedDate = parseMLDate(addedDateStr);
+  if (!addedDate) return 0;
   
   const now = new Date();
-  
-  // Reset time to compare days only
   addedDate.setHours(0, 0, 0, 0);
   now.setHours(0, 0, 0, 0);
 
@@ -623,6 +737,64 @@ export function extractMlOrderId(val: any): string {
   }
 
   return str;
+}
+
+/**
+ * Informações de atividade de vendas nos últimos 30 dias para um produto (Regra de Auto-Arquivamento)
+ */
+export function getProductSalesActivity(product: Product, sales: Sale[], allProducts?: Product[]) {
+  const productsList = allProducts && allProducts.length > 0 ? allProducts : [product];
+  const prodSales = (sales || []).filter(s => {
+    if (s.status === 'refunded') return false;
+    if (s.productId === product.id) return true;
+    const matched = findProductForSale(s, productsList);
+    return matched && matched.id === product.id;
+  });
+
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+
+  // Ordenar por data da mais recente para a mais antiga
+  const sortedSales = [...prodSales].sort((a, b) => {
+    const da = parseMLDate(a.date) || new Date(0);
+    const db = parseMLDate(b.date) || new Date(0);
+    return db.getTime() - da.getTime();
+  });
+  const lastSale = sortedSales[0];
+
+  let daysWithoutSale = 0;
+  let lastSaleDate = lastSale ? lastSale.date : undefined;
+
+  if (lastSale) {
+    const d = parseMLDate(lastSale.date) || now;
+    daysWithoutSale = Math.max(0, Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)));
+  } else {
+    const d = product.addedDate ? (parseMLDate(product.addedDate) || now) : now;
+    daysWithoutSale = Math.max(0, Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)));
+  }
+
+  // Filtrar vendas dos últimos 30 dias
+  const sales30d = prodSales.filter(s => {
+    const d = parseMLDate(s.date);
+    if (!d) return false;
+    const diff = Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24));
+    return diff <= 30;
+  });
+
+  const unitsSold30d = sales30d.reduce((acc, s) => acc + (Number(s.quantity) || 1), 0);
+  const revenue30d = sales30d.reduce((acc, s) => acc + ((Number(s.salePrice) || 0) * (Number(s.quantity) || 1)), 0);
+
+  // Arquivado automaticamente se não teve nenhuma venda nos últimos 30 dias
+  const isArchived = unitsSold30d === 0 && daysWithoutSale >= 30;
+
+  return {
+    isArchived,
+    daysWithoutSale,
+    lastSaleDate,
+    unitsSold30d,
+    revenue30d,
+    totalSalesCount: prodSales.length
+  };
 }
 
 

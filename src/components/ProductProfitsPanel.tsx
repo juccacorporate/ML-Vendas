@@ -131,12 +131,12 @@ export default function ProductProfitsPanel({
 
       if (!sale.date) return false;
       const saleDate = new Date(sale.date + 'T12:00:00');
-      const now = new Date(todayStr + 'T12:00:00');
-      const diffTime = Math.abs(now.getTime() - saleDate.getTime());
-      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      const refDate = new Date(maxDateStr + 'T12:00:00');
+      const diffTime = refDate.getTime() - saleDate.getTime();
+      const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-      if (selectedTimeframe === '30days') return diffDays <= 30;
-      if (selectedTimeframe === '7days') return diffDays <= 7;
+      if (selectedTimeframe === '30days') return diffDays >= 0 && diffDays <= 30;
+      if (selectedTimeframe === '7days') return diffDays >= 0 && diffDays <= 7;
       return true;
     });
   }, [uniqueSales, selectedTimeframe, customStartDate, customEndDate, todayStr]);

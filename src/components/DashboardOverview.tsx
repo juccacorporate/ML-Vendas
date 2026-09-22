@@ -110,12 +110,12 @@ export default function DashboardOverview({
     }
     
     const saleDate = parseLocalDate(sale.date);
-    const now = parseLocalDate(todayStr);
-    const diffTime = Math.abs(now.getTime() - saleDate.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    const refDate = parseLocalDate(maxDateStr);
+    const diffTime = refDate.getTime() - saleDate.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     
-    if (selectedTimeframe === '30days') return diffDays <= 30;
-    if (selectedTimeframe === '7days') return diffDays <= 7;
+    if (selectedTimeframe === '30days') return diffDays >= 0 && diffDays <= 30;
+    if (selectedTimeframe === '7days') return diffDays >= 0 && diffDays <= 7;
     return true;
   });
 

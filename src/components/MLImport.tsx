@@ -6,7 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { MLImportRecord, Product, findMatchingProduct } from '../types';
-import { formatCurrency, formatDate, cleanMlSaleId, extractMlOrderId } from '../utils';
+import { formatCurrency, formatDate, cleanMlSaleId, extractMlOrderId, isValidProductTitle, isDateLikeString } from '../utils';
 import { 
   Upload, 
   FileSpreadsheet, 
@@ -272,40 +272,37 @@ export default function MLImport({
       let rawTitle = idxAdTitle !== -1 ? cleanStr(row[idxAdTitle]) : '';
       const rawRevenue = idxProductRevenue !== -1 ? cleanNum(row[idxProductRevenue]) : 0;
       const rawSku = idxSku !== -1 ? cleanStr(row[idxSku]) : '';
+      const rawAdId = idxAdId !== -1 ? cleanStr(row[idxAdId]) : '';
 
-      // Se rawTitle for apenas um indicador booleano ("sim" ou "não"), descarta
-      if (['sim', 'não', 'nao', 'true', 'false'].includes(rawTitle.trim().toLowerCase())) {
+      // Se rawTitle for data, booleano ou inválido, zera
+      if (!isValidProductTitle(rawTitle)) {
         rawTitle = '';
       }
 
-      // Se rawTitle estiver vazio mas rawSku contiver texto real de produto, usa rawSku como rawTitle
-      if (!rawTitle && rawSku && rawSku.length > 3 && !['sim', 'não', 'nao', 'true', 'false'].includes(rawSku.trim().toLowerCase())) {
+      // Se rawTitle estiver vazio mas rawSku for um nome válido de produto, usa rawSku
+      if (!rawTitle && isValidProductTitle(rawSku)) {
         rawTitle = rawSku;
       }
 
-      // Se rawTitle não foi encontrado pela coluna, faz varredura de segurança nas células da linha
+      // Se rawTitle ainda não foi encontrado, faz varredura apenas nas colunas de texto (coluna 15 em diante)
+      // NUNCA varre as colunas iniciais (0 a 14) onde residem datas, IDs, status, valores monetários
       if (!rawTitle) {
-        for (let col = 0; col < row.length; col++) {
+        for (let col = Math.max(15, bestHeaderRowIndex); col < row.length; col++) {
           const cellStr = cleanStr(row[col]);
-          const normCell = cellStr.toLowerCase();
-          if (
-            cellStr.length > 5 &&
-            !['sim', 'não', 'nao', 'true', 'false', 'entregue', 'chegou', 'cancelado'].includes(normCell) &&
-            !normCell.includes('mercado envios') &&
-            !normCell.includes('classico') &&
-            !normCell.includes('premium') &&
-            !/^\d+$/.test(cellStr) &&
-            !cellStr.includes('http') &&
-            !cellStr.includes('@') &&
-            !cellStr.includes('r$')
-          ) {
+          if (isValidProductTitle(cellStr)) {
             rawTitle = cellStr;
             break;
           }
         }
       }
 
-      if (!rawId && !rawTitle && !rawRevenue && !rawSku) continue;
+      // REGRA DO MANUAL POP E DO USUÁRIO:
+      // "Se tiver alguma coisa em branco, por exemplo essa linha aqui que é um bug do relatório, DESCONSIDERA.
+      // Se vim sem informação, desconsidera. Se vim DATA desconsidera! Qualquer coisa que não for título do anúncio, pode apagar!"
+      if (!isValidProductTitle(rawTitle)) {
+        // Linha sem título de anúncio válido (ou é bug do relatório/linha vazia/linha de data) -> DESCONSIDERAR TOTALMENTE
+        continue;
+      }
 
       const recordId = rawId || `rec_${Date.now()}_${i}`;
 
@@ -330,8 +327,8 @@ export default function MLImport({
         totalBrl: idxTotal !== -1 ? cleanNum(row[idxTotal]) : 0,
         billingMonth: idxBillingMonth !== -1 ? cleanStr(row[idxBillingMonth]) : 'N/A',
         isAdSale: idxAdSale !== -1 ? cleanBool(row[idxAdSale]) : false,
-        adId: idxAdId !== -1 ? cleanStr(row[idxAdId]) : '',
-        adTitle: rawTitle || (rawSku ? `SKU: ${rawSku}` : 'Produto Mercado Livre'),
+        adId: rawAdId,
+        adTitle: rawTitle,
         variation: idxVariation !== -1 ? cleanStr(row[idxVariation]) : 'Padrão',
         adUnitPrice: idxUnitPrice !== -1 ? cleanNum(row[idxUnitPrice]) : 0,
         adType: idxAdType !== -1 ? cleanStr(row[idxAdType]) : 'Clássico',
@@ -358,7 +355,7 @@ export default function MLImport({
     }
 
     onImportRecords(importedRecords);
-    setImportSuccess(`Sucesso! ${importedRecords.length} transações do Mercado Livre importadas e integradas com sucesso.`);
+    setImportSuccess(`Sucesso! ${importedRecords.length} transações do Mercado Livre importadas e conciliadas com o estoque.`);
     setPasteArea('');
     return true;
   };

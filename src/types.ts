@@ -166,8 +166,8 @@ export function getCoreProductType(str: string): string {
 const INVALID_IDENTIFIERS = new Set(['sim', 'não', 'nao', 'ml']);
 const MIN_IDENTIFIER_LENGTH = 3;
 const MIN_DIGIT_LENGTH = 6;
-const MIN_TOKEN_COUNT = 2;
-const MIN_MATCH_SCORE = 0.5;
+const MIN_TOKEN_COUNT = 3;
+const MIN_MATCH_SCORE = 0.8;
 const MIN_TEXT_LENGTH = 3;
 
 export function normalizeIdentifier(val: string): string {
