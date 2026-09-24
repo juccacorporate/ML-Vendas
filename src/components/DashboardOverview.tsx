@@ -1412,9 +1412,9 @@ export default function DashboardOverview({
                   return (
                     <div key={p.id} className="bg-white/5 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
                       <div className="flex justify-between items-start gap-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold text-white truncate max-w-[170px]" title={p.name}>{p.name}</p>
-                          <span className="text-[9.5px] font-mono text-white/40 bg-white/5 px-1.5 py-0.2 rounded border border-white/5">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-bold text-white break-words whitespace-normal leading-snug" title={p.name}>{p.name}</p>
+                          <span className="text-[9.5px] font-mono text-white/40 bg-white/5 px-1.5 py-0.2 rounded border border-white/5 inline-block mt-1">
                             SKU: {p.sku || 'Sem SKU'}
                           </span>
                         </div>
@@ -1468,12 +1468,12 @@ export default function DashboardOverview({
                 {lowStockItems.map((prod) => {
                   const currentStock = calculateCurrentStock(prod, uniqueSales, products);
                   return (
-                    <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors">
-                      <div>
-                        <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
+                    <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-red-500/5 border border-red-500/10 hover:bg-red-500/10 transition-colors gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-white break-words whitespace-normal leading-snug">{prod.name}</p>
                         <p className="text-[10px] text-white/40 font-mono mt-0.5">SKU: {prod.sku}</p>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right shrink-0">
                         <span className="text-xs font-extrabold text-red-400 bg-red-500/10 px-2 py-0.5 rounded block border border-red-500/25">
                           Restam {currentStock} un.
                         </span>
@@ -1516,12 +1516,12 @@ export default function DashboardOverview({
                   const days = calculateDaysInStock(prod.addedDate);
                   const currentStock = calculateCurrentStock(prod, uniqueSales, products);
                   return (
-                    <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/10 hover:bg-amber-500/10 transition-colors">
-                      <div>
-                        <p className="text-xs font-bold text-white truncate max-w-[130px]">{prod.name}</p>
+                    <div key={prod.id} className="flex items-center justify-between p-2.5 rounded-xl bg-amber-500/5 border border-amber-500/10 hover:bg-amber-500/10 transition-colors gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-white break-words whitespace-normal leading-snug">{prod.name}</p>
                         <p className="text-[10px] text-white/40 font-mono mt-0.5 font-semibold">Custo em caixa: {formatCurrency(prod.purchasePrice * currentStock)}</p>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right shrink-0">
                         <span className="text-xs font-extrabold text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded block border border-amber-500/25">
                           {days} dias
                         </span>
