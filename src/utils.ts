@@ -301,54 +301,128 @@ export function calculateMLFee(salePrice: number, feeType: 'classic' | 'premium'
 }
 
 /**
- * Faz parse robusto de qualquer formato de data do Mercado Livre (ex: "21 de setembro de 2026 15:46 hs.", "21/09/2026", "2026-09-21")
+ * Converte qualquer formato de data (Excel serial, Date object, texto em português, ISO, DD/MM/YYYY)
+ * diretamente para o padrão ISO YYYY-MM-DD, de forma imune a fusos horários e perdas de dígitos.
  */
-export function parseMLDate(dateStr: string): Date | null {
-  if (!dateStr) return null;
-  const s = String(dateStr).trim();
-  
-  // Formato YYYY-MM-DD
-  const isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
-  if (isoMatch) {
-    return new Date(parseInt(isoMatch[1], 10), parseInt(isoMatch[2], 10) - 1, parseInt(isoMatch[3], 10));
+export function parseAnyDateToISO(val: any): string {
+  if (val === undefined || val === null || val === '') return '';
+
+  if (val instanceof Date) {
+    if (isNaN(val.getTime())) return '';
+    const y = val.getFullYear();
+    const m = String(val.getMonth() + 1).padStart(2, '0');
+    const d = String(val.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
   }
-  
-  // Formato DD/MM/YYYY
-  const brMatch = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})/);
-  if (brMatch) {
-    return new Date(parseInt(brMatch[3], 10), parseInt(brMatch[2], 10) - 1, parseInt(brMatch[1], 10));
-  }
-  
-  // Formato por extenso: "21 de setembro de 2026", "21 de setembro 2026 15:46 hs."
-  const monthMap: Record<string, number> = {
-    janeiro: 0, fevereiro: 1, marco: 2, 'março': 2, abril: 3, maio: 4, junho: 5,
-    julho: 6, agosto: 7, setembro: 8, outubro: 9, novembro: 10, dezembro: 11
-  };
-  const textMatch = s.match(/(\d{1,2})\s+de\s+([a-zç]+)(?:\s+de)?\s+(\d{4})/i);
-  if (textMatch) {
-    const day = parseInt(textMatch[1], 10);
-    const monthName = textMatch[2].toLowerCase();
-    const year = parseInt(textMatch[3], 10);
-    if (monthMap[monthName] !== undefined) {
-      return new Date(year, monthMap[monthName], day);
+
+  // Se for número serial de data do Excel (ex: 46307 ou 46307.9833)
+  const numVal = typeof val === 'number' ? val : (!isNaN(Number(val)) && !String(val).includes('-') && !String(val).includes('/') && !String(val).includes(':') ? Number(val) : NaN);
+  if (!isNaN(numVal) && numVal > 30000 && numVal < 70000) {
+    const excelDate = new Date(Math.round((numVal - 25569) * 86400 * 1000));
+    if (!isNaN(excelDate.getTime())) {
+      const y = excelDate.getUTCFullYear();
+      const m = String(excelDate.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(excelDate.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
     }
   }
 
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
+  let s = String(val).trim();
+  if (!s) return '';
+
+  // Normalizar separadores e remover sufixos como "hs.", "hs", "h"
+  s = s.replace(/hs\.?$/i, '').replace(/h$/i, '').trim();
+
+  // 1. Formato ISO YYYY-MM-DD ou YYYY-MM-DDTHH:mm:ss
+  const isoMatch = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (isoMatch) {
+    return `${isoMatch[1]}-${isoMatch[2].padStart(2, '0')}-${isoMatch[3].padStart(2, '0')}`;
+  }
+
+  // 2. Mapeamento de meses (completo e abreviado) em Português e Inglês
+  const monthMap: Record<string, string> = {
+    janeiro: '01', jan: '01',
+    fevereiro: '02', fev: '02', feb: '02',
+    marco: '03', 'março': '03', mar: '03',
+    abril: '04', abr: '04', apr: '04',
+    maio: '05', mai: '05', may: '05',
+    junho: '06', jun: '06',
+    julho: '07', jul: '07',
+    agosto: '08', ago: '08', aug: '08',
+    setembro: '09', set: '09', sep: '09',
+    outubro: '10', out: '10', oct: '10',
+    novembro: '11', nov: '11',
+    dezembro: '12', dez: '12', dec: '12'
+  };
+
+  // 3. Formato textual em português: "12 de outubro de 2026 23:36", "12 de out. de 2026", "12-out-2026", "12/out/2026", "12 out 2026"
+  const textMatch = s.match(/(\d{1,2})[\s\/\.-]+(?:de\s+)?([a-zç]+)\.?[\s\/\.-]+(?:de\s+)?(\d{2,4})/i);
+  if (textMatch) {
+    const d = textMatch[1].padStart(2, '0');
+    const mStr = textMatch[2].toLowerCase();
+    let y = textMatch[3];
+    if (y.length === 2) y = (Number(y) >= 50 ? '19' : '20') + y;
+    if (monthMap[mStr]) {
+      return `${y}-${monthMap[mStr]}-${d}`;
+    }
+  }
+
+  // 4. Formato DD/MM/YYYY ou DD/MM/YY (com ou sem horário)
+  const brMatch = s.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{2,4})/);
+  if (brMatch) {
+    const d = brMatch[1].padStart(2, '0');
+    const m = brMatch[2].padStart(2, '0');
+    let y = brMatch[3];
+    if (y.length === 2) y = (Number(y) >= 50 ? '19' : '20') + y;
+    return `${y}-${m}-${d}`;
+  }
+
+  // 5. Formato de data em inglês (ex: "Wed Oct 14 2026...", "Mon Oct 12 2026...")
+  const engMatch = s.match(/\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{1,2})\s+(\d{4})/i) ||
+                   s.match(/\b(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+(\d{4})/i);
+  if (engMatch) {
+    const monthStr = (engMatch[1].length === 3 ? engMatch[1] : engMatch[2]).toLowerCase().substring(0, 3);
+    const dayStr = (engMatch[1].length === 3 ? engMatch[2] : engMatch[1]).padStart(2, '0');
+    const yearStr = engMatch[3];
+    if (monthMap[monthStr]) {
+      return `${yearStr}-${monthMap[monthStr]}-${dayStr}`;
+    }
+  }
+
+  // Fallback seguro via construtor Date do JS
+  const parsed = new Date(s);
+  if (!isNaN(parsed.getTime())) {
+    const y = parsed.getFullYear();
+    const m = String(parsed.getMonth() + 1).padStart(2, '0');
+    const d = String(parsed.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  return '';
+}
+
+/**
+ * Faz parse robusto de qualquer formato de data do Mercado Livre
+ */
+export function parseMLDate(dateStr: any): Date | null {
+  if (!dateStr) return null;
+  const iso = parseAnyDateToISO(dateStr);
+  if (iso) {
+    const parts = iso.split('-');
+    if (parts.length === 3) {
+      return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    }
+  }
+  return null;
 }
 
 /**
  * Converte qualquer formato de data para o padrão ISO YYYY-MM-DD
  */
-export function toStandardDateISO(dateStr: string): string {
+export function toStandardDateISO(dateStr: any): string {
   if (!dateStr) return new Date().toISOString().split('T')[0];
-  const d = parseMLDate(dateStr);
-  if (!d) return dateStr;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const iso = parseAnyDateToISO(dateStr);
+  return iso || String(dateStr);
 }
 
 /**

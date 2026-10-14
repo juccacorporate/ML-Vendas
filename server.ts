@@ -81,6 +81,70 @@ async function startServer() {
     }
   });
 
+  // API para exportar ou baixar o código fonte completo do projeto consolidado para o Claude
+  app.get(['/api/download-codebase', '/api/export-codebase', '/PROJETO_COMPLETO_CLAUDE.txt'], (req, res) => {
+    try {
+      const filesToInclude = [
+        'package.json',
+        'vite.config.ts',
+        'index.html',
+        'server.ts',
+        'src/main.tsx',
+        'src/index.css',
+        'src/types.ts',
+        'src/utils.ts',
+        'src/App.tsx',
+        'src/components/Header.tsx',
+        'src/components/DashboardOverview.tsx',
+        'src/components/StockControl.tsx',
+        'src/components/SalesManager.tsx',
+        'src/components/ProductProfitsPanel.tsx',
+        'src/components/MLImport.tsx',
+        'src/components/SheetsIntegration.tsx',
+        'src/components/MLCalculatorModal.tsx',
+        'src/components/QuickStockModal.tsx',
+        'src/components/ManualStockAdjustPanel.tsx',
+        'src/components/CodeExportModal.tsx'
+      ];
+
+      let output = '# ==============================================================================\n';
+      output += '# CÓDIGO FONTE COMPLETO CONSOLIDADO - SISTEMA MERCADO LIVRE PRO\n';
+      output += '# ESTRUTURA PARA AUDITORIA E ENGENHARIA NO CLAUDE / CHATGPT / LLM\n';
+      output += `# DATA DE EXPORTAÇÃO: ${new Date().toISOString()}\n`;
+      output += '# ==============================================================================\n\n';
+
+      for (const relPath of filesToInclude) {
+        const fullPath = path.join(process.cwd(), relPath);
+        if (fs.existsSync(fullPath)) {
+          const content = fs.readFileSync(fullPath, 'utf8');
+          output += '\n' + '='.repeat(80) + '\n';
+          output += `FILE: ${relPath}\n`;
+          output += '='.repeat(80) + '\n\n';
+          output += content + '\n\n';
+        }
+      }
+
+      if (req.query.json === 'true') {
+        return res.json({
+          success: true,
+          totalFiles: filesToInclude.length,
+          sizeBytes: Buffer.byteLength(output, 'utf8'),
+          content: output
+        });
+      }
+
+      const isDownload = req.path.includes('download') || req.query.download === 'true';
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      if (isDownload) {
+        res.setHeader('Content-Disposition', 'attachment; filename="PROJETO_COMPLETO_CLAUDE.txt"');
+      }
+      return res.send(output);
+    } catch (err: any) {
+      console.error('Erro ao gerar exportação de código:', err);
+      res.status(500).send('Erro ao gerar código para exportação: ' + err.message);
+    }
+  });
+
   // API Proxy para Sincronização do Google Sheets - GET para buscar dados em realtime
   app.get('/api/sync-sheets', async (req, res) => {
     const webAppUrl = req.query.webAppUrl as string;

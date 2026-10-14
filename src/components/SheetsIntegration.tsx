@@ -1024,7 +1024,20 @@ function doGet(e) {
       if (mlData.length > 1) {
         var headers = mlData[0];
         var idxId = headers.indexOf("N.º de venda");
+        if (idxId === -1) idxId = 0;
         var idxDate = headers.indexOf("Data da venda");
+        if (idxDate === -1) {
+          for (var h = 0; h < headers.length; h++) {
+            var normH = String(headers[h] || "").toLowerCase().trim();
+            if (normH.indexOf("data da venda") !== -1 || (normH.indexOf("data") !== -1 && normH.indexOf("caminho") === -1 && normH.indexOf("entrega") === -1)) {
+              idxDate = h;
+              break;
+            }
+          }
+        }
+        if (idxDate === -1 && headers.length > 1) {
+          idxDate = 1;
+        }
         var idxStatus = headers.indexOf("Estado");
         var idxStatusDesc = headers.indexOf("Descrição do status");
         var idxMulti = headers.indexOf("Pacote de diversos produtos");
@@ -1089,9 +1102,26 @@ function doGet(e) {
             }
           }
           
+          var rowDateVal = idxDate !== -1 ? row[idxDate] : row[1];
+          var parsedRowDate = "";
+          if (rowDateVal instanceof Date) {
+            var dy = rowDateVal.getFullYear();
+            var dm = ("0" + (rowDateVal.getMonth() + 1)).slice(-2);
+            var dd = ("0" + rowDateVal.getDate()).slice(-2);
+            parsedRowDate = dy + "-" + dm + "-" + dd;
+          } else if (typeof rowDateVal === "number" && rowDateVal > 30000 && rowDateVal < 70000) {
+            var excelD = new Date(Math.round((rowDateVal - 25569) * 86400 * 1000));
+            var dy2 = excelD.getUTCFullYear();
+            var dm2 = ("0" + (excelD.getUTCMonth() + 1)).slice(-2);
+            var dd2 = ("0" + excelD.getUTCDate()).slice(-2);
+            parsedRowDate = dy2 + "-" + dm2 + "-" + dd2;
+          } else if (rowDateVal) {
+            parsedRowDate = String(rowDateVal);
+          }
+
           mlRecords.push({
             id: idxId !== -1 ? String(row[idxId]) : "",
-            dateStr: idxDate !== -1 ? String(row[idxDate]) : "",
+            dateStr: parsedRowDate,
             status: idxStatus !== -1 ? String(row[idxStatus]) : "",
             statusDescription: idxStatusDesc !== -1 ? String(row[idxStatusDesc]) : "",
             multiProduct: idxMulti !== -1 ? (row[idxMulti] === "Sim") : false,

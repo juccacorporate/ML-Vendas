@@ -4,8 +4,9 @@
  */
 
 import { useState } from 'react';
-import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut, Calculator, BadgePercent } from 'lucide-react';
+import { TrendingUp, Package, ShoppingCart, Database, FileSpreadsheet, Share2, Cloud, CloudOff, RefreshCw, LogOut, Calculator, BadgePercent, Code2 } from 'lucide-react';
 import MLCalculatorModal from './MLCalculatorModal';
+import CodeExportModal from './CodeExportModal';
 
 import { Product } from '../types';
 
@@ -37,6 +38,7 @@ export default function Header({
   onMasterSync
 }: HeaderProps) {
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+  const [isCodeExportOpen, setIsCodeExportOpen] = useState(false);
   const [isMasterSyncing, setIsMasterSyncing] = useState(false);
 
   const handleMasterSyncClick = async () => {
@@ -229,6 +231,16 @@ export default function Header({
             Calculadora ML
           </button>
 
+          <button
+            onClick={() => setIsCodeExportOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 text-xs font-bold rounded-xl transition-all whitespace-nowrap cursor-pointer text-[#FFE600] bg-[#FFE600]/10 hover:bg-[#FFE600]/20 border border-[#FFE600]/25 shadow-sm"
+            id="btn-export-codebase"
+            title="Copiar ou baixar código completo da plataforma para o Claude"
+          >
+            <Code2 className="w-4 h-4 text-[#FFE600]" />
+            <span>Código para Claude</span>
+          </button>
+
           {onLogout && (
             <button
               onClick={onLogout}
@@ -245,6 +257,7 @@ export default function Header({
       </div>
       
       <MLCalculatorModal isOpen={isCalculatorOpen} onClose={() => setIsCalculatorOpen(false)} />
+      <CodeExportModal isOpen={isCodeExportOpen} onClose={() => setIsCodeExportOpen(false)} />
     </header>
   );
 }

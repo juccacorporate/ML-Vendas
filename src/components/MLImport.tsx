@@ -6,7 +6,7 @@
 import React, { useState, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { MLImportRecord, Product, findMatchingProduct } from '../types';
-import { formatCurrency, formatDate, cleanMlSaleId, extractMlOrderId, isValidProductTitle, isDateLikeString } from '../utils';
+import { formatCurrency, formatDate, cleanMlSaleId, extractMlOrderId, isValidProductTitle, isDateLikeString, parseAnyDateToISO } from '../utils';
 import { 
   Upload, 
   FileSpreadsheet, 
@@ -181,7 +181,7 @@ export default function MLImport({
       return -1;
     };
 
-    const idxId = getIndex([
+    let idxId = getIndex([
       '# de venda', '# da venda', '# de pacote', '# do pacote', '# venda', '# pacote',
       'n.o de venda', 'n.º de venda', 'n.o venda', 'n.º venda', 'nº de venda', 'no de venda', 'n de venda',
       'numero da venda', 'número da venda', 'numero de venda', 'número de venda', 'num da venda',
@@ -189,7 +189,21 @@ export default function MLImport({
       'id da venda', 'id de venda', 'id venda', 'id da operacao', 'id da operação', 'id de operacao',
       'operacao', 'operação', 'id do pacote', 'id do pedido', 'pedido', 'pack_id', 'order_id', 'id'
     ], ['publicidade', 'anuncio', 'anúncio', 'produto', 'comprador', 'cliente', 'dados', 'tipo', 'forma']);
-    const idxDate = getIndex(['data da venda', 'data de criação', 'data venda', 'data_venda', 'data de criacao']);
+
+    let idxDate = getIndex([
+      'data da venda', 'data de venda', 'data da transacao', 'data da transação', 'data da operacao', 'data da operação',
+      'data venda', 'data_venda', 'data de criacao', 'data de criação', 'data criacao', 'data'
+    ], ['caminho', 'entrega', 'envio', 'faturamento']);
+
+    // Em relatórios padrão do Mercado Livre (POP Seção 1.2 e 4.2):
+    // Coluna A (índice 0) é universalmente o N.º de venda (ID de 16 dígitos)
+    // Coluna B (índice 1) é universalmente a Data da venda
+    if (idxId === -1 && headers.length > 0) {
+      idxId = 0;
+    }
+    if (idxDate === -1 && headers.length > 1) {
+      idxDate = 1;
+    }
     const idxStatus = getIndex(['estado do envio', 'estado', 'status da venda', 'status']);
     const idxStatusDesc = getIndex(['descricao do status', 'descrição do status', 'detalhe do status', 'status_desc']);
     const idxMulti = getIndex(['pacote de diversos produtos', 'pacote com diversos produtos', 'multi_produto', 'diversos produtos']);
@@ -235,6 +249,7 @@ export default function MLImport({
 
     const importedRecords: MLImportRecord[] = [];
     let lastValidMlId = '';
+    let lastValidDateCell: any = undefined;
 
     for (let i = bestHeaderRowIndex + 1; i < matrix.length; i++) {
       const row = matrix[i];
@@ -306,9 +321,36 @@ export default function MLImport({
 
       const recordId = rawId || `rec_${Date.now()}_${i}`;
 
+      // Extração rigorosa e universal da DATA DA VENDA diretamente associada ao ID de Venda (Coluna B):
+      // No Mercado Livre, a Coluna B (índice 1) é universal e obrigatoriamente a "Data da venda".
+      let rawDateCell: any = undefined;
+      if (row[1] !== undefined && row[1] !== null && String(row[1]).trim() !== '') {
+        rawDateCell = row[1];
+      } else if (idxDate !== -1 && row[idxDate] !== undefined && row[idxDate] !== null && String(row[idxDate]).trim() !== '') {
+        rawDateCell = row[idxDate];
+      } else {
+        for (let col = 0; col < Math.min(row.length, 6); col++) {
+          if (col !== idxId && isDateLikeString(row[col])) {
+            rawDateCell = row[col];
+            break;
+          }
+        }
+      }
+
+      // Para pacotes com múltiplos produtos onde as linhas subsequentes omitem a data, herdar a data da mesma venda
+      if ((rawDateCell === undefined || rawDateCell === null || String(rawDateCell).trim() === '') && lastValidDateCell) {
+        rawDateCell = lastValidDateCell;
+      } else if (rawDateCell !== undefined && rawDateCell !== null && String(rawDateCell).trim() !== '') {
+        lastValidDateCell = rawDateCell;
+      }
+
+      const isoDateParsed = parseAnyDateToISO(rawDateCell);
+      const finalDateVal = isoDateParsed ? formatDate(isoDateParsed) : cleanStr(rawDateCell);
+
       importedRecords.push({
         id: recordId,
-        dateStr: idxDate !== -1 && row[idxDate] ? cleanStr(row[idxDate]) : new Date().toLocaleDateString('pt-BR'),
+        dateStr: finalDateVal,
+        dateISO: isoDateParsed || parseAnyDateToISO(finalDateVal),
         status: idxStatus !== -1 && row[idxStatus] ? cleanStr(row[idxStatus]) : 'Entregue',
         statusDescription: idxStatusDesc !== -1 && row[idxStatusDesc] ? cleanStr(row[idxStatusDesc]) : 'Chegou',
         multiProduct: idxMulti !== -1 ? cleanBool(row[idxMulti]) : false,
@@ -409,7 +451,7 @@ export default function MLImport({
       reader.onload = (event) => {
         try {
           const data = new Uint8Array(event.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
+          const workbook = XLSX.read(data, { type: 'array', cellDates: true });
           const sheetName = workbook.SheetNames[0];
           const sheet = workbook.Sheets[sheetName];
           const rawMatrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];

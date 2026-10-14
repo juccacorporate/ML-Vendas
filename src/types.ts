@@ -74,6 +74,7 @@ export interface GoogleSheetsConfig {
 export interface MLImportRecord {
   id: string; // N.º de venda
   dateStr: string; // Data da venda original
+  dateISO?: string; // Data padrão YYYY-MM-DD
   status: string; // Estado
   statusDescription: string; // Descrição do status
   multiProduct: boolean;

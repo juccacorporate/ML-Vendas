@@ -5,7 +5,7 @@
 
 import { useState, useEffect } from 'react';
 import { Product, Sale, MLImportRecord, EntradaValorRecord, findMatchingProduct } from './types';
-import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale, getProductSalesActivity, isValidProductTitle, isDateLikeString, parseMLDate, toStandardDateISO } from './utils';
+import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale, getProductSalesActivity, isValidProductTitle, isDateLikeString, parseMLDate, toStandardDateISO, parseAnyDateToISO } from './utils';
 import { Lock, Unlock, Key, LogOut } from 'lucide-react';
 
 // Importando componentes modulares
@@ -292,7 +292,7 @@ export default function App() {
             productName: r.adTitle || 'Produto Não Cadastrado no Estoque',
             quantity: Number(r.units) || 1,
             salePrice: Number(r.adUnitPrice) || 0,
-            date: toStandardDateISO(r.dateStr || ''),
+            date: parseAnyDateToISO(r.dateStr) || toStandardDateISO(r.dateStr || ''),
             mlFee: Math.abs(r.saleFeeAndTaxes || 0),
             shippingCost: Math.abs(r.shippingFee || 0) + Math.abs(r.shippingWeightCost || 0) + Math.abs(r.shippingDiffCost || 0),
             shippingRevenue: Math.abs(r.shippingRevenue || 0),
@@ -329,7 +329,7 @@ export default function App() {
           ? r.adTitle.trim()
           : (existingSale?.productName || matchingProd.name);
 
-        const dateISO = toStandardDateISO(r.dateStr || existingSale?.date || '');
+        const dateISO = (r.dateISO && parseAnyDateToISO(r.dateISO)) || parseAnyDateToISO(r.dateStr) || toStandardDateISO(r.dateStr || existingSale?.date || '');
 
         // Tarifas e Envio
         const mlFee = (r.saleFeeAndTaxes !== undefined && r.saleFeeAndTaxes !== 0)
@@ -1188,7 +1188,10 @@ export default function App() {
           r.adTitle = cleanTitle;
 
           // Formatar data da venda de forma segura e padronizada (YYYY-MM-DD)
-          let formattedDate = toStandardDateISO(r.dateStr || '');
+          let formattedDate = (r.dateISO && parseAnyDateToISO(r.dateISO)) || parseAnyDateToISO(r.dateStr) || toStandardDateISO(r.dateStr || '');
+          if (!formattedDate) {
+            formattedDate = new Date().toISOString().split('T')[0];
+          }
 
           // 1. Localizar produto no catálogo
           let matchingProduct = findMatchingProduct(r, updatedProducts);
@@ -1317,6 +1320,7 @@ export default function App() {
             updatedSales[existingSaleIdx] = {
               ...oldSale,
               id: uniqueSaleId,
+              date: formattedDate || oldSale.date,
               productId: preservedProductId,
               productName: preservedProductName,
               status: saleStatus,
@@ -1350,7 +1354,7 @@ export default function App() {
               sku: r.sku,
               adId: r.adId,
               quantity: r.units,
-              salePrice: r.productRevenue / r.units,
+              salePrice: r.units > 0 ? Number((r.productRevenue / r.units).toFixed(2)) : r.productRevenue,
               purchasePrice: matchingProduct ? matchingProduct.purchasePrice : 0,
               date: formattedDate,
               discount,
@@ -1387,9 +1391,10 @@ export default function App() {
           deduplicatedSales.push(s);
         } else {
           const existing = uniqueSalesMap.get(realId)!;
-          if (s.lossAmount && !existing.lossAmount) {
-             Object.assign(existing, s);
-          }
+          // Preservar anotações de perda se houver, mas sempre manter os dados mais recentes da venda
+          const lossAmt = existing.lossAmount || s.lossAmount;
+          const lossRsn = existing.lossReason || s.lossReason;
+          Object.assign(existing, s, { lossAmount: lossAmt, lossReason: lossRsn });
         }
       } else {
         deduplicatedSales.push(s);
@@ -1406,13 +1411,13 @@ export default function App() {
     setProducts(updatedProducts);
     
     setMlRecords(prev => {
-      const newRecords = [...prev];
+      const recordMap = new Map<string, MLImportRecord>();
+      prev.forEach(p => recordMap.set(p.id, p));
       records.forEach(r => {
-        if (!newRecords.some(nr => nr.id === r.id)) {
-          newRecords.push(r);
-        }
+        const existing = recordMap.get(r.id);
+        recordMap.set(r.id, { ...(existing || {}), ...r, dateStr: r.dateStr, dateISO: r.dateISO });
       });
-      return newRecords;
+      return Array.from(recordMap.values());
     });
 
     setHasPendingWrite(true);
