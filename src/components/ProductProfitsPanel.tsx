@@ -28,7 +28,8 @@ import {
   Zap,
   ShoppingBag,
   ArrowRight,
-  Copy
+  Copy,
+  Calendar
 } from 'lucide-react';
 
 interface ProductProfitsPanelProps {
@@ -83,15 +84,30 @@ export interface ProductProfitSummary {
 
 /**
  * Gaveta de Auditoria e Raio-X Individual de Vendas do Produto
- * Garante que as vendas sejam ordenadas da mais recente para a mais antiga (23/09, etc. no topo),
- * com busca rápida por ID de Venda (16 dígitos), data, status e exibição do título completo.
+ * Agrupa vendas dia a dia com contador de unidades vendidas por data, botão de drop (accordion)
+ * e exibição destacada do Total de Vendas no Período Selecionado.
  */
+interface DaySalesGroup {
+  dateKey: string;
+  formattedDate: string;
+  weekday: string;
+  sales: Sale[];
+  totalUnits: number;
+  totalRevenue: number;
+  totalNetProfit: number;
+  completedUnits: number;
+  pendingUnits: number;
+  refundedUnits: number;
+}
+
 function ProductSalesDrawer({
   item,
-  onNavigateToTab
+  onNavigateToTab,
+  timeframeLabel
 }: {
   item: ProductProfitSummary;
   onNavigateToTab?: (tab: string) => void;
+  timeframeLabel?: string;
 }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'completed' | 'refunded'>('all');
@@ -127,61 +143,203 @@ function ProductSalesDrawer({
     });
   }, [sortedSales, statusFilter, searchTerm]);
 
+  // Agrupamento diário das vendas filtradas
+  const dayGroups = useMemo<DaySalesGroup[]>(() => {
+    const map = new Map<string, Sale[]>();
+    filteredSales.forEach(s => {
+      const dKey = (s.date ? s.date.split('T')[0] : '') || 'Sem Data';
+      if (!map.has(dKey)) {
+        map.set(dKey, []);
+      }
+      map.get(dKey)!.push(s);
+    });
+
+    // Ordenar da data mais recente para a mais antiga
+    const sortedKeys = Array.from(map.keys()).sort((a, b) => b.localeCompare(a));
+
+    return sortedKeys.map(dateKey => {
+      const salesOnDate = map.get(dateKey)!;
+      // Ordenação secundária por ID de venda
+      salesOnDate.sort((a, b) => {
+        const idA = a.mlSaleId || a.id || '';
+        const idB = b.mlSaleId || b.id || '';
+        return idB.localeCompare(idA);
+      });
+
+      const formatted = dateKey !== 'Sem Data' ? formatDate(dateKey) : 'Data Não Informada';
+      let weekday = '';
+      if (dateKey !== 'Sem Data') {
+        try {
+          const parts = dateKey.split('-');
+          if (parts.length === 3) {
+            const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+            if (!isNaN(d.getTime())) {
+              const w = d.toLocaleDateString('pt-BR', { weekday: 'long' });
+              weekday = w.charAt(0).toUpperCase() + w.slice(1);
+            }
+          }
+        } catch {
+          weekday = '';
+        }
+      }
+
+      const totalUnits = salesOnDate.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (Number(s.quantity) || 1), 0);
+      const totalRevenue = salesOnDate.filter(s => s.status !== 'refunded').reduce((acc, s) => acc + (s.salePrice * s.quantity), 0);
+      const totalNetProfit = salesOnDate.reduce((acc, s) => acc + s.netProfit, 0);
+      const completedUnits = salesOnDate.filter(s => s.status === 'completed').reduce((acc, s) => acc + s.quantity, 0);
+      const pendingUnits = salesOnDate.filter(s => s.status === 'pending').reduce((acc, s) => acc + s.quantity, 0);
+      const refundedUnits = salesOnDate.filter(s => s.status === 'refunded').reduce((acc, s) => acc + s.quantity, 0);
+
+      return {
+        dateKey,
+        formattedDate: formatted,
+        weekday,
+        sales: salesOnDate,
+        totalUnits,
+        totalRevenue,
+        totalNetProfit,
+        completedUnits,
+        pendingUnits,
+        refundedUnits,
+      };
+    });
+  }, [filteredSales]);
+
+  // Controle de accordion de cada data (aberto / fechado)
+  const [expandedDates, setExpandedDates] = useState<Set<string>>(() => new Set<string>());
+
+  // Inicializar com o dia mais recente expandido ou todos se houver pesquisa ativa
+  React.useEffect(() => {
+    if (dayGroups.length > 0) {
+      setExpandedDates(prev => {
+        if (searchTerm.trim()) {
+          return new Set(dayGroups.map(g => g.dateKey));
+        }
+        if (prev.size === 0) {
+          // Abrir o dia mais recente por padrão para visualização imediata
+          return new Set([dayGroups[0].dateKey]);
+        }
+        return prev;
+      });
+    }
+  }, [dayGroups, searchTerm]);
+
+  const toggleDay = (dateKey: string) => {
+    setExpandedDates(prev => {
+      const next = new Set(prev);
+      if (next.has(dateKey)) {
+        next.delete(dateKey);
+      } else {
+        next.add(dateKey);
+      }
+      return next;
+    });
+  };
+
+  const expandAllDays = () => {
+    setExpandedDates(new Set(dayGroups.map(g => g.dateKey)));
+  };
+
+  const collapseAllDays = () => {
+    setExpandedDates(new Set());
+  };
+
   const handleCopy = (id: string) => {
     navigator.clipboard?.writeText(id);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  // Total de unidades filtradas
+  const filteredUnitsCount = useMemo(() => {
+    return filteredSales.filter(s => s.status !== 'refunded').reduce((sum, s) => sum + s.quantity, 0);
+  }, [filteredSales]);
+
   return (
-    <div>
-      {/* Cabeçalho de Destaque com TÍTULO COMPLETO do Produto */}
-      <div className="bg-[#121212] p-4 rounded-xl border border-white/10 mb-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 shadow-inner">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="text-[10px] font-bold text-[#FFE600] uppercase tracking-wider bg-[#FFE600]/10 border border-[#FFE600]/20 px-2 py-0.5 rounded">
-              Auditoria de Vendas & Margens
-            </span>
-            <span className="text-xs text-white/50">
-              Total no período: <strong className="text-white font-mono">{sortedSales.length} saídas</strong> ({item.totalUnitsSold} un.)
-            </span>
-          </div>
-          <h4 className="text-sm md:text-base font-extrabold text-white break-words whitespace-normal leading-snug mt-1.5">
-            {item.productName}
-          </h4>
-          <div className="flex flex-wrap items-center gap-2 mt-1.5 text-xs text-white/60">
-            <span className="font-mono bg-white/5 border border-white/10 px-2 py-0.5 rounded text-white/75 font-semibold">
-              SKU: {item.sku || 'Sem SKU'}
-            </span>
-            <span>• {item.category}</span>
-            {item.isCatalogProduct && (
-              <span className="text-emerald-400 font-semibold">
-                • Estoque atual: {item.currentStock} unidades disponíveis
+    <div className="space-y-4">
+      {/* CARD DE DESTAQUE: Total de Vendas no Período Selecionado */}
+      <div className="bg-gradient-to-r from-[#161616] via-[#1a1809] to-[#161616] p-4 sm:p-5 rounded-2xl border border-[#FFE600]/30 shadow-[0_0_25px_rgba(255,230,0,0.08)]">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 mb-1.5">
+              <span className="text-[10px] font-black uppercase tracking-widest bg-[#FFE600] text-black px-2.5 py-0.5 rounded shadow-sm">
+                RESUMO DO PRODUTO NO PERÍODO
               </span>
+              {timeframeLabel && (
+                <span className="text-xs font-bold text-[#FFE600] bg-[#FFE600]/10 border border-[#FFE600]/25 px-2 py-0.5 rounded">
+                  📅 {timeframeLabel}
+                </span>
+              )}
+            </div>
+
+            <h3 className="text-sm sm:text-base font-extrabold text-white break-words whitespace-normal leading-snug">
+              {item.productName}
+            </h3>
+
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-white/60">
+              <span className="font-mono bg-white/5 border border-white/10 px-2 py-0.5 rounded text-white/80 font-semibold">
+                SKU: {item.sku || 'Sem SKU'}
+              </span>
+              <span>• {item.category}</span>
+              {item.isCatalogProduct && (
+                <span className="text-emerald-400 font-semibold">
+                  • Estoque Atual: {item.currentStock} un. disponíveis
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Destaque Numérico Prominente: Total de Vendas no Período */}
+          <div className="flex flex-wrap sm:flex-nowrap items-stretch gap-3 shrink-0">
+            <div className="bg-black/50 border-2 border-[#FFE600] px-4 py-3 rounded-xl flex flex-col justify-center min-w-[170px] shadow-lg">
+              <span className="text-[10px] font-black text-[#FFE600] uppercase tracking-wider block">
+                Total de Vendas no Período
+              </span>
+              <div className="flex items-baseline gap-1.5 mt-0.5">
+                <span className="text-2xl sm:text-3xl font-black text-white font-mono">
+                  {item.totalUnitsSold}
+                </span>
+                <span className="text-xs font-bold text-[#FFE600] uppercase">unidades</span>
+              </div>
+              <span className="text-[10px] text-white/40 font-mono mt-0.5">
+                {item.totalOrdersCount} saídas registradas
+              </span>
+            </div>
+
+            <div className="bg-white/5 border border-white/10 px-4 py-3 rounded-xl flex flex-col justify-center min-w-[140px]">
+              <span className="text-[10px] font-bold text-white/40 uppercase tracking-wider block">
+                Faturamento
+              </span>
+              <span className="text-base sm:text-lg font-black text-white font-mono mt-0.5">
+                {formatCurrency(item.grossRevenue)}
+              </span>
+              <span className="text-[10px] text-emerald-400 font-mono mt-0.5">
+                Lucro: {formatCurrency(item.totalNetProfit)}
+              </span>
+            </div>
+
+            {item.isCatalogProduct && onNavigateToTab && (
+              <button
+                onClick={() => onNavigateToTab('stock')}
+                className="bg-[#FFE600]/10 hover:bg-[#FFE600]/20 text-[#FFE600] border border-[#FFE600]/30 px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <span>Ver Estoque</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
             )}
           </div>
         </div>
-
-        {item.isCatalogProduct && onNavigateToTab && (
-          <button
-            onClick={() => onNavigateToTab('stock')}
-            className="bg-[#FFE600]/10 hover:bg-[#FFE600]/20 text-[#FFE600] border border-[#FFE600]/30 px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
-          >
-            <span>Ver no Estoque</span>
-            <ArrowRight className="w-3.5 h-3.5" />
-          </button>
-        )}
       </div>
 
       {/* Barra de Filtros Internos da Gaveta: Busca e Status */}
-      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 mb-3 bg-black/40 p-2.5 rounded-xl border border-white/5">
+      <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 bg-black/40 p-2.5 rounded-xl border border-white/5">
         <div className="relative flex-1">
           <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-white/40" />
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Pesquisar por ID da Venda (ex: 2000015183114911), data (ex: 23/09) ou código..."
+            placeholder="Pesquisar por ID da Venda (ex: 2000015183114911), data (ex: 22/10) ou código..."
             className="w-full bg-white/5 border border-white/10 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-white/30 focus:outline-none focus:border-[#FFE600]"
           />
         </div>
@@ -236,139 +394,259 @@ function ProductSalesDrawer({
         </div>
       </div>
 
-      {filteredSales.length === 0 ? (
+      {/* Cabeçalho da Lista Agrupada por Data e Botões de Drop Geral */}
+      {dayGroups.length > 0 && (
+        <div className="flex items-center justify-between gap-2 px-1">
+          <div className="text-xs text-white/60 flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5 text-[#FFE600]" />
+            <span>
+              Vendas agrupadas por data: <strong className="text-white">{dayGroups.length} {dayGroups.length === 1 ? 'dia' : 'dias'}</strong>
+              {filteredUnitsCount !== item.totalUnitsSold && (
+                <span className="text-[#FFE600] ml-1">({filteredUnitsCount} un. filtradas)</span>
+              )}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={expandAllDays}
+              className="text-[11px] font-bold text-white/70 hover:text-white bg-white/5 hover:bg-white/10 px-2.5 py-1 rounded-lg border border-white/10 transition-colors cursor-pointer flex items-center gap-1"
+              title="Expandir todas as datas"
+            >
+              <ChevronDown className="w-3 h-3 text-[#FFE600]" />
+              <span>Expandir Todos</span>
+            </button>
+            <button
+              type="button"
+              onClick={collapseAllDays}
+              className="text-[11px] font-bold text-white/70 hover:text-white bg-white/5 hover:bg-white/10 px-2.5 py-1 rounded-lg border border-white/10 transition-colors cursor-pointer flex items-center gap-1"
+              title="Recolher todas as datas"
+            >
+              <ChevronUp className="w-3 h-3 text-white/50" />
+              <span>Recolher Todos</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Lista de Grupos Diários com Botão de Drop (Accordion) */}
+      {dayGroups.length === 0 ? (
         <p className="text-xs text-white/40 py-6 text-center bg-black/20 rounded-xl border border-white/5">
           Nenhuma saída corresponde aos filtros de busca deste produto.
         </p>
       ) : (
-        <div className="max-h-80 overflow-y-auto rounded-xl border border-white/5 scrollbar-thin">
-          <table className="w-full text-left text-xs bg-black/30">
-            <thead>
-              <tr className="bg-white/5 text-[9.5px] font-bold text-white/40 uppercase tracking-wider border-b border-white/10 sticky top-0 z-10 backdrop-blur">
-                <th className="py-2.5 px-3">Data</th>
-                <th className="py-2.5 px-3">ID Venda / Mercado Livre</th>
-                <th className="py-2.5 px-2 text-center">Qtd</th>
-                <th className="py-2.5 px-3 text-right">Preço Venda</th>
-                <th className="py-2.5 px-3 text-right">Custo Compra (CMV)</th>
-                <th className="py-2.5 px-3 text-right">Taxa ML</th>
-                <th className="py-2.5 px-3 text-right">Frete</th>
-                <th className="py-2.5 px-3 text-right">Imposto 4%</th>
-                <th className="py-2.5 px-3 text-right text-emerald-400">Rec. Envio</th>
-                <th className="py-2.5 px-3 text-right font-bold text-white">Lucro Líquido</th>
-                <th className="py-2.5 px-3 text-center font-bold text-[#FFE600]" title="Porcentagem de ganho sobre o preço de compra (CMV)">Margem (% CMV)</th>
-                <th className="py-2.5 px-3 text-center">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-white/5 text-[11px]">
-              {filteredSales.map((s, sIdx) => {
-                const isSaleRefunded = s.status === 'refunded';
-                const isSaleCompleted = s.status === 'completed';
-                const saleTax = (s.salePrice * s.quantity) * 0.04;
-                const cmv = s.purchasePrice * s.quantity;
-                const saleMarginPercent = cmv > 0 ? (s.netProfit / cmv) * 100 : 0;
-                
-                const expectedMath = (s.salePrice * s.quantity) - cmv - s.mlFee - s.shippingCost - saleTax;
-                const extra = s.status !== 'refunded' ? (s.netProfit - expectedMath) : 0;
-                const displayId = s.mlSaleId || s.id;
+        <div className="space-y-3">
+          {dayGroups.map(group => {
+            const isDayExpanded = expandedDates.has(group.dateKey);
 
-                return (
-                  <tr key={s.id || sIdx} className="hover:bg-white/[0.03] transition-colors">
-                    <td className="py-2.5 px-3 font-mono text-white/80 font-semibold whitespace-nowrap">
-                      {formatDate(s.date)}
-                    </td>
-                    <td className="py-2.5 px-3 font-mono">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span 
-                          onClick={() => handleCopy(displayId)}
-                          className="font-bold text-[#FFE600] select-all bg-[#FFE600]/10 border border-[#FFE600]/20 px-1.5 py-0.5 rounded text-[11px] hover:bg-[#FFE600]/20 cursor-pointer"
-                          title="Clique para copiar o ID da Venda"
-                        >
-                          {displayId}
-                        </span>
-                        {copiedId === displayId && (
-                          <span className="text-[9px] text-emerald-400 font-sans">Copiado!</span>
-                        )}
-                        {s.adId && (
-                          <span className="text-[9px] text-sky-300 font-mono bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.2 rounded" title="ID do Anúncio">
-                            #{s.adId}
-                          </span>
-                        )}
-                        {s.shippingType === 'full' ? (
-                          <span className="text-[8.5px] bg-[#FFE600] text-black font-extrabold px-1.5 py-0.2 rounded shadow-sm">
-                            ⚡ FULL
-                          </span>
-                        ) : (
-                          <span className="text-[8.5px] bg-white/5 text-white/40 border border-white/10 px-1.5 py-0.2 rounded">
-                            🚚 Transp.
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="py-2.5 px-2 text-center font-bold font-mono text-white">
-                      {s.quantity}x
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono font-semibold text-white">
-                      {formatCurrency(s.salePrice * s.quantity)}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono">
-                      <span className="text-white/80 font-semibold block">-{formatCurrency(cmv)}</span>
-                      <span className="text-[9px] text-white/40 block">({formatCurrency(s.purchasePrice)}/un)</span>
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono text-amber-400">
-                      -{formatCurrency(s.mlFee)}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono text-orange-400">
-                      -{formatCurrency(s.shippingCost)}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono text-blue-400">
-                      -{formatCurrency(saleTax)}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono text-emerald-400">
-                      {Math.abs(extra) > 0.01 ? (extra > 0 ? `+${formatCurrency(extra)}` : formatCurrency(extra)) : '-'}
-                    </td>
-                    <td className="py-2.5 px-3 text-right font-mono font-extrabold">
-                      <span className={s.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                        {formatCurrency(s.netProfit)}
+            return (
+              <div 
+                key={group.dateKey} 
+                className={`rounded-xl border transition-all overflow-hidden ${
+                  isDayExpanded 
+                    ? 'border-[#FFE600]/40 bg-black/40 shadow-sm' 
+                    : 'border-white/10 bg-black/20 hover:border-white/20'
+                }`}
+              >
+                {/* BARRA DE DATA: Botãozinho de Drop + Dia + Contador de Unidades Vendidas */}
+                <div
+                  onClick={() => toggleDay(group.dateKey)}
+                  className={`p-3 sm:px-4 cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 select-none transition-colors ${
+                    isDayExpanded ? 'bg-white/[0.05]' : 'hover:bg-white/[0.03]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 sm:gap-3 flex-wrap">
+                    {/* Botão de Dropdown / Chevron */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleDay(group.dateKey);
+                      }}
+                      className={`w-7 h-7 rounded-lg flex items-center justify-center transition-all cursor-pointer ${
+                        isDayExpanded 
+                          ? 'bg-[#FFE600] text-black shadow-md' 
+                          : 'bg-white/10 text-white/70 hover:bg-white/20 hover:text-white'
+                      }`}
+                      title={isDayExpanded ? 'Recolher vendas deste dia' : 'Abrir e ver vendas deste dia'}
+                    >
+                      {isDayExpanded ? <ChevronUp className="w-4 h-4 font-black" /> : <ChevronDown className="w-4 h-4" />}
+                    </button>
+
+                    {/* Data e Dia da Semana */}
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-mono font-black text-sm text-white">
+                        {group.formattedDate}
                       </span>
-                    </td>
-                    <td className="py-2.5 px-3 text-center">
-                      {s.status === 'completed' || s.status === 'pending' ? (
-                        <span 
-                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded inline-block font-mono ${
-                            s.netProfit < 0
-                              ? 'text-red-400 bg-red-500/10 border border-red-500/20'
-                              : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
-                          }`}
-                          title={`Lucro (${formatCurrency(s.netProfit)}) ÷ Custo de Compra (${formatCurrency(cmv)})`}
-                        >
-                          {saleMarginPercent >= 0 ? '+' : ''}{saleMarginPercent.toFixed(0)}%
-                        </span>
-                      ) : (
-                        <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded inline-block">
-                          Devolvido
+                      {group.weekday && (
+                        <span className="text-[11px] text-white/50 font-normal">
+                          • {group.weekday}
                         </span>
                       )}
-                    </td>
-                    <td className="py-2.5 px-3 text-center whitespace-nowrap">
-                      {isSaleCompleted ? (
-                        <span className="inline-flex items-center gap-1 text-[9.5px] font-bold bg-emerald-500/15 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30">
-                          <CheckCircle2 className="w-3 h-3" /> Liberada
-                        </span>
-                      ) : isSaleRefunded ? (
-                        <span className="inline-flex items-center gap-1 text-[9.5px] font-bold bg-red-500/15 text-red-300 px-2 py-0.5 rounded border border-red-500/30">
-                          <AlertCircle className="w-3 h-3" /> Devolução
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-[9.5px] font-bold bg-[#FFE600]/15 text-[#FFE600] px-2 py-0.5 rounded border border-[#FFE600]/30" title="Venda Recém-Efetuada (Aguardando liberação)">
-                          <Clock className="w-3 h-3" /> Recém-Efetuada
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    </div>
+
+                    {/* TAG PRINCIPAL: Unidades Vendidas no Dia */}
+                    <div className="bg-[#FFE600] text-black px-2.5 py-0.5 rounded-lg text-xs font-black font-mono shadow-sm flex items-center gap-1">
+                      <span>{group.totalUnits} {group.totalUnits === 1 ? 'unidade vendida' : 'unidades vendidas'}</span>
+                    </div>
+
+                    {/* Quantidade de Transações */}
+                    <span className="text-[10px] text-white/40 font-mono">
+                      ({group.sales.length} {group.sales.length === 1 ? 'venda' : 'vendas'})
+                    </span>
+                  </div>
+
+                  {/* Resumo Financeiro do Dia */}
+                  <div className="flex items-center gap-4 text-xs font-mono justify-end">
+                    <div className="text-right">
+                      <span className="text-[9.5px] text-white/40 uppercase block">Faturamento</span>
+                      <span className="font-bold text-white">{formatCurrency(group.totalRevenue)}</span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[9.5px] text-white/40 uppercase block">Lucro Líquido</span>
+                      <span className={`font-black ${group.totalNetProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {formatCurrency(group.totalNetProfit)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* TABELA DE VENDAS DO DIA (EXPANSÍVEL VIA DROP) */}
+                {isDayExpanded && (
+                  <div className="border-t border-white/10 overflow-x-auto bg-black/60">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="bg-white/5 text-[9.5px] font-bold text-white/40 uppercase tracking-wider border-b border-white/10">
+                          <th className="py-2.5 px-3">Data</th>
+                          <th className="py-2.5 px-3">ID Venda / Mercado Livre</th>
+                          <th className="py-2.5 px-2 text-center">Qtd</th>
+                          <th className="py-2.5 px-3 text-right">Preço Venda</th>
+                          <th className="py-2.5 px-3 text-right">Custo Compra (CMV)</th>
+                          <th className="py-2.5 px-3 text-right">Taxa ML</th>
+                          <th className="py-2.5 px-3 text-right">Frete</th>
+                          <th className="py-2.5 px-3 text-right">Imposto 4%</th>
+                          <th className="py-2.5 px-3 text-right text-emerald-400">Rec. Envio</th>
+                          <th className="py-2.5 px-3 text-right font-bold text-white">Lucro Líquido</th>
+                          <th className="py-2.5 px-3 text-center font-bold text-[#FFE600]" title="Porcentagem de ganho sobre o preço de compra (CMV)">Margem (% CMV)</th>
+                          <th className="py-2.5 px-3 text-center">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-white/5 text-[11px]">
+                        {group.sales.map((s, sIdx) => {
+                          const isSaleRefunded = s.status === 'refunded';
+                          const isSaleCompleted = s.status === 'completed';
+                          const saleTax = (s.salePrice * s.quantity) * 0.04;
+                          const cmv = s.purchasePrice * s.quantity;
+                          const saleMarginPercent = cmv > 0 ? (s.netProfit / cmv) * 100 : 0;
+                          
+                          const expectedMath = (s.salePrice * s.quantity) - cmv - s.mlFee - s.shippingCost - saleTax;
+                          const extra = s.status !== 'refunded' ? (s.netProfit - expectedMath) : 0;
+                          const displayId = s.mlSaleId || s.id;
+
+                          return (
+                            <tr key={s.id || sIdx} className="hover:bg-white/[0.04] transition-colors">
+                              <td className="py-2.5 px-3 font-mono text-white/80 font-semibold whitespace-nowrap">
+                                {formatDate(s.date)}
+                              </td>
+                              <td className="py-2.5 px-3 font-mono">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span 
+                                    onClick={() => handleCopy(displayId)}
+                                    className="font-bold text-[#FFE600] select-all bg-[#FFE600]/10 border border-[#FFE600]/20 px-1.5 py-0.5 rounded text-[11px] hover:bg-[#FFE600]/20 cursor-pointer"
+                                    title="Clique para copiar o ID da Venda"
+                                  >
+                                    {displayId}
+                                  </span>
+                                  {copiedId === displayId && (
+                                    <span className="text-[9px] text-emerald-400 font-sans">Copiado!</span>
+                                  )}
+                                  {s.adId && (
+                                    <span className="text-[9px] text-sky-300 font-mono bg-sky-500/10 border border-sky-500/20 px-1.5 py-0.2 rounded" title="ID do Anúncio">
+                                      #{s.adId}
+                                    </span>
+                                  )}
+                                  {s.shippingType === 'full' ? (
+                                    <span className="text-[8.5px] bg-[#FFE600] text-black font-extrabold px-1.5 py-0.2 rounded shadow-sm">
+                                      ⚡ FULL
+                                    </span>
+                                  ) : (
+                                    <span className="text-[8.5px] bg-white/5 text-white/40 border border-white/10 px-1.5 py-0.2 rounded">
+                                      🚚 Transp.
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-2.5 px-2 text-center font-bold font-mono text-white">
+                                {s.quantity}x
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-semibold text-white">
+                                {formatCurrency(s.salePrice * s.quantity)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono">
+                                <span className="text-white/80 font-semibold block">-{formatCurrency(cmv)}</span>
+                                <span className="text-[9px] text-white/40 block">({formatCurrency(s.purchasePrice)}/un)</span>
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono text-amber-400">
+                                -{formatCurrency(s.mlFee)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono text-orange-400">
+                                -{formatCurrency(s.shippingCost)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono text-blue-400">
+                                -{formatCurrency(saleTax)}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono text-emerald-400">
+                                {Math.abs(extra) > 0.01 ? (extra > 0 ? `+${formatCurrency(extra)}` : formatCurrency(extra)) : '-'}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-mono font-extrabold">
+                                <span className={s.netProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                                  {formatCurrency(s.netProfit)}
+                                </span>
+                              </td>
+                              <td className="py-2.5 px-3 text-center">
+                                {s.status === 'completed' || s.status === 'pending' ? (
+                                  <span 
+                                    className={`text-[10px] font-bold px-1.5 py-0.5 rounded inline-block font-mono ${
+                                      s.netProfit < 0
+                                        ? 'text-red-400 bg-red-500/10 border border-red-500/20'
+                                        : 'text-emerald-400 bg-emerald-500/10 border border-emerald-500/20'
+                                    }`}
+                                    title={`Lucro (${formatCurrency(s.netProfit)}) ÷ Custo de Compra (${formatCurrency(cmv)})`}
+                                  >
+                                    {saleMarginPercent >= 0 ? '+' : ''}{saleMarginPercent.toFixed(0)}%
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-red-500 font-bold bg-red-500/10 px-1.5 py-0.5 rounded inline-block">
+                                    Devolvido
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                                {isSaleCompleted ? (
+                                  <span className="inline-flex items-center gap-1 text-[9.5px] font-bold bg-emerald-500/15 text-emerald-300 px-2 py-0.5 rounded border border-emerald-500/30">
+                                    <CheckCircle2 className="w-3 h-3" /> Liberada
+                                  </span>
+                                ) : isSaleRefunded ? (
+                                  <span className="inline-flex items-center gap-1 text-[9.5px] font-bold bg-red-500/15 text-red-300 px-2 py-0.5 rounded border border-red-500/30">
+                                    <AlertCircle className="w-3 h-3" /> Devolução
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[9.5px] font-bold bg-[#FFE600]/15 text-[#FFE600] px-2 py-0.5 rounded border border-[#FFE600]/30" title="Venda Recém-Efetuada (Aguardando liberação)">
+                                    <Clock className="w-3 h-3" /> Recém-Efetuada
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -1487,7 +1765,19 @@ export default function ProductProfitsPanel({
 
                                {/* Tabela de Vendas Individuais Deste Produto com Busca, Ordenação Decrescente e Título Completo */}
                               <div className="mt-2">
-                                <ProductSalesDrawer item={item} onNavigateToTab={onNavigateToTab} />
+                                <ProductSalesDrawer 
+                                  item={item} 
+                                  onNavigateToTab={onNavigateToTab}
+                                  timeframeLabel={
+                                    selectedTimeframe === 'all'
+                                      ? 'Todo o Histórico'
+                                      : selectedTimeframe === '30days'
+                                      ? 'Últimos 30 Dias'
+                                      : selectedTimeframe === '7days'
+                                      ? 'Últimos 7 Dias'
+                                      : `Personalizado (${formatDate(customStartDate)} a ${formatDate(customEndDate)})`
+                                  }
+                                />
                               </div>
 
                             </div>

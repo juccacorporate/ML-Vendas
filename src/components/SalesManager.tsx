@@ -713,29 +713,6 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
           </div>
         </div>
 
-        {/* Painel de Unidades Vendidas por Produto */}
-        {productsSoldCounts.length > 0 && (
-          <div className="p-5 border-b border-white/5 bg-white/[0.01]">
-            <span className="text-[10px] text-white/40 font-black block uppercase tracking-widest mb-3 flex items-center gap-1.5">
-              <TrendingUp className="w-3.5 h-3.5 text-[#FFE600]" />
-              Volume de Vendas por Produto (Sem Estornos) — Total Geral: {totalProductsSold} un.
-            </span>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {productsSoldCounts.map((item, idx) => (
-                <div key={idx} className="bg-white/5 p-3 rounded-xl border border-white/5 hover:border-white/10 transition-all flex items-center justify-between">
-                  <div className="min-w-0 flex-1 pr-2">
-                    <span className="text-[10px] text-white/80 font-bold block truncate" title={item.name}>
-                      {item.name}
-                    </span>
-                  </div>
-                  <div className="bg-[#FFE600]/10 text-[#FFE600] border border-[#FFE600]/20 px-2.5 py-1 rounded-lg text-xs font-black shrink-0">
-                    {item.qty} un
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
