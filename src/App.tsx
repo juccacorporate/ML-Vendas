@@ -3,9 +3,11 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Product, Sale, MLImportRecord, EntradaValorRecord, findMatchingProduct } from './types';
-import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale, getProductSalesActivity, isValidProductTitle, isDateLikeString, parseMLDate, toStandardDateISO, parseAnyDateToISO } from './utils';
+import { INITIAL_PRODUCTS, INITIAL_SALES, normalizeName, calculateCurrentStock, calculateMLFee, cleanMlSaleId, getSaleMlId, findProductForSale, getProductSalesActivity, isValidProductTitle, isDateLikeString, parseMLDate, toStandardDateISO, parseAnyDateToISO, isEntradaReleaseRecord, toFiniteNumber } from './utils';
+import { storageGet, storageSet, storageRemove, cleanupLegacyStorage } from './storage';
+import { httpErrorMessage, mergeBannedProducts, MAX_POST_BYTES, utf8Size } from './cloud';
 import { Lock, Unlock, Key, LogOut } from 'lucide-react';
 
 // Importando componentes modulares
@@ -17,17 +19,37 @@ import SheetsIntegration from './components/SheetsIntegration';
 import MLImport from './components/MLImport';
 import ProductProfitsPanel from './components/ProductProfitsPanel';
 
-export default function App() {
-  // Migração automática do Web App URL para o novo ativo fornecido pelo usuário na aba Database (linha 1, coluna A)
-  const defaultNewUrl = 'https://script.google.com/macros/s/AKfycbxUZXSIzp-0hgv1PMuyqThl98Vj9igr3lvNhXx31GBXbMoInTed24ANzbOkm38yT7uE/exec';
-  const defaultSpreadsheetUrl = 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?gid=1782622408#gid=1782622408';
-  const storedUrl = localStorage.getItem('ml_webapp_url');
-  if (!storedUrl || storedUrl.includes('AKfycbyesx') || storedUrl.includes('AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j') || storedUrl.includes('AKfycbz_GaOVZTAI')) {
-    localStorage.setItem('ml_webapp_url', defaultNewUrl);
-  }
+// Migração automática do Web App URL para o novo ativo fornecido pelo usuário na aba Database (linha 1, coluna A)
+const defaultNewUrl = 'https://script.google.com/macros/s/AKfycbxUZXSIzp-0hgv1PMuyqThl98Vj9igr3lvNhXx31GBXbMoInTed24ANzbOkm38yT7uE/exec';
+const defaultSpreadsheetUrl = 'https://docs.google.com/spreadsheets/d/12F010pz_9MO9-8wOxeDnUmKnYiTrHXv7HZMuog2MZiE/edit?gid=1782622408#gid=1782622408';
+const OUTDATED_WEBAPP_URL_MARKERS = [
+  'AKfycbyesx',
+  'AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j',
+  'AKfycbz_GaOVZTAI'
+];
 
+// Executado UMA vez (inicializador do estado). Antes esse código rodava no corpo do componente,
+// ou seja, gravava no localStorage a cada renderização.
+function resolveInitialWebAppUrl(): string {
+  const stored = storageGet('ml_webapp_url');
+  if (!stored || OUTDATED_WEBAPP_URL_MARKERS.some(marker => stored.includes(marker))) {
+    storageSet('ml_webapp_url', defaultNewUrl);
+    return defaultNewUrl;
+  }
+  return stored;
+}
+
+// ID de venda/operação válido na aba Entrada de Valores (mesma regra usada na importação)
+const isStrictEntradaId = (value: any): boolean => {
+  const str = String(value ?? '').trim();
+  if (/[eE\+,\.]/.test(str)) return false;
+  if (str.toLowerCase().includes('prod_')) return false;
+  return /^\d{8,20}$/.test(str);
+};
+
+export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
-    return localStorage.getItem('is_ml_authenticated') === 'true';
+    return storageGet('is_ml_authenticated') === 'true';
   });
   const [passwordInput, setPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -40,23 +62,12 @@ export default function App() {
   const [sales, setSales] = useState<Sale[]>([]);
   const [mlRecords, setMlRecords] = useState<MLImportRecord[]>([]);
   const [entradaRecords, setEntradaRecords] = useState<EntradaValorRecord[]>(() => {
-    const saved = localStorage.getItem('ml_entrada_records');
+    const saved = storageGet('ml_entrada_records');
     if (!saved) return [];
     try {
       const parsed = JSON.parse(saved);
       if (Array.isArray(parsed)) {
-        return parsed.filter(item => {
-          const str = String(item.id || '').trim();
-          const isStrictId = !/[eE\+,\.]/.test(str) && /^20\d{10,18}$/.test(str);
-          if (!isStrictId) return false;
-          const opStat = String(item.operationStatus || '').toLowerCase().trim();
-          const tipo = String(item.releaseStatus || item.description || '').toLowerCase().trim();
-          if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
-          if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
-            return false;
-          }
-          return true;
-        });
+        return parsed.filter(item => item && isStrictEntradaId(item.id) && isEntradaReleaseRecord(item));
       }
     } catch (e) {}
     return [];
@@ -64,7 +75,7 @@ export default function App() {
 
   const [entradaRawMatrix, setEntradaRawMatrix] = useState<any[][] | null>(() => {
     try {
-      const saved = localStorage.getItem('ml_entrada_raw_matrix');
+      const saved = storageGet('ml_entrada_raw_matrix');
       return saved ? JSON.parse(saved) : null;
     } catch (e) {
       return null;
@@ -72,16 +83,10 @@ export default function App() {
   });
   
   const [spreadsheetUrl, setSpreadsheetUrl] = useState<string>(() => {
-    return localStorage.getItem('ml_spreadsheet_url') || defaultSpreadsheetUrl;
+    return storageGet('ml_spreadsheet_url') || defaultSpreadsheetUrl;
   });
 
-  const [webAppUrl, setWebAppUrl] = useState<string>(() => {
-    const current = localStorage.getItem('ml_webapp_url');
-    if (current && !current.includes('AKfycbz81q6fIBlapP5yD1lkDCMqh9Q3x-Eh_5deS_o_bm4mFKY0q21YkNMKx5KF4pyq-a9j')) {
-      return current;
-    }
-    return defaultNewUrl;
-  });
+  const [webAppUrl, setWebAppUrl] = useState<string>(resolveInitialWebAppUrl);
 
   const [isFetchingWebAppUrl, setIsFetchingWebAppUrl] = useState<boolean>(true);
 
@@ -96,7 +101,7 @@ export default function App() {
         if (data.webAppUrl !== webAppUrl) {
           console.log('Web App URL atualizada automaticamente da aba Database da planilha:', data.webAppUrl);
           setWebAppUrl(data.webAppUrl);
-          localStorage.setItem('ml_webapp_url', data.webAppUrl);
+          storageSet('ml_webapp_url', data.webAppUrl);
         }
         return data.webAppUrl;
       }
@@ -122,16 +127,38 @@ export default function App() {
   
   // Flag para indicar se há alterações locais novas feitas pelo usuário pendentes de gravação na nuvem.
   // Garante a Regra 2: nunca apaga dados da database e sempre lê primeiro do ponto 1.
-  const [hasPendingWrite, setHasPendingWrite] = useState<boolean>(false);
+  const [hasPendingWrite, setHasPendingWriteState] = useState<boolean>(false);
+  const hasPendingWriteRef = useRef<boolean>(false);
+  // Contador de edições: permite saber se o usuário editou algo DURANTE uma gravação em andamento
+  // (nesse caso a flag NÃO pode ser zerada, senão essa edição nunca seria enviada e seria perdida na próxima leitura).
+  const pendingVersionRef = useRef<number>(0);
+  const setHasPendingWrite = useCallback((value: boolean) => {
+    if (value) pendingVersionRef.current += 1;
+    hasPendingWriteRef.current = value;
+    setHasPendingWriteState(value);
+  }, []);
+
+  // Controle da sincronização (ver bloco "Sincronização com a nuvem" mais abaixo)
+  const syncInFlightRef = useRef<boolean>(false);
+  const [syncNonce, setSyncNonce] = useState<number>(0);
+  const lastCloudCountsRef = useRef<{ products: number; sales: number }>({ products: 0, sales: 0 });
+  const hasLoadedOnceRef = useRef<boolean>(false);
+  const loadRunIdRef = useRef<number>(0);
+  const isLoadingRef = useRef<boolean>(false);
+  const [loadNonce, setLoadNonce] = useState<number>(0);
+  const [loadAttempt, setLoadAttempt] = useState<number>(0);
+  // Modo local: o usuário abriu o app SEM conseguir ler a planilha. Nesse modo nenhuma gravação na nuvem é permitida,
+  // porque os dados locais estão incompletos e sobrescreveriam a planilha inteira.
+  const [isLocalOnlyMode, setIsLocalOnlyMode] = useState<boolean>(false);
 
   const [initialCapital, setInitialCapital] = useState<number>(() => {
-    const saved = localStorage.getItem('ml_initial_capital');
+    const saved = storageGet('ml_initial_capital');
     return saved ? Number(saved) : 0;
   });
 
   const [bannedProducts, setBannedProducts] = useState<string[]>(() => {
     try {
-      const saved = localStorage.getItem('ml_banned_products');
+      const saved = storageGet('ml_banned_products');
       return saved ? JSON.parse(saved) : [];
     } catch (e) {
       return [];
@@ -139,52 +166,49 @@ export default function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem('ml_banned_products', JSON.stringify(bannedProducts));
+    storageSet('ml_banned_products', JSON.stringify(bannedProducts));
   }, [bannedProducts]);
 
-  // Salvar no localStorage sempre que houver alterações nos estados principais
+  // Remove do navegador cópias antigas de produtos/vendas/registros que eram regravadas a cada alteração
+  // mas nunca lidas de volta (a nuvem é a fonte da verdade). Estouravam a cota de 5 MB do localStorage,
+  // o que derrubava a tela inteira de forma intermitente.
   useEffect(() => {
-    localStorage.setItem('ml_products', JSON.stringify(products));
-  }, [products]);
+    cleanupLegacyStorage();
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem('ml_sales', JSON.stringify(sales));
-  }, [sales]);
-
-  useEffect(() => {
-    localStorage.setItem('ml_records', JSON.stringify(mlRecords));
-  }, [mlRecords]);
-
-  useEffect(() => {
-    localStorage.setItem('ml_entrada_records', JSON.stringify(entradaRecords));
+    storageSet('ml_entrada_records', JSON.stringify(entradaRecords));
   }, [entradaRecords]);
 
   useEffect(() => {
     if (entradaRawMatrix) {
       try {
-        localStorage.setItem('ml_entrada_raw_matrix', JSON.stringify(entradaRawMatrix));
+        storageSet('ml_entrada_raw_matrix', JSON.stringify(entradaRawMatrix));
       } catch (e) {}
     } else {
       try {
-        localStorage.removeItem('ml_entrada_raw_matrix');
+        storageRemove('ml_entrada_raw_matrix');
       } catch (e) {}
     }
   }, [entradaRawMatrix]);
 
   useEffect(() => {
-    localStorage.setItem('ml_spreadsheet_url', spreadsheetUrl);
+    storageSet('ml_spreadsheet_url', spreadsheetUrl);
   }, [spreadsheetUrl]);
 
   useEffect(() => {
-    localStorage.setItem('ml_webapp_url', webAppUrl);
+    storageSet('ml_webapp_url', webAppUrl);
   }, [webAppUrl]);
 
   useEffect(() => {
-    localStorage.setItem('ml_initial_capital', String(initialCapital));
+    storageSet('ml_initial_capital', String(initialCapital));
   }, [initialCapital]);
 
   // Resetar o estado de busca quando a URL do Apps Script mudar (ex: o usuário trocou de planilha)
   useEffect(() => {
+    // Invalida qualquer leitura em andamento (ela era da URL antiga) e permite iniciar uma nova
+    loadRunIdRef.current += 1;
+    isLoadingRef.current = false;
     setHasFetchedFromCloud(false);
   }, [webAppUrl]);
 
@@ -438,10 +462,15 @@ export default function App() {
       });
     }
 
-    // Incluir vendas manuais ou vendas diretas pré-existentes que não sejam do relatório ML
+    // Incluir vendas manuais ou vendas diretas pré-existentes que não sejam do relatório ML.
+    // PROTEÇÃO CONTRA PERDA DE DADOS: se não há NENHUM registro bruto do ML para reconciliar (lista vazia por falha
+    // de leitura ou estado ainda não carregado), as vendas do ML existentes são preservadas em vez de descartadas.
+    // Antes, qualquer edição de produto nesse estado apagava todas as vendas do ML e a gravação automática
+    // enviava a lista "sem vendas" para a planilha.
+    const hasNoMlRecordsToReconcile = !recordsToUse || recordsToUse.length === 0;
     validCloudSales.forEach(s => {
       const sCleanId = cleanMlSaleId(s.mlSaleId) || cleanMlSaleId(s.id) || String(s.id || '').trim();
-      if (!processedSaleIds.has(sCleanId) && !s.isMlSale) {
+      if (!processedSaleIds.has(sCleanId) && (!s.isMlSale || hasNoMlRecordsToReconcile)) {
         processedSaleIds.add(sCleanId);
         reconciledSales.push(s);
       }
@@ -458,101 +487,165 @@ export default function App() {
     return { products: sanitizedProducts, sales: finalSanitizedSales };
   };
 
-  // Buscar dados da planilha na inicialização do aplicativo para manter sincronizado com múltiplos dispositivos
-  useEffect(() => {
-    if (!webAppUrl || hasFetchedFromCloud || isFetchingWebAppUrl) return;
+  // ---------------------------------------------------------------------------
+  // Sincronização com a nuvem (Google Sheets)
+  // ---------------------------------------------------------------------------
 
-    const fetchInitialData = async () => {
+  useEffect(() => {
+    hasPendingWriteRef.current = hasPendingWrite;
+  }, [hasPendingWrite]);
+
+  const requestCloudSnapshot = async (url: string) => {
+    const response = await fetch(`/api/sync-sheets?webAppUrl=${encodeURIComponent(url)}`, { cache: 'no-store' });
+    const result = await response.json().catch(() => null);
+    return { response, result };
+  };
+
+  // Aplica ao estado local uma leitura da planilha. É a ÚNICA porta de entrada de dados da nuvem:
+  // antes existiam 3 cópias quase idênticas (leitura inicial, "Atualizar Agora" e Master Sync) que divergiam entre si.
+  const applyCloudResult = (result: any) => {
+    const cloudMlRecords: MLImportRecord[] | null = Array.isArray(result.mlRecords) ? result.mlRecords : null;
+    const cloudEntrada: EntradaValorRecord[] | null = Array.isArray(result.entradaRecords) ? result.entradaRecords : null;
+
+    // Sanitização robusta contra dados corrompidos ou chaves de datas na coluna de preços
+    const sanitized = sanitizeCloudData(
+      result.products || [],
+      result.sales || [],
+      cloudMlRecords || mlRecords,
+      cloudEntrada || entradaRecords
+    );
+
+    setProducts(sanitized.products);
+    setSales(sanitized.sales);
+    if (cloudMlRecords) setMlRecords(cloudMlRecords);
+    if (cloudEntrada) setEntradaRecords(cloudEntrada.filter(isEntradaReleaseRecord));
+
+    // Sincronizar produtos banidos do Google Sheets
+    if (Array.isArray(result.bannedProducts)) {
+      setBannedProducts(prev => mergeBannedProducts(prev, result.bannedProducts));
+    }
+
+    // Sincronizar o capital inicial / aporte
+    const cloudCapital = result.initialCapital;
+    if (typeof cloudCapital === 'number' && cloudCapital > 0 && (result.hasConfigSheet || cloudCapital !== 500)) {
+      setInitialCapital(cloudCapital);
+    }
+
+    // Referência para a proteção contra gravações que apagariam dados da planilha
+    lastCloudCountsRef.current = { products: sanitized.products.length, sales: sanitized.sales.length };
+    hasLoadedOnceRef.current = true;
+    setIsLocalOnlyMode(false);
+    return sanitized;
+  };
+
+  // Lê a planilha e aplica no estado. Lança erro em qualquer falha.
+  const pullSnapshot = async (url: string) => {
+    const { response, result } = await requestCloudSnapshot(url);
+    if (!response.ok) throw new Error(httpErrorMessage(response.status, result));
+    if (!result || result.status !== 'success') {
+      throw new Error((result && result.message) || 'Erro do Google Apps Script');
+    }
+    const sanitized = applyCloudResult(result);
+    setHasFetchedFromCloud(true);
+    setHasPendingWrite(false); // Acabamos de ler: não há alterações locais novas a gravar
+    return sanitized;
+  };
+
+  // Buscar dados da planilha na inicialização do aplicativo (com novas tentativas automáticas)
+  // para manter sincronizado com múltiplos dispositivos
+  useEffect(() => {
+    if (!webAppUrl) {
+      setIsFetchingFromCloud(false);
+      return;
+    }
+    if (hasFetchedFromCloud || isFetchingWebAppUrl || isLoadingRef.current) return;
+
+    const runId = ++loadRunIdRef.current;
+    const isStale = () => runId !== loadRunIdRef.current;
+
+    const loadOnce = async (allowUrlRecovery: boolean) => {
+      let activeUrl = webAppUrl;
+      console.log('Buscando dados em tempo real da planilha do Google Sheets...', activeUrl);
+      let { response, result } = await requestCloudSnapshot(activeUrl);
+
+      // Se a URL falhou (404/500/abort), tenta recuperar automaticamente a URL atualizada da aba Database da planilha
+      // (só na primeira tentativa: repetir a consulta a cada nova tentativa só deixaria a recuperação mais lenta)
+      if (allowUrlRecovery && (!response.ok || (result && result.status === 'error' && (result.message?.includes('404') || result.message?.includes('aborted'))))) {
+        console.warn('Tentativa de sincronização falhou. Recuperando Web App URL atualizada da planilha...');
+        const freshUrl = await forceFetchWebAppUrl();
+        if (freshUrl && freshUrl !== activeUrl) {
+          activeUrl = freshUrl;
+          ({ response, result } = await requestCloudSnapshot(activeUrl));
+        }
+      }
+
+      if (isStale()) return;
+      if (!response.ok) throw new Error(httpErrorMessage(response.status, result));
+
+      if (result && result.status === 'success') {
+        applyCloudResult(result);
+        console.log('Dados em tempo real obtidos e sanitizados com sucesso do Google Sheets!');
+        setHasFetchedFromCloud(true); // Habilita o auto-sync somente após download com sucesso total
+        return;
+      }
+      throw new Error((result && result.message) || 'Resposta inesperada da planilha. Tente novamente.');
+    };
+
+    const run = async () => {
+      isLoadingRef.current = true;
       setIsFetchingFromCloud(true);
       setCloudSyncError(null);
+
+      // Instabilidades passageiras (cold start do Apps Script, rede) são comuns: tenta até 3 vezes
+      // antes de mostrar erro, em vez de deixar o painel vazio até alguém clicar em "Atualizar Agora".
+      const retryDelays = [2000, 5000];
+      let lastError: any = null;
+
       try {
-        console.log('Buscando dados em tempo real da planilha do Google Sheets...', webAppUrl);
-        let activeUrlToTry = webAppUrl;
-        let response = await fetch(`/api/sync-sheets?webAppUrl=${encodeURIComponent(activeUrlToTry)}`);
-        let result = await response.json().catch(() => null);
-        
-        // Se a URL falhou (404/500/abort), tenta recuperar automaticamente a URL atualizada da aba Database da planilha
-        if (!response.ok || (result && result.status === 'error' && (result.message?.includes('404') || result.message?.includes('aborted')))) {
-          console.warn('Tentativa de sincronização falhou. Recuperando Web App URL atualizada da planilha...');
-          const freshUrl = await forceFetchWebAppUrl();
-          if (freshUrl && freshUrl !== activeUrlToTry) {
-            activeUrlToTry = freshUrl;
-            response = await fetch(`/api/sync-sheets?webAppUrl=${encodeURIComponent(activeUrlToTry)}`);
-            result = await response.json().catch(() => null);
-          }
-        }
-        
-        if (!response.ok) {
-          throw new Error(result?.message || `HTTP ${response.status}`);
-        }
-
-        if (result && result.status === 'success') {
-          // Sanitização robusta contra dados corrompidos ou chaves de datas na coluna de preços
-          const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
-          
-          setProducts(sanitized.products);
-          setSales(sanitized.sales);
-          if (result.mlRecords && Array.isArray(result.mlRecords)) {
-            setMlRecords(result.mlRecords);
-          }
-          if (result.entradaRecords && Array.isArray(result.entradaRecords)) {
-            const filtered = result.entradaRecords.filter(e => {
-              const opStat = String(e.operationStatus || '').toLowerCase().trim();
-              const tipo = String(e.releaseStatus || e.description || '').toLowerCase().trim();
-              if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
-              if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
-                return false;
-              }
-              return true;
-            });
-            setEntradaRecords(filtered);
-          }
-          
-          // Sincronizar produtos banidos do Google Sheets
-          if (result.bannedProducts && Array.isArray(result.bannedProducts)) {
-            setBannedProducts(prev => {
-              const setNames = new Set(prev.map(b => String(b).trim().toLowerCase()));
-              const newItems = [...prev];
-              result.bannedProducts.forEach((b: any) => {
-                const str = typeof b === 'string' ? b : (b.name || String(b));
-                if (str && !setNames.has(str.trim().toLowerCase())) {
-                  setNames.add(str.trim().toLowerCase());
-                  newItems.push(str.trim());
-                }
-              });
-              return newItems;
-            });
-          }
-
-          // Sincronizar o capital inicial / aporte
-          if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
-            if (result.hasConfigSheet || result.initialCapital !== 500) {
-              setInitialCapital(result.initialCapital);
-              localStorage.setItem('ml_initial_capital', String(result.initialCapital));
+        for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+          try {
+            setLoadAttempt(attempt + 1);
+            await loadOnce(attempt === 0);
+            return;
+          } catch (err) {
+            lastError = err;
+            if (isStale()) return;
+            console.warn(`Tentativa ${attempt + 1} de leitura da nuvem falhou:`, err);
+            // Tempo esgotado já consumiu quase um minuto: repetir na hora não ajuda. Mostra o erro e deixa
+            // o botão "Tentar novamente" / a repetição automática de 30s cuidar disso.
+            if (/tempo limite|demorou|timeout|aborted/i.test(String((err as any)?.message || err))) break;
+            if (attempt < retryDelays.length) {
+              await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+              if (isStale()) return;
             }
           }
-
-          console.log('Dados em tempo real obtidos e sanitizados com sucesso do Google Sheets!');
-          setHasFetchedFromCloud(true); // Habilita o auto-sync somente após download com sucesso total
-        } else if (result && result.status === 'error') {
-          throw new Error(result.message || 'Erro ao carregar dados do Apps Script.');
         }
-      } catch (err: any) {
-        console.error('Erro ao recuperar dados iniciais da nuvem:', err);
-        let detailMsg = err.message || String(err);
-        if (detailMsg.includes('aborted') || detailMsg.includes('AbortError') || detailMsg.includes('timeout')) {
-          detailMsg = 'A resposta da planilha excedeu o tempo limite. Clique em "Atualizar Agora" no topo para tentar novamente.';
+
+        console.error('Erro ao recuperar dados iniciais da nuvem:', lastError);
+        let detailMsg = (lastError && lastError.message) || String(lastError);
+        if (/aborted|AbortError|timeout/i.test(detailMsg)) {
+          detailMsg = 'A resposta da planilha excedeu o tempo limite. Clique em "Tentar novamente" ou em "Atualizar Agora" no topo.';
         }
         setCloudSyncError(`Sincronização pendente: ${detailMsg}`);
-        // Se falhar o carregamento, NÃO marcamos como fetched para bloquear escrita acidental e incentivar nova tentativa manual
+        // NÃO marcamos como carregado: isso bloqueia qualquer gravação acidental com dados incompletos
         setHasFetchedFromCloud(false);
       } finally {
-        setIsFetchingFromCloud(false);
+        if (!isStale()) {
+          isLoadingRef.current = false;
+          setIsFetchingFromCloud(false);
+        }
       }
     };
 
-    fetchInitialData();
-  }, [webAppUrl, hasFetchedFromCloud, isFetchingWebAppUrl]);
+    run();
+  }, [webAppUrl, hasFetchedFromCloud, isFetchingWebAppUrl, loadNonce]);
+
+  // Se o carregamento inicial falhou por completo, tenta de novo sozinho a cada 30s
+  useEffect(() => {
+    if (hasFetchedFromCloud || isFetchingFromCloud || hasLoadedOnceRef.current || !cloudSyncError || !webAppUrl) return;
+    const timer = setTimeout(() => setLoadNonce(n => n + 1), 30000);
+    return () => clearTimeout(timer);
+  }, [hasFetchedFromCloud, isFetchingFromCloud, cloudSyncError, webAppUrl]);
 
   // Forçar recarregamento/importação manual do banco de dados na planilha do Sheets
   const handlePullFromCloud = async (): Promise<{ status: 'success' | 'error'; message: string }> => {
@@ -561,65 +654,9 @@ export default function App() {
     setCloudSyncError(null);
     try {
       console.log('Forçando leitura/puxada de dados do Google Sheets...', webAppUrl);
-      const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
-      const response = await fetch(url);
-      const result = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(result?.message || `HTTP ${response.status}`);
-      }
-
-      if (result && result.status === 'success') {
-        const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
-        
-        setProducts(sanitized.products);
-        setSales(sanitized.sales);
-        if (result.mlRecords && Array.isArray(result.mlRecords)) {
-          setMlRecords(result.mlRecords);
-        }
-        if (result.entradaRecords && Array.isArray(result.entradaRecords)) {
-          const filtered = result.entradaRecords.filter(e => {
-            const opStat = String(e.operationStatus || '').toLowerCase().trim();
-            const tipo = String(e.releaseStatus || e.description || '').toLowerCase().trim();
-            if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
-            if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
-              return false;
-            }
-            return true;
-          });
-          setEntradaRecords(filtered);
-        }
-
-        if (result.bannedProducts && Array.isArray(result.bannedProducts)) {
-          setBannedProducts(prev => {
-            const setNames = new Set(prev.map(b => String(b).trim().toLowerCase()));
-            const newItems = [...prev];
-            result.bannedProducts.forEach((b: any) => {
-              const str = typeof b === 'string' ? b : (b.name || String(b));
-              if (str && !setNames.has(str.trim().toLowerCase())) {
-                setNames.add(str.trim().toLowerCase());
-                newItems.push(str.trim());
-              }
-            });
-            return newItems;
-          });
-        }
-        
-        // Sincronizar o capital inicial / aporte
-        if (result.initialCapital !== undefined && typeof result.initialCapital === 'number' && result.initialCapital > 0) {
-          if (result.hasConfigSheet || result.initialCapital !== 500) {
-            setInitialCapital(result.initialCapital);
-            localStorage.setItem('ml_initial_capital', String(result.initialCapital));
-          }
-        }
-
-        console.log('Dados importados e sanitizados com sucesso do Google Sheets!');
-        setHasFetchedFromCloud(true);
-        setHasPendingWrite(false); // Como acabamos de ler, não temos alterações locais novas a gravar
-        return { status: 'success', message: `Leitura concluída com sucesso! ${sanitized.products.length} produtos e ${sanitized.sales.length} vendas importados da sua planilha.` };
-      } else {
-        throw new Error(result?.message || 'Erro do Google Apps Script');
-      }
+      const sanitized = await pullSnapshot(webAppUrl);
+      console.log('Dados importados e sanitizados com sucesso do Google Sheets!');
+      return { status: 'success', message: `Leitura concluída com sucesso! ${sanitized.products.length} produtos e ${sanitized.sales.length} vendas importados da sua planilha.` };
     } catch (err: any) {
       console.error('Erro ao ler dados manuais da nuvem:', err);
       const errorMsg = err.message || String(err);
@@ -640,7 +677,6 @@ export default function App() {
         if (data.webAppUrl) {
           currentWebAppUrl = data.webAppUrl;
           setWebAppUrl(data.webAppUrl);
-          localStorage.setItem('ml_webapp_url', data.webAppUrl);
         }
       } catch (err) {
         console.error('Erro no Master Sync URL:', err);
@@ -657,33 +693,8 @@ export default function App() {
     setCloudSyncError(null);
     try {
       console.log('Forçando Master Sync...', currentWebAppUrl);
-      const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(currentWebAppUrl)}`;
-      const response = await fetch(url);
-      const result = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        throw new Error(result?.message || `HTTP ${response.status}`);
-      }
-
-      if (result && result.status === 'success') {
-        const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
-        setProducts(sanitized.products);
-        setSales(sanitized.sales);
-        if (result.mlRecords && Array.isArray(result.mlRecords)) setMlRecords(result.mlRecords);
-        if (result.entradaRecords && Array.isArray(result.entradaRecords)) {
-          setEntradaRecords(result.entradaRecords);
-        }
-        if (result.initialCapital !== undefined && typeof result.initialCapital === 'number') {
-           setInitialCapital(result.initialCapital);
-           localStorage.setItem('ml_initial_capital', String(result.initialCapital));
-        }
-
-        setHasFetchedFromCloud(true);
-        setHasPendingWrite(false);
-        return { status: 'success', message: 'Master Sync concluído: URL atualizada e dados puxados com sucesso!' };
-      } else {
-        throw new Error(result?.message || 'Erro no sync.');
-      }
+      await pullSnapshot(currentWebAppUrl);
+      return { status: 'success', message: 'Master Sync concluído: URL atualizada e dados puxados com sucesso!' };
     } catch (error: any) {
       console.error('Erro no Master Sync Pull:', error);
       return { status: 'error', message: String(error.message || error) };
@@ -692,107 +703,193 @@ export default function App() {
     }
   };
 
-  // Intervalo de atualização periódica para manter múltiplos dispositivos sincronizados em tempo real (20 segundos)
+  // Intervalo de atualização periódica para manter múltiplos dispositivos sincronizados (20 segundos)
   useEffect(() => {
     if (!webAppUrl || !hasFetchedFromCloud) return;
 
+    let stopped = false;
     const interval = setInterval(async () => {
       // Apenas atualiza se o documento estiver visível para evitar chamadas de API desnecessárias em background
       if (document.hidden) return;
 
       // Se temos alterações locais pendentes de gravação, não buscamos da nuvem para evitar sobrescrever dados locais
-      if (hasPendingWrite) return;
+      if (hasPendingWriteRef.current || syncInFlightRef.current) return;
 
       try {
-        const url = `/api/sync-sheets?webAppUrl=${encodeURIComponent(webAppUrl)}`;
-        const response = await fetch(url);
-        if (response.ok) {
-          const result = await response.json();
-          if (result.status === 'success') {
-            // Apenas atualiza se houver dados e forem diferentes dos atuais para evitar re-renderizações e ciclos infinitos
-            const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords);
-            
-            if (sanitized.products && JSON.stringify(sanitized.products) !== JSON.stringify(products)) {
-              setProducts(sanitized.products);
-            }
-            if (sanitized.sales && JSON.stringify(sanitized.sales) !== JSON.stringify(sales)) {
-              setSales(sanitized.sales);
-            }
-            if (result.mlRecords && JSON.stringify(result.mlRecords) !== JSON.stringify(mlRecords)) {
-              setMlRecords(result.mlRecords);
-            }
+        const { response, result } = await requestCloudSnapshot(webAppUrl);
+
+        // O usuário pode ter editado ALGO enquanto esta requisição estava em andamento.
+        // Aplicar a resposta agora apagaria a edição dele (condição de corrida): descartamos.
+        if (stopped || hasPendingWriteRef.current || syncInFlightRef.current) return;
+
+        if (response.ok && result && result.status === 'success') {
+          // Mesmas entradas da leitura inicial, para os status não "piscarem" entre uma leitura e outra
+          const sanitized = sanitizeCloudData(result.products || [], result.sales || [], result.mlRecords || mlRecords, result.entradaRecords || entradaRecords);
+
+          // Apenas atualiza se houver dados e forem diferentes dos atuais para evitar re-renderizações e ciclos infinitos
+          if (sanitized.products && JSON.stringify(sanitized.products) !== JSON.stringify(products)) {
+            setProducts(sanitized.products);
           }
+          if (sanitized.sales && JSON.stringify(sanitized.sales) !== JSON.stringify(sales)) {
+            setSales(sanitized.sales);
+          }
+          if (result.mlRecords && JSON.stringify(result.mlRecords) !== JSON.stringify(mlRecords)) {
+            setMlRecords(result.mlRecords);
+          }
+          lastCloudCountsRef.current = { products: sanitized.products.length, sales: sanitized.sales.length };
+          hasLoadedOnceRef.current = true;
+          setIsLocalOnlyMode(false);
         }
       } catch (err) {
         console.warn('Erro ao atualizar dados em background:', err);
       }
     }, 20000); // 20s de intervalo para tempo real sem sobrecarregar a cota do Apps Script
 
-    return () => clearInterval(interval);
-  }, [webAppUrl, hasFetchedFromCloud, products, sales, mlRecords, hasPendingWrite]);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [webAppUrl, hasFetchedFromCloud, products, sales, mlRecords, entradaRecords]);
+
+  // Proteção contra gravações que apagariam dados: compara o que vamos gravar com o que a planilha tinha na última leitura.
+  const getWriteSafetyProblem = (): string | null => {
+    const last = lastCloudCountsRef.current;
+    if (last.products >= 6 && products.length < last.products * 0.5) {
+      return `A planilha tinha ${last.products} produtos e o aplicativo tem apenas ${products.length}.`;
+    }
+    if (last.sales >= 20 && sales.length < last.sales * 0.5) {
+      return `A planilha tinha ${last.sales} vendas e o aplicativo tem apenas ${sales.length}.`;
+    }
+    return null;
+  };
+
+  const confirmRiskyWrite = (problem: string): boolean => {
+    try {
+      return window.confirm(
+        `⚠️ PROTEÇÃO CONTRA PERDA DE DADOS\n\n${problem}\n\nGravar assim pode APAGAR dados da sua planilha. Deseja gravar mesmo assim?\n\n(Cancelar mantém a planilha intacta. Use "Atualizar Agora" para recarregar os dados da planilha.)`
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  // Porta de segurança para gravações manuais iniciadas fora do App (botão "Sincronizar" da aba Google Sheets)
+  const checkManualWriteAllowed = (): { allowed: boolean; message?: string } => {
+    if (isLocalOnlyMode) {
+      return {
+        allowed: false,
+        message: 'Modo local: o app não conseguiu ler a planilha, então os dados daqui estão incompletos. Clique em "Atualizar Agora" para ler a planilha antes de gravar, ou a planilha seria sobrescrita.'
+      };
+    }
+    const problem = getWriteSafetyProblem();
+    if (problem && !confirmRiskyWrite(problem)) {
+      return { allowed: false, message: `Gravação cancelada por segurança: ${problem}` };
+    }
+    return { allowed: true };
+  };
+
+  // Envia todo o estado para a planilha (usado pela gravação automática e pelo botão manual)
+  const pushSnapshot = async () => {
+    const body = JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, bannedProducts });
+    const size = utf8Size(body);
+    if (size > MAX_POST_BYTES) {
+      throw new Error(
+        `Os dados (${(size / 1048576).toFixed(1)} MB) ultrapassam o limite de gravação da hospedagem (~4 MB). Reduza o histórico importado (ex.: limpe registros antigos de "Importe Mercado Livre") e tente novamente.`
+      );
+    }
+
+    const response = await fetch('/api/sync-sheets', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(httpErrorMessage(response.status, result));
+    if (!result) throw new Error('Resposta inválida do servidor ao gravar na planilha.');
+    if (result.status !== 'success') throw new Error(result.message || 'Erro no Apps Script');
+
+    if (!result.ignored) {
+      lastCloudCountsRef.current = { products: products.length, sales: sales.length };
+    }
+  };
 
   // Sincronização em background: SOMENTE executa se o usuário fez uma alteração MANUAL EXPLÍCITA (hasPendingWrite === true)
   // e NUNCA grava se a lista de produtos estiver vazia, garantindo a integridade absoluta da database (SSOT)
   useEffect(() => {
     if (!webAppUrl) return;
-    
-    // Trava de segurança: se não houve alteração pendente pelo usuário ou se ainda está buscando da nuvem, bloqueia o envio
-    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite) return;
+
+    // Trava de segurança: se não houve alteração pendente pelo usuário, se ainda está buscando da nuvem
+    // ou se o app está em modo local (sem ter lido a planilha), bloqueia o envio
+    if (isFetchingFromCloud || !hasFetchedFromCloud || !hasPendingWrite || isLocalOnlyMode) return;
 
     const syncTimeout = setTimeout(async () => {
+      // Já há uma gravação em andamento: quando ela terminar, uma nova rodada é agendada se houver alterações
+      if (syncInFlightRef.current) return;
+
+      const problem = getWriteSafetyProblem();
+      if (problem && !confirmRiskyWrite(problem)) {
+        setCloudSyncError(`Gravação bloqueada por segurança: ${problem} Use "Atualizar Agora" para recarregar a planilha.`);
+        return;
+      }
+
+      syncInFlightRef.current = true;
+      const versionAtStart = pendingVersionRef.current;
       setIsCloudSyncing(true);
       setCloudSyncError(null);
       try {
-        const response = await fetch('/api/sync-sheets', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, bannedProducts })
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.message || `HTTP ${response.status}`);
-        }
-        
-        const result = await response.json();
-        if (result.status !== 'success') {
-          throw new Error(result.message || 'Erro no Apps Script');
-        }
+        await pushSnapshot();
         console.log('Sincronização manual salva com sucesso na planilha!');
-        setHasPendingWrite(false); // Reseta a flag de alterações pendentes após sucesso
+        // Só zera a flag se o usuário NÃO editou nada durante o envio; senão a edição nova ficaria sem gravar
+        if (pendingVersionRef.current === versionAtStart) {
+          setHasPendingWrite(false);
+        }
       } catch (err: any) {
         console.error('Erro na sincronização:', err);
         setCloudSyncError(err.message || String(err));
       } finally {
+        syncInFlightRef.current = false;
         setIsCloudSyncing(false);
+        if (pendingVersionRef.current !== versionAtStart) {
+          setSyncNonce(n => n + 1);
+        }
       }
     }, 1500); // 1.5s debounce
 
     return () => clearTimeout(syncTimeout);
-  }, [products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite]);
+  }, [products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix, bannedProducts, webAppUrl, isFetchingFromCloud, hasFetchedFromCloud, hasPendingWrite, isLocalOnlyMode, syncNonce]);
 
   const handlePushToCloudExplicit = async () => {
     if (!webAppUrl) return;
+    if (isLocalOnlyMode) {
+      setCloudSyncError('Modo local: leia a planilha antes de enviar ("Atualizar Agora") para não sobrescrever seus dados na nuvem.');
+      return;
+    }
+    if (syncInFlightRef.current) return;
+
+    const problem = getWriteSafetyProblem();
+    if (problem && !confirmRiskyWrite(problem)) {
+      setCloudSyncError(`Gravação bloqueada por segurança: ${problem} Use "Atualizar Agora" para recarregar a planilha.`);
+      return;
+    }
+
+    syncInFlightRef.current = true;
+    const versionAtStart = pendingVersionRef.current;
     setIsCloudSyncing(true);
     setCloudSyncError(null);
     try {
-      const response = await fetch('/api/sync-sheets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ webAppUrl, products, sales, initialCapital, mlRecords, entradaRecords, entradaRawMatrix })
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok || result.status !== 'success') {
-        throw new Error(result.message || `HTTP ${response.status}`);
+      await pushSnapshot();
+      if (pendingVersionRef.current === versionAtStart) {
+        setHasPendingWrite(false);
       }
-      setHasPendingWrite(false);
     } catch (err: any) {
       console.error('Erro ao enviar para o Sheets:', err);
       setCloudSyncError(err.message || String(err));
     } finally {
+      syncInFlightRef.current = false;
       setIsCloudSyncing(false);
+      if (pendingVersionRef.current !== versionAtStart) {
+        setSyncNonce(n => n + 1);
+      }
     }
   };
 
@@ -845,13 +942,17 @@ export default function App() {
   };
 
   // Contar produtos com estoque crítico (abaixo do nível de segurança)
-  const lowStockCount = products.filter(p => calculateCurrentStock(p, sales, products) <= p.minimalStock).length;
+  const lowStockCount = useMemo(
+    () => products.filter(p => calculateCurrentStock(p, sales, products) <= p.minimalStock).length,
+    [products, sales]
+  );
 
   // Funções de manipulação do estoque e vendas
   const handleAddProduct = (newProduct: Omit<Product, 'id'>) => {
+    // SKU vazio geraria id "" e colidiria com outros produtos (um sobrescreveria o outro)
     const freshProduct: Product = {
       ...newProduct,
-      id: newProduct.sku
+      id: String(newProduct.sku || '').trim() || `prod_${Date.now()}`
     };
     const nextProducts = [freshProduct, ...products.filter(p => p.id !== freshProduct.id)];
     setProducts(nextProducts);
@@ -1067,15 +1168,7 @@ export default function App() {
     const validRecords = records.filter(r => {
       const rawId = String(r.id || r.mlSaleId || '').trim();
       if (!isStrictSaleId(rawId)) return false;
-
-      const tipo = String(r.releaseStatus || r.description || '').toLowerCase();
-      if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
-
-      const opStat = String(r.operationStatus || '').toLowerCase();
-      if (opStat && (opStat.includes('cancelad') || opStat.includes('estorn') || opStat.includes('devol') || (opStat !== 'pago' && opStat !== 'paga' && opStat !== 'paid' && opStat !== 'aprovado' && opStat !== 'concluido'))) {
-        return false;
-      }
-      return true;
+      return isEntradaReleaseRecord(r);
     });
 
     const canceledRecords = records.filter(r => {
@@ -1244,6 +1337,10 @@ export default function App() {
             }
           }
           
+          // Valores vindos de planilhas podem estar vazios/zerados. Sem normalizar, "unidades = 0" ou
+          // "receita = undefined" geravam NaN/Infinity que se espalhavam pelos totais e viravam null na planilha.
+          r.units = toFiniteNumber(r.units) > 0 ? toFiniteNumber(r.units) : 1;
+          r.productRevenue = toFiniteNumber(r.productRevenue);
           const totalSaleValue = r.productRevenue;
           const totalCostValue = matchingProduct ? (matchingProduct.purchasePrice * r.units) : 0;
           
@@ -1428,8 +1525,8 @@ export default function App() {
     setEntradaRecords([]);
     setEntradaRawMatrix(null);
     try {
-      localStorage.removeItem('ml_entrada_records');
-      localStorage.removeItem('ml_entrada_raw_matrix');
+      storageRemove('ml_entrada_records');
+      storageRemove('ml_entrada_raw_matrix');
     } catch (e) {}
     setHasPendingWrite(true);
   };
@@ -1466,7 +1563,7 @@ export default function App() {
                 e.preventDefault();
                 if (passwordInput === 'Investidor123') {
                   setIsAuthenticated(true);
-                  localStorage.setItem('is_ml_authenticated', 'true');
+                  storageSet('is_ml_authenticated', 'true');
                   setPasswordError(null);
                 } else {
                   setPasswordError('Senha de segurança incorreta! Tente novamente.');
@@ -1513,6 +1610,47 @@ export default function App() {
     );
   }
 
+  // O carregamento inicial falhou mesmo após as novas tentativas automáticas. Em vez de mostrar um painel
+  // VAZIO (que parece que os dados sumiram), explicamos o que houve e oferecemos as saídas seguras.
+  if (!hasFetchedFromCloud && !isFetchingFromCloud && !hasLoadedOnceRef.current && !isLocalOnlyMode && cloudSyncError) {
+    return (
+      <div className="min-h-screen bg-[#070707] text-white flex items-center justify-center p-4 font-sans">
+        <div className="bg-[#121212] rounded-3xl border border-white/5 w-full max-w-md p-8 text-center space-y-5">
+          <span className="text-[10px] font-black tracking-widest bg-amber-500/10 text-amber-400 border border-amber-500/20 px-3 py-1 rounded-full uppercase">
+            Não foi possível carregar a planilha
+          </span>
+          <h2 className="text-xl font-light tracking-tight">Seus dados estão seguros</h2>
+          <p className="text-xs text-white/50 leading-relaxed">
+            A leitura do Google Sheets falhou. Nada foi apagado ou alterado na planilha. O app tentará novamente
+            sozinho em 30 segundos, ou você pode tentar agora.
+          </p>
+          <p className="text-[11px] text-amber-300/80 leading-relaxed break-words whitespace-pre-line">{cloudSyncError}</p>
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => setLoadNonce(n => n + 1)}
+              className="w-full bg-[#FFE600] hover:bg-[#FFE600]/85 text-black font-extrabold text-xs py-3 rounded-xl uppercase tracking-wider cursor-pointer"
+            >
+              Tentar novamente
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                // Modo local: dá acesso à aba de configuração para corrigir o link, mas BLOQUEIA gravações na nuvem
+                setIsLocalOnlyMode(true);
+                setHasFetchedFromCloud(true);
+                setActiveTab('sheets');
+              }}
+              className="w-full bg-white/5 hover:bg-white/10 border border-white/10 text-white font-extrabold text-[10px] py-3 rounded-xl uppercase tracking-wider cursor-pointer"
+            >
+              ⚙️ Ajustar link da planilha (modo local, sem gravar)
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Se estiver carregando o banco de dados pela primeira vez na inicialização após o login
   if (!hasFetchedFromCloud && isFetchingFromCloud) {
     return (
@@ -1540,12 +1678,22 @@ export default function App() {
               <p className="text-xs text-white/50 leading-relaxed">
                 Carregando estoque, faturamento e vendas sincronizadas do Google Sheets. Por favor, aguarde...
               </p>
+              {loadAttempt > 1 && (
+                <p className="text-[11px] text-amber-300/80">
+                  A planilha demorou a responder. Tentativa {loadAttempt} de 3...
+                </p>
+              )}
             </div>
 
             <div className="pt-4 border-t border-white/5">
               <button
                 type="button"
                 onClick={() => {
+                  // Invalida a leitura em andamento e entra em MODO LOCAL: sem ter lido a planilha, os dados locais
+                  // estão incompletos, então gravações na nuvem ficam bloqueadas (evita sobrescrever a planilha inteira).
+                  loadRunIdRef.current += 1;
+                  isLoadingRef.current = false;
+                  setIsLocalOnlyMode(true);
                   setIsFetchingFromCloud(false);
                   setHasFetchedFromCloud(true); // Desbloqueia o aplicativo para o modo local
                   setActiveTab('sheets'); // Redireciona para aba de configurações
@@ -1578,7 +1726,7 @@ export default function App() {
         onMasterSync={handleMasterSync}
         onLogout={() => {
           setIsAuthenticated(false);
-          localStorage.removeItem('is_ml_authenticated');
+          storageRemove('is_ml_authenticated');
           setPasswordInput('');
         }}
       />
@@ -1650,6 +1798,7 @@ export default function App() {
             mlRecords={mlRecords}
             entradaRecords={entradaRecords}
             entradaRawMatrix={entradaRawMatrix || undefined}
+            onBeforeWrite={checkManualWriteAllowed}
           />
         )}
 

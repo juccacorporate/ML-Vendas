@@ -908,13 +908,21 @@ export default function MLImport({
 
     // Converter para array e ordenar pela data do mais antigo para o mais novo
     const arr = Object.values(dailyMap);
-    arr.sort((a, b) => {
-      const [dayA, monthA] = a.date.split('/');
-      const [dayB, monthB] = b.date.split('/');
-      const dateA = new Date(2026, parseInt(monthA || '1') - 1, parseInt(dayA || '1'));
-      const dateB = new Date(2026, parseInt(monthB || '1') - 1, parseInt(dayB || '1'));
-      return dateA.getTime() - dateB.getTime();
-    });
+    // A chave de data é "dd/mm" (sem ano). O ano estava FIXO em 2026: a partir de janeiro/2027 os dias de
+    // dezembro passariam a aparecer DEPOIS dos de janeiro e o gráfico dos "últimos 15 dias" ficaria errado.
+    // Agora assume-se o ano mais recente que não caia no futuro.
+    const refNow = new Date();
+    const keyToTime = (key: string): number => {
+      const [dayStr, monthStr] = key.split('/');
+      const day = parseInt(dayStr || '1', 10) || 1;
+      const month = (parseInt(monthStr || '1', 10) || 1) - 1;
+      let candidate = new Date(refNow.getFullYear(), month, day);
+      if (candidate.getTime() > refNow.getTime() + 2 * 24 * 60 * 60 * 1000) {
+        candidate = new Date(refNow.getFullYear() - 1, month, day);
+      }
+      return candidate.getTime();
+    };
+    arr.sort((a, b) => keyToTime(a.date) - keyToTime(b.date));
     return arr.slice(-15); // Mostrar últimos 15 pontos de dados
   }, [mlRecords, products]);
 

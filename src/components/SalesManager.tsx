@@ -5,7 +5,7 @@
 
 import React, { useState } from 'react';
 import { Product, Sale } from '../types';
-import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock, normalizeName, cleanMlSaleId, getSaleMlId, isValidProductTitle } from '../utils';
+import { calculateMLFee, formatCurrency, formatDate, getDaysRemainingForRelease, calculateCurrentStock, normalizeName, cleanMlSaleId, getSaleMlId, isValidProductTitle, safeDiv } from '../utils';
 import { ShoppingCart, Plus, Search, Calendar, Landmark, Info, Trash2, ArrowRightCircle, AlertCircle, TrendingUp, Clock, Edit3, X } from 'lucide-react';
 
 interface SalesManagerProps {
@@ -213,7 +213,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
       shippingType,
       isCustomSale: isCustomMlFee,
       customMlFee: isCustomMlFee ? Number(manualMlFee) : undefined,
-      customShippingCost: shippingCostType === 'unit' ? Number(customShipping) : (Number(customShipping) / quantity),
+      customShippingCost: shippingCostType === 'unit' ? Number(customShipping) : safeDiv(Number(customShipping), quantity),
       mlSaleId: mlSaleId || undefined
     });
 
@@ -774,7 +774,7 @@ export default function SalesManager({ products, sales, onAddSale, onCancelSale,
                   if (product && sale.status !== 'refunded') {
                     const defaultMlFeeUnit = calculateMLFee(product.salePrice, product.mlFeeType, product.customFeePercent);
                     const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost - (product.salePrice * 0.04);
-                    const realNetProfitUnit = effectiveNetProfit / sale.quantity;
+                    const realNetProfitUnit = safeDiv(effectiveNetProfit, sale.quantity);
                     marginDifference = realNetProfitUnit - defaultEstimatedNetProfitUnit;
                     if (Math.abs(marginDifference) > 0.10) {
                       hasMarginDiff = true;

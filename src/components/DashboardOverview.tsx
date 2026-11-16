@@ -5,7 +5,7 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { Product, Sale } from '../types';
-import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr, calculateMLFee, calculateCurrentStock } from '../utils';
+import { formatCurrency, calculateDaysInStock, formatShortDate, getReleaseDateStr, calculateMLFee, calculateCurrentStock, safeDiv } from '../utils';
 import { TrendingUp, Percent, AlertTriangle, ArrowUpRight, ArrowDownRight, BarChart3, PackageCheck, Zap, Lock, Unlock, Clock, Coins, AlertCircle, Receipt, FileText, BadgePercent, Award, ArrowRight } from 'lucide-react';
 
 interface DashboardOverviewProps {
@@ -224,7 +224,7 @@ export default function DashboardOverview({
       const defaultMlFeeUnit = calculateMLFee(product.salePrice, product.mlFeeType, product.customFeePercent);
       const taxUnit = product.salePrice * 0.04;
       const defaultEstimatedNetProfitUnit = product.salePrice - product.purchasePrice - defaultMlFeeUnit - product.shippingCost - taxUnit;
-      const realNetProfitUnit = s.netProfit / s.quantity;
+      const realNetProfitUnit = safeDiv(s.netProfit, s.quantity);
 
       const varianceUnit = realNetProfitUnit - defaultEstimatedNetProfitUnit;
       const totalVariance = varianceUnit * s.quantity;
