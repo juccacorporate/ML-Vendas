@@ -5,7 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import { Product, Sale, getAllProductSkus } from '../types';
-import { formatCurrency, formatShortDate, formatDate, calculateCurrentStock, findProductForSale, normalizeName } from '../utils';
+import { formatCurrency, formatShortDate, formatDate, calculateCurrentStock, findProductForSale, normalizeName, safeDiv } from '../utils';
 import { 
   BadgePercent, 
   Search, 
@@ -1707,30 +1707,30 @@ export default function ProductProfitsPanel({
                                     {/* Barra horizontal visual empilhada */}
                                     <div className="h-3 w-full bg-white/5 rounded-full overflow-hidden flex border border-white/10">
                                       <div 
-                                        style={{ width: `${Math.max(0, (item.cmvTotal / item.grossRevenue) * 100)}%` }} 
+                                        style={{ width: `${Math.max(0, safeDiv(item.cmvTotal, item.grossRevenue) * 100)}%` }} 
                                         className="bg-white/40 h-full" 
-                                        title={`Custo Mercadoria (CMV): ${formatCurrency(item.cmvTotal)} (${((item.cmvTotal / item.grossRevenue) * 100).toFixed(1)}%)`}
+                                        title={`Custo Mercadoria (CMV): ${formatCurrency(item.cmvTotal)} (${(safeDiv(item.cmvTotal, item.grossRevenue) * 100).toFixed(1)}%)`}
                                       />
                                       <div 
-                                        style={{ width: `${Math.max(0, (item.mlFeesTotal / item.grossRevenue) * 100)}%` }} 
+                                        style={{ width: `${Math.max(0, safeDiv(item.mlFeesTotal, item.grossRevenue) * 100)}%` }} 
                                         className="bg-amber-500 h-full" 
-                                        title={`Taxas ML: ${formatCurrency(item.mlFeesTotal)} (${((item.mlFeesTotal / item.grossRevenue) * 100).toFixed(1)}%)`}
+                                        title={`Taxas ML: ${formatCurrency(item.mlFeesTotal)} (${(safeDiv(item.mlFeesTotal, item.grossRevenue) * 100).toFixed(1)}%)`}
                                       />
                                       <div 
-                                        style={{ width: `${Math.max(0, (item.shippingCostsTotal / item.grossRevenue) * 100)}%` }} 
+                                        style={{ width: `${Math.max(0, safeDiv(item.shippingCostsTotal, item.grossRevenue) * 100)}%` }} 
                                         className="bg-orange-500 h-full" 
-                                        title={`Frete (Líquido): ${formatCurrency(item.shippingCostsTotal)} (${((item.shippingCostsTotal / item.grossRevenue) * 100).toFixed(1)}%)`}
+                                        title={`Frete (Líquido): ${formatCurrency(item.shippingCostsTotal)} (${(safeDiv(item.shippingCostsTotal, item.grossRevenue) * 100).toFixed(1)}%)`}
                                       />
                                       <div 
-                                        style={{ width: `${Math.max(0, (item.taxesTotal / item.grossRevenue) * 100)}%` }} 
+                                        style={{ width: `${Math.max(0, safeDiv(item.taxesTotal, item.grossRevenue) * 100)}%` }} 
                                         className="bg-blue-500 h-full" 
-                                        title={`Imposto 4%: ${formatCurrency(item.taxesTotal)} (${((item.taxesTotal / item.grossRevenue) * 100).toFixed(1)}%)`}
+                                        title={`Imposto 4%: ${formatCurrency(item.taxesTotal)} (${(safeDiv(item.taxesTotal, item.grossRevenue) * 100).toFixed(1)}%)`}
                                       />
                                       {item.totalNetProfit > 0 && (
                                         <div 
-                                          style={{ width: `${Math.max(0, (item.totalNetProfit / item.grossRevenue) * 100)}%` }} 
+                                          style={{ width: `${Math.max(0, safeDiv(item.totalNetProfit, item.grossRevenue) * 100)}%` }} 
                                           className="bg-emerald-400 h-full" 
-                                          title={`Lucro Líquido Real: ${formatCurrency(item.totalNetProfit)} (${((item.totalNetProfit / item.grossRevenue) * 100).toFixed(1)}%)`}
+                                          title={`Lucro Líquido Real: ${formatCurrency(item.totalNetProfit)} (${(safeDiv(item.totalNetProfit, item.grossRevenue) * 100).toFixed(1)}%)`}
                                         />
                                       )}
                                     </div>
@@ -1739,19 +1739,19 @@ export default function ProductProfitsPanel({
                                     <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-[10.5px] pt-1">
                                       <div className="flex items-center gap-1.5">
                                         <span className="w-2.5 h-2.5 rounded-sm bg-white/40 shrink-0"></span>
-                                        <span className="text-white/60">CMV: <strong className="text-white">{((item.cmvTotal / item.grossRevenue) * 100).toFixed(1)}%</strong></span>
+                                        <span className="text-white/60">CMV: <strong className="text-white">{(safeDiv(item.cmvTotal, item.grossRevenue) * 100).toFixed(1)}%</strong></span>
                                       </div>
                                       <div className="flex items-center gap-1.5">
                                         <span className="w-2.5 h-2.5 rounded-sm bg-amber-500 shrink-0"></span>
-                                        <span className="text-white/60">Taxas ML: <strong className="text-amber-400">{((item.mlFeesTotal / item.grossRevenue) * 100).toFixed(1)}%</strong></span>
+                                        <span className="text-white/60">Taxas ML: <strong className="text-amber-400">{(safeDiv(item.mlFeesTotal, item.grossRevenue) * 100).toFixed(1)}%</strong></span>
                                       </div>
                                       <div className="flex items-center gap-1.5">
                                         <span className="w-2.5 h-2.5 rounded-sm bg-orange-500 shrink-0"></span>
-                                        <span className="text-white/60">Frete Líq.: <strong className="text-orange-400">{((item.shippingCostsTotal / item.grossRevenue) * 100).toFixed(1)}%</strong></span>
+                                        <span className="text-white/60">Frete Líq.: <strong className="text-orange-400">{(safeDiv(item.shippingCostsTotal, item.grossRevenue) * 100).toFixed(1)}%</strong></span>
                                       </div>
                                       <div className="flex items-center gap-1.5">
                                         <span className="w-2.5 h-2.5 rounded-sm bg-blue-500 shrink-0"></span>
-                                        <span className="text-white/60">Imposto 4%: <strong className="text-blue-400">{((item.taxesTotal / item.grossRevenue) * 100).toFixed(1)}%</strong></span>
+                                        <span className="text-white/60">Imposto 4%: <strong className="text-blue-400">{(safeDiv(item.taxesTotal, item.grossRevenue) * 100).toFixed(1)}%</strong></span>
                                       </div>
                                       <div className="flex items-center gap-1.5">
                                         <span className="w-2.5 h-2.5 rounded-sm bg-emerald-400 shrink-0"></span>

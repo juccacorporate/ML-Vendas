@@ -36,6 +36,8 @@ interface SheetsIntegrationProps {
   mlRecords: any[];
   entradaRecords?: any[];
   entradaRawMatrix?: any[][];
+  // Verificação de segurança do App antes de qualquer gravação manual (modo local / queda brusca de dados)
+  onBeforeWrite?: () => { allowed: boolean; message?: string };
 }
 
 const APPS_SCRIPT_CODE = `function cleanMlSaleIdScript(raw) {
@@ -240,6 +242,18 @@ function calculateProductSalesVolumeScript(product, sales, allProducts) {
 }
 
 function doPost(e) {
+  // TRAVA: impede que duas gravações (ex.: dois dispositivos, ou gravação automática + manual) se misturem.
+  // Como o script limpa as abas antes de regravar, sem trava as linhas ficavam duplicadas, faltando ou a aba vazia.
+  var lock = LockService.getScriptLock();
+  var hasLock = false;
+  try {
+    lock.waitLock(30000);
+    hasLock = true;
+  } catch (lockErr) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "A planilha está ocupada com outra gravação. Aguarde alguns segundos e tente novamente." }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   try {
     var payload = JSON.parse(e.postData.contents);
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -581,10 +595,26 @@ function doPost(e) {
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    if (hasLock) {
+      lock.releaseLock();
+    }
   }
 }
 
 function doGet(e) {
+  // TRAVA de leitura: espera uma gravação em andamento terminar. Sem isso, ler no meio de uma gravação
+  // devolvia abas parcialmente vazias e o aplicativo podia regravar esses dados incompletos na planilha.
+  var readLock = LockService.getScriptLock();
+  var hasReadLock = false;
+  try {
+    readLock.waitLock(20000);
+    hasReadLock = true;
+  } catch (lockErr) {
+    return ContentService.createTextOutput(JSON.stringify({ status: "error", message: "A planilha está sendo atualizada neste momento. Tente novamente em alguns segundos." }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
@@ -1275,10 +1305,14 @@ function doGet(e) {
       bannedProducts: bannedProducts
     }))
     .setMimeType(ContentService.MimeType.JSON);
-    
+
   } catch (error) {
     return ContentService.createTextOutput(JSON.stringify({ status: "error", message: error.toString() }))
       .setMimeType(ContentService.MimeType.JSON);
+  } finally {
+    if (hasReadLock) {
+      readLock.releaseLock();
+    }
   }
 }`;
 
@@ -1293,7 +1327,8 @@ export default function SheetsIntegration({
   initialCapital,
   mlRecords,
   entradaRecords,
-  entradaRawMatrix
+  entradaRawMatrix,
+  onBeforeWrite
 }: SheetsIntegrationProps) {
   const [copied, setCopied] = useState<'headers' | 'script' | null>(null);
   const [inputUrl, setInputUrl] = useState(spreadsheetUrl);
@@ -1344,6 +1379,14 @@ export default function SheetsIntegration({
     if (!webAppUrl) return;
     setIsSyncing(true);
     setSyncResult({ status: null, message: '' });
+
+    // Mesmas travas da gravação automática: bloqueia no modo local e confirma quedas bruscas de dados
+    const gate = onBeforeWrite ? onBeforeWrite() : { allowed: true };
+    if (!gate.allowed) {
+      setSyncResult({ status: 'error', message: gate.message || 'Gravação bloqueada por segurança.' });
+      setIsSyncing(false);
+      return;
+    }
 
     try {
       // Dispara requisição de sincronização ao servidor Proxy local (/api/sync-sheets)

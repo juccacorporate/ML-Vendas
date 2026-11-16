@@ -15,15 +15,55 @@ export const TAX_PERCENT = 4; // Imposto padrão de 4% sobre a venda
 /**
  * Normaliza textos para comparação flexível (remove acentos, pontuação e caixa alta/baixa)
  */
+const NORMALIZE_CACHE_LIMIT = 20000;
+const normalizeCache = new Map<string, string>();
+
 export function normalizeName(name: string): string {
   if (!name) return '';
-  return name
+  const cached = normalizeCache.get(name);
+  if (cached !== undefined) return cached;
+
+  const result = name
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+  // Memoiza\u00e7\u00e3o limitada: a mesma string \u00e9 normalizada milhares de vezes por renderiza\u00e7\u00e3o
+  if (normalizeCache.size >= NORMALIZE_CACHE_LIMIT) normalizeCache.clear();
+  normalizeCache.set(name, result);
+  return result;
+}
+
+/**
+ * Divis\u00e3o segura: devolve `fallback` quando o denominador \u00e9 0, NaN ou Infinity
+ * (evita "NaN%", "Infinity" e larguras de barra inv\u00e1lidas na interface).
+ */
+export function safeDiv(numerator: number, denominator: number, fallback: number = 0): number {
+  const n = Number(numerator);
+  const d = Number(denominator);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return fallback;
+  return n / d;
+}
+
+/** Converte qualquer valor em n\u00famero finito (NaN/Infinity/undefined viram `fallback`). */
+export function toFiniteNumber(value: any, fallback: number = 0): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Regra \u00fanica para decidir se um registro da aba "Entrada de Valores" \u00e9 uma libera\u00e7\u00e3o paga v\u00e1lida.
+ * (antes essa mesma l\u00f3gica estava copiada em 4 lugares diferentes)
+ */
+export function isEntradaReleaseRecord(e: any): boolean {
+  const opStat = String(e?.operationStatus || '').toLowerCase().trim();
+  const tipo = String(e?.releaseStatus || e?.description || '').toLowerCase().trim();
+  if (tipo && !tipo.includes('libera') && !tipo.includes('dispon')) return false;
+  if (opStat && !['pago', 'paga', 'paid', 'aprovado', 'concluido'].includes(opStat)) return false;
+  return true;
 }
 
 /**
@@ -225,6 +265,93 @@ export function findProductForSale(s: Sale, productsList: Product[]): Product | 
  * Calcula o volume total de saídas (vendas ativas) para um produto específico
  */
 export function calculateProductSalesVolume(
+  product: Product,
+  sales: Sale[],
+  allProducts?: Product[]
+): number {
+  if (!sales || sales.length === 0 || !product) return 0;
+
+  // Caminho rápido: índice calculado UMA vez por par (vendas, produtos) e reaproveitado
+  // por todos os produtos. Antes, cada produto reprocessava todas as vendas (O(P × V × P)).
+  if (allProducts && allProducts.length > 0) {
+    const index = getSalesVolumeIndex(sales, allProducts);
+    const fromIndex = index.get(product);
+    if (fromIndex !== undefined) return fromIndex;
+  }
+
+  return calculateProductSalesVolumeLegacy(product, sales, allProducts);
+}
+
+const SKU_JUNK = ['sim', 'não', 'nao', 'ml'];
+const volumeIndexCache = new WeakMap<Sale[], WeakMap<Product[], Map<Product, number>>>();
+
+function getSalesVolumeIndex(sales: Sale[], productsList: Product[]): Map<Product, number> {
+  let byProducts = volumeIndexCache.get(sales);
+  if (!byProducts) {
+    byProducts = new WeakMap();
+    volumeIndexCache.set(sales, byProducts);
+  }
+  let index = byProducts.get(productsList);
+  if (!index) {
+    index = buildSalesVolumeIndex(sales, productsList);
+    byProducts.set(productsList, index);
+  }
+  return index;
+}
+
+/**
+ * Mesma regra de `calculateProductSalesVolumeLegacy`, mas processando cada venda uma única vez.
+ */
+function buildSalesVolumeIndex(sales: Sale[], productsList: Product[]): Map<Product, number> {
+  const volume = new Map<Product, number>();
+  const idMap = new Map<string, Product[]>();
+  const nameMap = new Map<string, Product[]>();
+  const skuMap = new Map<string, Product[]>();
+
+  const push = (map: Map<string, Product[]>, key: string, p: Product) => {
+    const list = map.get(key);
+    if (list) list.push(p); else map.set(key, [p]);
+  };
+
+  for (const p of productsList) {
+    if (!p) continue;
+    volume.set(p, 0);
+    push(idMap, String(p.id || '').trim(), p);
+    push(nameMap, normalizeName(p.name || ''), p);
+    for (const sku of getAllProductSkus(p).map(x => x.toLowerCase())) {
+      push(skuMap, sku, p);
+    }
+  }
+
+  for (const s of sales) {
+    if (!s || s.status === 'refunded') continue;
+    const qty = Number(s.quantity) || 1;
+    const targets = new Set<Product>();
+    const matched = findProductForSale(s, productsList);
+
+    if (matched) {
+      (idMap.get(String(matched.id || '').trim()) || []).forEach(p => targets.add(p));
+      (nameMap.get(normalizeName(matched.name)) || []).forEach(p => targets.add(p));
+    } else {
+      const sPid = String(s.productId || '').trim();
+      const sSku = String(s.sku || (s as any).sku || '').trim().toLowerCase();
+      if (sPid) (idMap.get(sPid) || []).forEach(p => targets.add(p));
+      if (sSku && sSku.length > 1 && !SKU_JUNK.includes(sSku)) {
+        (skuMap.get(sSku) || []).forEach(p => targets.add(p));
+      }
+    }
+
+    targets.forEach(p => volume.set(p, (volume.get(p) || 0) + qty));
+  }
+
+  return volume;
+}
+
+/**
+ * Implementação original (por produto). Mantida como fallback para produtos que não pertencem
+ * à lista informada e como referência de comportamento para testes.
+ */
+export function calculateProductSalesVolumeLegacy(
   product: Product,
   sales: Sale[],
   allProducts?: Product[]
@@ -653,9 +780,11 @@ export const INITIAL_SALES: Sale[] = [
 export function getDaysRemainingForRelease(saleDateStr: string, currentStatus?: 'pending' | 'completed'): number {
   if (currentStatus === 'completed') return 0;
   
-  const saleDate = new Date(saleDateStr + 'T12:00:00');
+  // Data ausente/ilegível: assume prudentemente o prazo cheio em vez de exibir "NaN dias"
+  const saleDate = parseMLDate(saleDateStr);
+  if (!saleDate) return 30;
   const now = new Date();
-  
+
   // Zera horas para contar dia cheio
   saleDate.setHours(0, 0, 0, 0);
   now.setHours(0, 0, 0, 0);

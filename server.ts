@@ -7,279 +7,134 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import fs from 'fs';
+// Núcleo compartilhado com as funções serverless da Vercel (api/*.js): uma única implementação
+// para desenvolvimento local e produção.
+import { syncRead, syncWrite, lookupWebAppUrl } from './api/_lib/sheetsProxy.js';
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+  const HOST = process.env.HOST || '0.0.0.0';
+  const isProduction = process.env.NODE_ENV === 'production';
 
-  // Middleware para JSON com limite maior para sincronização de grandes volumes se houver
+  app.disable('x-powered-by');
+
+  // Limite maior para sincronização de grandes volumes
   app.use(express.json({ limit: '20mb' }));
 
-  // Helper para realizar fetch com timeout nativo robusto, retry em caso de cold-start e limpar o temporizador de forma segura
-  async function fetchWithTimeout(url: string, options: any = {}, timeoutMs = 60000, retries = 1): Promise<Response> {
-    const defaultHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      'Accept': 'application/json, text/plain, */*'
-    };
+  // Nunca permitir cache das respostas da API (evita dados velhos entre dispositivos)
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    next();
+  });
 
-    const combinedOptions = {
-      redirect: 'follow',
-      ...options,
-      headers: {
-        ...defaultHeaders,
-        ...(options.headers || {})
-      }
-    };
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      const controller = new AbortController();
-      const id = setTimeout(() => controller.abort(), timeoutMs);
-
-      try {
-        const response = await fetch(url, {
-          ...combinedOptions,
-          signal: controller.signal
-        });
-        clearTimeout(id);
-        return response;
-      } catch (error: any) {
-        clearTimeout(id);
-        const isAbort = error.name === 'AbortError' || error.code === 'ABORT_ERR' || String(error).includes('aborted');
-        if (isAbort && attempt < retries) {
-          console.warn(`[Proxy Sync] Tentativa ${attempt + 1} expirou ou foi abortada. Tentando novamente...`);
-          await new Promise(r => setTimeout(r, 1000));
-          continue;
-        }
-        throw error;
-      }
-    }
-    throw new Error('Tempo limite de conexão excedido.');
-  }
-
-  // API para buscar o Web App URL diretamente da aba "Database" da planilha do usuário
+  // Recupera o Web App URL gravado na aba "Database" da planilha
   app.get('/api/get-webapp-url', async (req, res) => {
-    try {
-      const spreadsheetUrl = req.query.spreadsheetUrl as string;
-      if (!spreadsheetUrl) return res.json({ webAppUrl: null });
-      const match = spreadsheetUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
-      if (!match) return res.json({ webAppUrl: null });
-      
-      const spreadsheetId = match[1];
-      const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=Database`;
-      
-      const response = await fetchWithTimeout(csvUrl, {}, 15000);
-      if (response.ok) {
-        const csvText = await response.text();
-        const scriptMatch = csvText.match(/https:\/\/script\.google\.com\/macros\/s\/[a-zA-Z0-9-_]+\/exec/);
-        if (scriptMatch) {
-          return res.json({ webAppUrl: scriptMatch[0] });
-        }
-      }
-      res.json({ webAppUrl: null });
-    } catch (err) {
-      res.json({ webAppUrl: null });
-    }
+    const result = await lookupWebAppUrl(String(req.query.spreadsheetUrl || ''));
+    res.status(result.status).json(result.body);
   });
 
-  // API para exportar ou baixar o código fonte completo do projeto consolidado para o Claude
-  app.get(['/api/download-codebase', '/api/export-codebase', '/PROJETO_COMPLETO_CLAUDE.txt'], (req, res) => {
-    try {
-      const filesToInclude = [
-        'package.json',
-        'vite.config.ts',
-        'index.html',
-        'server.ts',
-        'src/main.tsx',
-        'src/index.css',
-        'src/types.ts',
-        'src/utils.ts',
-        'src/App.tsx',
-        'src/components/Header.tsx',
-        'src/components/DashboardOverview.tsx',
-        'src/components/StockControl.tsx',
-        'src/components/SalesManager.tsx',
-        'src/components/ProductProfitsPanel.tsx',
-        'src/components/MLImport.tsx',
-        'src/components/SheetsIntegration.tsx',
-        'src/components/MLCalculatorModal.tsx',
-        'src/components/QuickStockModal.tsx',
-        'src/components/ManualStockAdjustPanel.tsx',
-        'src/components/CodeExportModal.tsx'
-      ];
-
-      let output = '# ==============================================================================\n';
-      output += '# CÓDIGO FONTE COMPLETO CONSOLIDADO - SISTEMA MERCADO LIVRE PRO\n';
-      output += '# ESTRUTURA PARA AUDITORIA E ENGENHARIA NO CLAUDE / CHATGPT / LLM\n';
-      output += `# DATA DE EXPORTAÇÃO: ${new Date().toISOString()}\n`;
-      output += '# ==============================================================================\n\n';
-
-      for (const relPath of filesToInclude) {
-        const fullPath = path.join(process.cwd(), relPath);
-        if (fs.existsSync(fullPath)) {
-          const content = fs.readFileSync(fullPath, 'utf8');
-          output += '\n' + '='.repeat(80) + '\n';
-          output += `FILE: ${relPath}\n`;
-          output += '='.repeat(80) + '\n\n';
-          output += content + '\n\n';
-        }
-      }
-
-      if (req.query.json === 'true') {
-        return res.json({
-          success: true,
-          totalFiles: filesToInclude.length,
-          sizeBytes: Buffer.byteLength(output, 'utf8'),
-          content: output
-        });
-      }
-
-      const isDownload = req.path.includes('download') || req.query.download === 'true';
-      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-      if (isDownload) {
-        res.setHeader('Content-Disposition', 'attachment; filename="PROJETO_COMPLETO_CLAUDE.txt"');
-      }
-      return res.send(output);
-    } catch (err: any) {
-      console.error('Erro ao gerar exportação de código:', err);
-      res.status(500).send('Erro ao gerar código para exportação: ' + err.message);
-    }
-  });
-
-  // API Proxy para Sincronização do Google Sheets - GET para buscar dados em realtime
-  app.get('/api/sync-sheets', async (req, res) => {
-    const webAppUrl = req.query.webAppUrl as string;
-
-    if (!webAppUrl) {
-      return res.status(400).json({ 
-        status: 'error', 
-        message: 'A URL do Web App do Google Sheets está ausente.' 
-      });
-    }
-
-    try {
-      console.log(`Disparando busca ao Web App do Google Sheets: ${webAppUrl}`);
-      const response = await fetchWithTimeout(webAppUrl, {}, 60000, 1);
-
-      if (!response.ok) {
-        let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
-        if (response.status === 404) {
-          msg = `A URL do Web App do Google Apps Script não foi encontrada (HTTP 404). Isso ocorre quando a URL está incorreta ou o Web App foi excluído/desativado. Verifique no seu Google Sheets: Extensões > Apps Script > Implantar > Gerenciar implantações e copie a URL do Web App que termina com '/exec'.`;
-        } else if (response.status === 500) {
-          msg += ` Isso geralmente significa que há um erro interno de execução no seu código do Apps Script (como uma coluna ausente ou uma fórmula inválida na planilha). Por favor, verifique no menu "Execuções" do seu Apps Script para ver o log de erro detalhado.`;
-        }
-        throw new Error(msg);
-      }
-
-      const responseText = await response.text();
-      let responseData;
+  // Exportação do código-fonte consolidado (para auditoria em outra IA).
+  // Em produção fica DESLIGADA por padrão: ela entrega o código inteiro (e qualquer segredo nele) a qualquer visitante.
+  const codeExportEnabled = !isProduction || process.env.ENABLE_CODE_EXPORT === 'true';
+  if (codeExportEnabled) {
+    app.get(['/api/download-codebase', '/api/export-codebase', '/PROJETO_COMPLETO_CLAUDE.txt'], (req, res) => {
       try {
-        responseData = JSON.parse(responseText);
-      } catch (err) {
-        console.error('Falha ao decodificar JSON retornado pelo Apps Script:', responseText.substring(0, 1000));
-        
-        let customMessage = 'A resposta do Google Sheets Apps Script não é um JSON válido. Verifique se o script foi implantado corretamente como Web App.';
-        if (responseText.includes('<!DOCTYPE') || responseText.includes('<html') || responseText.includes('<script')) {
-          customMessage = '⚠️ Sua planilha do Google Sheets retornou uma página de erro do Google (Erro 500/Sintaxe). Isso ocorre quando o Apps Script possui erros de sintaxe ou autorização de conta. Para corrigir: \n1. Abra sua planilha e acesse "Extensões > Apps Script".\n2. Copie o NOVO código do Passo 3 da plataforma e cole substituindo todo o código atual.\n3. Salve clicando no disquete 💾.\n4. Clique em "Implantar" > "Gerenciar implantações" > clique no ícone de Lápis (Editar) > NO SELETOR DE VERSÃO mude para "Nova versão" (Obrigatoriamente!) e clique em "Implantar".';
+        const filesToInclude = [
+          'package.json',
+          'vite.config.ts',
+          'index.html',
+          'server.ts',
+          'api/_lib/sheetsProxy.js',
+          'api/sync-sheets.js',
+          'api/get-webapp-url.js',
+          'src/main.tsx',
+          'src/index.css',
+          'src/types.ts',
+          'src/utils.ts',
+          'src/App.tsx',
+          'src/components/ErrorBoundary.tsx',
+          'src/components/Header.tsx',
+          'src/components/DashboardOverview.tsx',
+          'src/components/StockControl.tsx',
+          'src/components/SalesManager.tsx',
+          'src/components/ProductProfitsPanel.tsx',
+          'src/components/MLImport.tsx',
+          'src/components/SheetsIntegration.tsx',
+          'src/components/MLCalculatorModal.tsx',
+          'src/components/QuickStockModal.tsx',
+          'src/components/ManualStockAdjustPanel.tsx',
+          'src/components/CodeExportModal.tsx'
+        ];
+
+        let output = '# ==============================================================================\n';
+        output += '# CÓDIGO FONTE COMPLETO CONSOLIDADO - SISTEMA MERCADO LIVRE PRO\n';
+        output += '# ESTRUTURA PARA AUDITORIA E ENGENHARIA NO CLAUDE / CHATGPT / LLM\n';
+        output += `# DATA DE EXPORTAÇÃO: ${new Date().toISOString()}\n`;
+        output += '# ==============================================================================\n\n';
+
+        let includedFiles = 0;
+        for (const relPath of filesToInclude) {
+          const fullPath = path.join(process.cwd(), relPath);
+          if (fs.existsSync(fullPath)) {
+            const content = fs.readFileSync(fullPath, 'utf8');
+            output += '\n' + '='.repeat(80) + '\n';
+            output += `FILE: ${relPath}\n`;
+            output += '='.repeat(80) + '\n\n';
+            output += content + '\n\n';
+            includedFiles++;
+          }
         }
-        
-        return res.status(502).json({
-          status: 'error',
-          message: customMessage
-        });
-      }
 
-      return res.json(responseData);
-    } catch (error: any) {
-      console.error('Erro de Sincronização no Servidor Proxy (GET):', error);
-      const isAbort = error.name === 'AbortError' || error.code === 'ABORT_ERR' || String(error).includes('aborted') || String(error).includes('AbortError');
-      let errorMsg = error.message || String(error);
-      if (isAbort) {
-        errorMsg = 'A conexão com o Google Sheets demorou mais do que o esperado (Tempo limite excedido). Por favor, clique em "Atualizar Agora" para re-tentar.';
-      }
-      return res.status(500).json({
-        status: 'error',
-        message: errorMsg
-      });
-    }
-  });
-
-  // API Proxy para Sincronização do Google Sheets - POST para gravar dados
-  app.post('/api/sync-sheets', async (req, res) => {
-    const { webAppUrl, products, sales, initialCapital, mlRecords } = req.body;
-
-    if (!webAppUrl) {
-      return res.status(400).json({ 
-        status: 'error', 
-        message: 'A URL do Web App do Google Sheets está ausente.' 
-      });
-    }
-
-    // Trava de segurança SSOT: Nunca enviar gravação vazia que possa apagar a planilha do usuário
-    if (!products || !Array.isArray(products) || products.length === 0) {
-      console.warn('[Proxy Sync POST] Gravação cancelada por segurança: lista de produtos vazia.');
-      return res.json({ 
-        status: 'success', 
-        message: 'Gravação ignorada para proteger a integridade do banco de dados (lista de produtos vazia).' 
-      });
-    }
-
-    try {
-      console.log(`Disparando envio ao Web App do Google Sheets: ${webAppUrl}`);
-      
-      // Enviando requisição diretamente do servidor para evitar problemas de iframe/CORS/compartilhamento
-      const response = await fetchWithTimeout(webAppUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'text/plain;charset=utf-8'
-        },
-        body: JSON.stringify({ products, sales, initialCapital, mlRecords, entradaRecords: req.body.entradaRecords, entradaRawMatrix: req.body.entradaRawMatrix })
-      }, 60000, 1);
-
-      if (!response.ok) {
-        let msg = `Google Sheets API retornou status HTTP ${response.status}.`;
-        if (response.status === 404) {
-          msg = `A URL do Web App do Google Apps Script não foi encontrada (HTTP 404). Verifique se a URL no Passo 2 termina com '/exec' e se a implantação está ativa.`;
-        } else if (response.status === 500) {
-          msg += ` Isso geralmente indica erro de código ou formato incorreto no seu Apps Script ao gravar. Por favor, cheque a aba "Execuções" no painel do Google Apps Script.`;
-        }
-        throw new Error(msg);
-      }
-
-      const responseText = await response.text();
-      let responseData;
-      try {
-        responseData = JSON.parse(responseText);
-      } catch (err) {
-        if (responseText.includes('<!DOCTYPE') || responseText.includes('<html') || responseText.includes('<script')) {
-          return res.status(502).json({
-            status: 'error',
-            message: '⚠️ Sua planilha do Google Sheets retornou uma página de erro do Google (Erro 500/Sintaxe) ao salvar. Certifique-se de copiar o novo código do Passo 3, salvá-lo no Apps Script, e criar uma "Nova versão" ao Implantar como Web App de acesso público ("Qualquer pessoa").'
+        if (req.query.json === 'true') {
+          return res.json({
+            success: true,
+            totalFiles: includedFiles,
+            sizeBytes: Buffer.byteLength(output, 'utf8'),
+            content: output
           });
         }
-        // Se a resposta do Apps Script não for JSON puro mas for texto plano, tratamos como mensagem de sucesso
-        responseData = { 
-          status: 'success', 
-          message: responseText || 'Planilha integrada e gravada com sucesso.' 
-        };
-      }
 
-      return res.json(responseData);
-    } catch (error: any) {
-      console.error('Erro de Sincronização no Servidor Proxy:', error);
-      const isAbort = error.name === 'AbortError' || error.code === 'ABORT_ERR' || String(error).includes('aborted') || String(error).includes('AbortError');
-      let errorMsg = error.message || String(error);
-      if (isAbort) {
-        errorMsg = 'O envio de dados demorou mais do que o esperado (Tempo limite excedido). Verifique sua conexão e tente salvar novamente.';
+        const isDownload = req.path.includes('download') || req.query.download === 'true';
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+        if (isDownload) {
+          res.setHeader('Content-Disposition', 'attachment; filename="PROJETO_COMPLETO_CLAUDE.txt"');
+        }
+        return res.send(output);
+      } catch (err: any) {
+        console.error('Erro ao gerar exportação de código:', err);
+        res.status(500).send('Erro ao gerar código para exportação: ' + err.message);
       }
-      return res.status(500).json({
+    });
+  }
+
+  // Proxy de sincronização com o Google Sheets: GET lê, POST grava
+  app.get('/api/sync-sheets', async (req, res) => {
+    const result = await syncRead(String(req.query.webAppUrl || ''));
+    res.status(result.status).json(result.body);
+  });
+
+  app.post('/api/sync-sheets', async (req, res) => {
+    const result = await syncWrite(req.body);
+    res.status(result.status).json(result.body);
+  });
+
+  // Erros de leitura do corpo (JSON inválido / payload grande demais) sempre em JSON, nunca em HTML
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err && err.type === 'entity.too.large') {
+      return res.status(413).json({
         status: 'error',
-        message: errorMsg
+        message: 'Os dados são grandes demais para uma única gravação. Reduza o volume importado ou tente novamente em partes.'
       });
     }
+    if (err instanceof SyntaxError) {
+      return res.status(400).json({ status: 'error', message: 'Requisição inválida (JSON malformado).' });
+    }
+    return next(err);
   });
 
   // Configuração do Vite Middleware para desenvolvimento
-  if (process.env.NODE_ENV !== 'production') {
+  if (!isProduction) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -293,8 +148,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[ML PRO Backend Server] Iniciado e escutando na porta ${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`[ML PRO Backend Server] Iniciado e escutando em ${HOST}:${PORT}`);
   });
 }
 
